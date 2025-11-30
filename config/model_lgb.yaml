@@ -1,0 +1,18 @@
+model:
+  loss: "mse"
+  num_boost_round: 2000         # 之前1200 
+  early_stopping_rounds: 100
+  params:
+    boosting_type: "gbdt"
+    learning_rate: 0.02         # 之前0.05  适中，保证每棵树都有贡献
+    max_depth: 6                # 之前-1  限制深度，避免过拟合
+    num_leaves: 31             # 之前64  减少叶子节点数，让模型更专注主要特征 
+    feature_fraction: 0.8 
+    bagging_fraction: 0.7
+    bagging_freq: 15          # 之前5  增加 bagging 频率，让模型更稳定
+    lambda_l1: 0.2             # 之前0.0  增加 L1 正则，避免过拟合
+    lambda_l2: 1.0
+    min_data_in_leaf: 30        # 之前50  保证落入每个叶子的样本足够多，统计意义才强
+    verbosity: -1
+
+

@@ -1,0 +1,223 @@
+"""
+回测脚本：支持两种模式
+1. 简化回测（默认）：快速验证信号有效性
+2. RQAlpha 回测（--use-rqalpha）：真实 T+1 交易，包含手续费、滑点等成本
+"""
+
+import argparse
+import logging
+import os
+import subprocess
+import sys
+from typing import Optional
+
+import pandas as pd
+
+from feature.qlib_feature_pipeline import QlibFeaturePipeline
+from portfolio.portfolio_builder import PortfolioBuilder
+from utils import load_yaml_config
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="基于预测结果的回测")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config/pipeline.yaml",
+        help="pipeline 配置文件路径",
+    )
+    parser.add_argument(
+        "--prediction",
+        type=str,
+        default=None,
+        help="预测结果 CSV 路径（需包含 final 列），默认自动查找最新预测文件",
+    )
+    parser.add_argument(
+        "--industry",
+        type=str,
+        default=None,
+        help="行业映射 CSV，包含 instrument, industry 列",
+    )
+    parser.add_argument(
+        "--use-rqalpha",
+        action="store_true",
+        help="使用 RQAlpha 框架进行真实 T+1 回测（包含手续费、滑点）",
+    )
+    parser.add_argument(
+        "--rqalpha-config",
+        type=str,
+        default="config/rqalpha_config.yaml",
+        help="RQAlpha 配置文件路径（仅在 --use-rqalpha 时使用）",
+    )
+    return parser.parse_args()
+
+
+def load_predictions(path: str) -> pd.Series:
+    df = pd.read_csv(path)
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df.set_index(["datetime", "instrument"], inplace=True)
+    return df["final"]
+
+
+def load_industry(path: Optional[str]) -> Optional[pd.Series]:
+    if path is None:
+        return None
+    df = pd.read_csv(path)
+    if "instrument" not in df.columns or "industry" not in df.columns:
+        raise ValueError("行业文件需包含 instrument 与 industry 列")
+    return df.set_index("instrument")["industry"]
+
+
+def _find_latest_prediction(prediction_dir: str) -> str:
+    """自动查找最新的预测文件。"""
+    import glob
+    pattern = os.path.join(prediction_dir, "pred_*.csv")
+    files = glob.glob(pattern)
+    if not files:
+        raise FileNotFoundError(f"在 {prediction_dir} 中未找到预测文件，请先运行 run_predict.py 或显式指定 --prediction")
+    # 按修改时间排序，返回最新的
+    latest = max(files, key=os.path.getmtime)
+    logging.info("自动选择最新预测文件: %s", latest)
+    return latest
+
+
+def run_rqalpha_backtest(
+    rqalpha_config_path: str,
+    prediction_path: str,
+    industry_path: Optional[str],
+    pipeline_cfg: dict,
+):
+    """调用 RQAlpha 回测脚本。"""
+    strategy_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "backtest",
+        "rqalpha_backtest.py"
+    )
+    
+    if not os.path.exists(strategy_path):
+        raise FileNotFoundError(f"RQAlpha 回测脚本不存在: {strategy_path}")
+    
+    # 构建命令
+    cmd = [
+        sys.executable,
+        strategy_path,
+        "--rqalpha-config", rqalpha_config_path,
+        "--prediction", prediction_path,
+    ]
+    
+    if industry_path:
+        cmd.extend(["--industry", industry_path])
+    
+    logging.info(f"执行 RQAlpha 回测命令: {' '.join(cmd)}")
+    
+    # 执行回测
+    result = subprocess.run(cmd, cwd=os.path.dirname(os.path.abspath(__file__)))
+    
+    if result.returncode != 0:
+        raise RuntimeError(f"RQAlpha 回测执行失败，返回码: {result.returncode}")
+    
+    logging.info("RQAlpha 回测完成")
+
+
+def main():
+    args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    cfg = load_yaml_config(args.config)
+    
+    # 自动查找最新预测文件（如果未指定）
+    prediction_path = args.prediction
+    if prediction_path is None:
+        prediction_dir = cfg["paths"]["prediction_dir"]
+        prediction_path = _find_latest_prediction(prediction_dir)
+        
+    args.use_rqalpha = True
+    # 如果使用 RQAlpha 回测，直接调用 RQAlpha 脚本
+    if args.use_rqalpha:
+        logging.info("使用 RQAlpha 框架进行真实 T+1 回测")
+        run_rqalpha_backtest(
+            args.rqalpha_config,
+            prediction_path,
+            args.industry,
+            cfg,
+        )
+        return
+    
+    # 简化回测模式（原有逻辑）
+    logging.info("使用简化回测模式（无交易成本，使用标签收益）")
+    
+    preds = load_predictions(prediction_path)
+    instruments = preds.index.get_level_values("instrument").unique()
+
+    pipeline = QlibFeaturePipeline(cfg["data_config"])
+    pipeline.build()
+    _, labels = pipeline.get_all()
+    labels = labels.loc[labels.index.isin(preds.index)]
+    logging.info("labels: %s", labels)
+    
+    industry_map = load_industry(args.industry)
+    portfolio_cfg = cfg.get("portfolio", {})
+    builder = PortfolioBuilder(
+        max_position=portfolio_cfg.get("max_position", 0.3),
+        max_stock_weight=portfolio_cfg.get("max_stock_weight", 0.05),
+        max_industry_weight=portfolio_cfg.get("max_industry_weight", 0.2),
+    )
+
+    results = []
+    detail_frames = []
+    for dt in sorted(preds.index.get_level_values("datetime").unique()):
+        score = preds.xs(dt)
+        try:
+            label_slice = labels.xs(dt)
+        except KeyError:
+            continue
+        industry_slice = None
+        if industry_map is not None:
+            industry_slice = industry_map.reindex(score.index)
+        weights = builder.build(score, industry_slice, top_k=portfolio_cfg.get("top_k", 50))
+        realized = label_slice.reindex(weights.index).dropna()
+        if realized.empty:
+            continue
+        ret = (weights.loc[realized.index] * realized).sum()
+        results.append({"date": dt, "return": ret})
+        detail = pd.DataFrame(
+            {
+                "date": dt,
+                "instrument": realized.index,
+                "signal": score.reindex(realized.index).values,
+                "weight": weights.reindex(realized.index).values,
+                "label": realized.values,
+            }
+        )
+        detail["contribution"] = detail["weight"] * detail["label"]
+        detail_frames.append(detail)
+
+    if not results:
+        logging.warning("未生成任何回测记录")
+        return
+
+    df = pd.DataFrame(results)
+    df.sort_values("date", inplace=True)
+    df["cum_return"] = (1 + df["return"]).cumprod() - 1
+    stats = {
+        "total_return": df["cum_return"].iloc[-1],
+        "avg_return": df["return"].mean(),
+        "volatility": df["return"].std(),
+        "sharpe": df["return"].mean() / (df["return"].std() + 1e-8) * (252 ** 0.5),
+    }
+
+    os.makedirs(cfg["paths"]["backtest_dir"], exist_ok=True)
+    out_path = os.path.join(cfg["paths"]["backtest_dir"], "backtest_result.csv")
+    df.to_csv(out_path, index=False)
+    logging.info("回测完成，结果写入 %s", out_path)
+    if detail_frames:
+        detail_df = pd.concat(detail_frames, ignore_index=True)
+        detail_path = os.path.join(cfg["paths"]["backtest_dir"], "backtest_detail.csv")
+        detail_df.to_csv(detail_path, index=False)
+        logging.info("投资明细写入 %s", detail_path)
+    logging.info("统计指标: %s", stats)
+
+
+if __name__ == "__main__":
+    main()
+

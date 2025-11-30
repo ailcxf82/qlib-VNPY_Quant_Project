@@ -1,0 +1,20 @@
+model:
+  # hidden_dims: [256, 128, 64]
+  # dropout: 0.2
+  # activation: "relu"
+  # batch_size: 1024
+  # lr: 0.001
+  # weight_decay: 0.0
+  # max_epochs: 50
+  # patience: 5
+
+  hidden_dims: [128, 64, 32]   # [修改] 稍微简化网络，强制压缩特征
+  dropout: 0.3                 # [修改] 略微增加 Dropout
+  activation: "relu"
+  batch_size: 2048             # [修改] 增大 Batch Size 稳定梯度
+  lr: 0.0005                   # [修改] 降低学习率
+  weight_decay: 1e-4           # [修改] 关键！增加权重衰减防止过拟合
+  max_epochs: 100              # [修改] 增加轮数
+  patience: 10                 # [修改] 增加早停耐心
+
+

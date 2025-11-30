@@ -1,0 +1,63 @@
+# RQAlpha 回测配置
+# 用于真实 T+1 回测，包含手续费、滑点等交易成本
+
+# 回测基础参数
+base:
+  # 回测起始日期（格式：YYYY-MM-DD）
+  start_date: "2020-01-01"
+  # 回测结束日期（格式：YYYY-MM-DD）
+  end_date: "2022-01-01"
+  # 初始资金（单位：元）
+  initial_cash: 10000000  # 1000万
+  # 基准指数（用于计算相对收益）
+  benchmark: "000300.XSHG"  # 沪深300
+  # 数据源（使用 tushare 或 rqalpha 内置数据）
+  data_bundle_path: null  # null 表示使用默认数据源
+
+# 交易成本
+commission:
+  # 手续费率（买入和卖出都收取）
+  commission_rate: 0.0003  # 万分之3
+  # 最小手续费（单位：元）
+  min_commission: 5.0
+
+# 滑点设置
+slippage:
+  # 滑点率（买入和卖出都收取）
+  slippage_rate: 0.0001  # 万分之1
+  # 滑点类型：fixed（固定滑点）或 price_limit（涨跌停限制）
+  slippage_type: "fixed"
+
+# 交易限制
+trading:
+  # 是否允许卖空
+  short_selling: false
+  # 是否允许融资
+  margin: false
+  # 是否允许融券
+  stock_short_selling: false
+  # 是否允许日内交易（T+0）
+  day_trade: false  # T+1 交易，不允许日内交易
+
+# 风控参数
+risk:
+  # 单只股票最大持仓比例
+  max_stock_weight: 0.1  # 5%
+  # 单行业最大持仓比例
+  max_industry_weight: 0.2  # 20%
+  # 最大总仓位比例
+  max_position: 0.3  # 30%
+  # 每期选股数量
+  top_k: 10
+
+# 输出设置
+output:
+  # 回测结果输出目录
+  output_dir: "data/backtest/rqalpha"
+  # 是否生成详细报告
+  generate_report: true
+  # 是否保存持仓明细
+  save_positions: true
+  # 是否保存交易记录
+  save_trades: true
+

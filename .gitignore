@@ -1,0 +1,6 @@
+**/mlruns/
+data/backtest/
+data/logs/
+data/predictions/
+data/models/
+mlruns/
