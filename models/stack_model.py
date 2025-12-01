@@ -27,7 +27,7 @@ class LeafStackModel:
         cfg = load_yaml_config(config_path)
         self.config = cfg.get("stack", cfg)
         self.alpha = self.config.get("alpha", 0.5)
-        self.encoding = self.config.get("encoding", "hashing").lower()
+        self.encoding = self.config.get("encoding", "embedding").lower()  # 默认使用 embedding
         self.hash_dim = self.config.get("hash_dim", 1024)
         self.encoder: Optional[OneHotEncoder] = None
         self.hasher: Optional[FeatureHasher] = None
@@ -39,8 +39,11 @@ class LeafStackModel:
                 input_type="dict",
                 dtype=np.float32,
             )
+        elif self.encoding == "embedding":
+            # 使用 EmbeddingBag，不需要编码器，直接传递叶子索引
+            pass
         else:
-            raise ValueError(f"不支持的叶子编码方式: {self.encoding}")
+            raise ValueError(f"不支持的叶子编码方式: {self.encoding}，支持: onehot, hashing, embedding")
         exclude_keys = {"alpha", "encoding", "hash_dim"}
         self.feature_names: Optional[list[str]] = None
         self.mlp = MLPRegressor({"model": {k: v for k, v in self.config.items() if k not in exclude_keys}})
@@ -55,8 +58,16 @@ class LeafStackModel:
             raise RuntimeError("哈希编码器未初始化")
         rows = ({f"t{j}_{leaf_val}": 1 for j, leaf_val in enumerate(sample)} for sample in leaf)
         encoded_sparse = self.hasher.transform(rows)
-        encoded = encoded_sparse.toarray()
+        # 保持稀疏格式，不转换为稠密矩阵
+        # 注意：这里仍然返回 DataFrame，但 MLP 需要特殊处理稀疏输入
+        encoded = encoded_sparse.toarray()  # 暂时保留，后续 MLP 会改为直接处理稀疏矩阵
         return self._to_frame(encoded, index, prefix="hash")
+    
+    def _prepare_leaf_for_embedding(self, leaf: np.ndarray, index: pd.Index) -> np.ndarray:
+        """为 EmbeddingBag 准备叶子索引数据（直接返回原始叶子索引）。"""
+        # 直接返回叶子索引，不进行编码
+        # leaf 形状: (n_samples, n_trees)
+        return leaf
 
     def fit(
         self,
@@ -65,38 +76,65 @@ class LeafStackModel:
         valid_leaf: Optional[np.ndarray] = None,
         valid_residual: Optional[pd.Series] = None,
     ):
-        logger.info("训练 Stack 模型，样本: %d，原始叶子维度: %d", train_leaf.shape[0], train_leaf.shape[1])
-        if self.encoding == "onehot":
+        logger.info("训练 Stack 模型，样本: %d，原始叶子维度: %d，编码方式: %s", 
+                   train_leaf.shape[0], train_leaf.shape[1], self.encoding)
+        if self.encoding == "embedding":
+            # 直接传递叶子索引给 MLP，使用 EmbeddingBag 处理
+            train_leaf_data = self._prepare_leaf_for_embedding(train_leaf, train_residual.index)
+            valid_leaf_data = None
+            if (
+                valid_leaf is not None
+                and valid_residual is not None
+                and len(valid_leaf) > 0
+                and len(valid_residual) > 0
+            ):
+                valid_leaf_data = self._prepare_leaf_for_embedding(valid_leaf, valid_residual.index)
+            self.mlp.fit_with_leaf_index(
+                train_leaf_data, train_residual, 
+                valid_leaf_data, valid_residual,
+                num_trees=train_leaf.shape[1]
+            )
+        elif self.encoding == "onehot":
             if self.encoder is None:
                 raise RuntimeError("OneHotEncoder 未初始化")
             train_encoded = self.encoder.fit_transform(train_leaf)
             train_df = self._to_frame(train_encoded, train_residual.index, prefix="leaf")
-        else:
-            train_df = self._hash_leaf(train_leaf, train_residual.index)
-        valid_df = None
-        if (
-            valid_leaf is not None
-            and valid_residual is not None
-            and len(valid_leaf) > 0
-            and len(valid_residual) > 0
-        ):
-            if self.encoding == "onehot":
+            valid_df = None
+            if (
+                valid_leaf is not None
+                and valid_residual is not None
+                and len(valid_leaf) > 0
+                and len(valid_residual) > 0
+            ):
                 valid_encoded = self.encoder.transform(valid_leaf)
                 valid_df = self._to_frame(valid_encoded, valid_residual.index, prefix="leaf")
-            else:
+            self.mlp.fit(train_df, train_residual, valid_df, valid_residual)
+        else:  # hashing
+            train_df = self._hash_leaf(train_leaf, train_residual.index)
+            valid_df = None
+            if (
+                valid_leaf is not None
+                and valid_residual is not None
+                and len(valid_leaf) > 0
+                and len(valid_residual) > 0
+            ):
                 valid_df = self._hash_leaf(valid_leaf, valid_residual.index)
-        self.mlp.fit(train_df, train_residual, valid_df, valid_residual)
+            self.mlp.fit(train_df, train_residual, valid_df, valid_residual)
 
     def predict_residual(self, leaf: np.ndarray, index: pd.Index) -> pd.Series:
         # 线上阶段只需 transform（不再 fit）
-        if self.encoding == "onehot":
+        if self.encoding == "embedding":
+            leaf_data = self._prepare_leaf_for_embedding(leaf, index)
+            return self.mlp.predict_with_leaf_index(leaf_data, index)
+        elif self.encoding == "onehot":
             if self.encoder is None:
                 raise RuntimeError("OneHotEncoder 未初始化")
             encoded = self.encoder.transform(leaf)
             feat_df = self._to_frame(encoded, index, prefix="leaf")
-        else:
+            return self.mlp.predict(feat_df)
+        else:  # hashing
             feat_df = self._hash_leaf(leaf, index)
-        return self.mlp.predict(feat_df)
+            return self.mlp.predict(feat_df)
 
     def fuse(self, lgb_pred: pd.Series, residual_pred: pd.Series) -> pd.Series:
         # 通过 residual 学习补充 LGB 的结构化短板
@@ -114,6 +152,7 @@ class LeafStackModel:
             }
             if self.encoding == "onehot" and self.encoder is not None:
                 meta["categories"] = [cat.tolist() for cat in self.encoder.categories_]
+            # embedding 模式不需要保存编码器信息
             json.dump(meta, fp, ensure_ascii=False, indent=2)
         self.mlp.save(output_dir, f"{model_name}_stack")
         logger.info("Stack 模型保存完成: %s", output_dir)
