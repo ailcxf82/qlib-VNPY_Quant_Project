@@ -373,13 +373,20 @@ def handle_bar(context, bar_dict):
     current_date = context.now.date()
     
     # 绘制净值曲线（必须在每个 bar 都调用，不能只在调仓时调用）
-    # 计算策略净值（相对于初始资金）
+    # 计算策略净值（使用 RQAlpha 的 unit_net_value）
     try:
-        total_value = getattr(context.portfolio, "total_value", 0.0)
-        initial_cash = getattr(context, "initial_cash", 10000000.0)
-        if initial_cash > 0 and total_value > 0:
-            nav = total_value / initial_cash
+        # 优先使用 portfolio 的 unit_net_value（这是 RQAlpha 的标准方式）
+        portfolio = context.portfolio
+        if hasattr(portfolio, "unit_net_value"):
+            nav = portfolio.unit_net_value
             plot("strategy_nav", nav)
+        else:
+            # 如果没有 unit_net_value，手动计算
+            total_value = getattr(portfolio, "total_value", 0.0)
+            initial_cash = getattr(context, "initial_cash", 10000000.0)
+            if initial_cash > 0 and total_value > 0:
+                nav = total_value / initial_cash
+                plot("strategy_nav", nav)
     except Exception as e:
         if logger:
             logger.debug(f"计算策略净值失败: {e}")

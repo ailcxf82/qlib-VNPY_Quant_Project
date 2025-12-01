@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Dict
 
 import pandas as pd
+import numpy as np
 
 try:
     from rqalpha import run_file
@@ -311,31 +312,88 @@ def generate_and_save_plot(result, output_dir: str):
         try:
             analyser = result["sys_analyser"]
             
-            # 提取策略净值数据
-            if "plots" in analyser and isinstance(analyser["plots"], pd.DataFrame):
+            # 优先从 portfolio 中提取策略净值（这是 RQAlpha 的标准方式，更可靠）
+            if "portfolio" in analyser:
+                portfolio_df = analyser["portfolio"]
+                if isinstance(portfolio_df, pd.DataFrame) and "unit_net_value" in portfolio_df.columns:
+                    nav_series = portfolio_df["unit_net_value"]
+                    # 检查是否有 date 列或索引是日期
+                    if "date" in portfolio_df.columns:
+                        portfolio_df_with_date = portfolio_df.set_index("date")
+                        nav_series = portfolio_df_with_date["unit_net_value"]
+                    elif isinstance(portfolio_df.index, pd.DatetimeIndex):
+                        # 确保 Series 使用 DataFrame 的日期索引
+                        nav_series = pd.Series(nav_series.values, index=portfolio_df.index)
+                    
+                    plot_data["strategy_nav"] = nav_series
+                    logging.info(f"从 sys_analyser.portfolio 提取策略净值数据，共 {len(nav_series)} 个数据点，索引类型: {type(nav_series.index)}")
+                    if len(nav_series) > 0:
+                        sample_values = nav_series.head(5).tolist()
+                        logging.info(f"策略净值（portfolio）前5个值: {sample_values}")
+                        logging.info(f"策略净值范围: {nav_series.min():.4f} 至 {nav_series.max():.4f}")
+            
+            # 如果 portfolio 中没有数据，尝试从 plots 中提取
+            if "strategy_nav" not in plot_data and "plots" in analyser and isinstance(analyser["plots"], pd.DataFrame):
                 plots_df = analyser["plots"]
+                logging.info(f"plots DataFrame 列: {plots_df.columns.tolist()}, 索引: {plots_df.index.name if plots_df.index.name else '无名称'}, 形状: {plots_df.shape}")
+                
                 if "strategy_nav" in plots_df.columns:
-                    # 将 DataFrame 转换为字典格式（日期 -> 净值）
-                    strategy_nav_dict = plots_df["strategy_nav"].to_dict()
-                    plot_data["strategy_nav"] = strategy_nav_dict
-                    logging.info(f"从 sys_analyser.plots 提取策略净值数据，共 {len(strategy_nav_dict)} 个数据点")
+                    # 检查是否有 date 列或索引是日期
+                    if "date" in plots_df.columns:
+                        # 使用 date 列作为索引
+                        plots_df_with_date = plots_df.set_index("date")
+                        strategy_nav_series = plots_df_with_date["strategy_nav"]
+                        plot_data["strategy_nav"] = strategy_nav_series
+                        logging.info(f"从 sys_analyser.plots 提取策略净值数据（使用date列），共 {len(strategy_nav_series)} 个数据点，索引类型: {type(strategy_nav_series.index)}")
+                    elif isinstance(plots_df.index, pd.DatetimeIndex):
+                        # 索引已经是日期
+                        strategy_nav_series = plots_df["strategy_nav"]
+                        plot_data["strategy_nav"] = strategy_nav_series
+                        logging.info(f"从 sys_analyser.plots 提取策略净值数据（使用DatetimeIndex），共 {len(strategy_nav_series)} 个数据点")
+                    else:
+                        # 使用现有索引
+                        strategy_nav_series = plots_df["strategy_nav"]
+                        plot_data["strategy_nav"] = strategy_nav_series
+                        logging.info(f"从 sys_analyser.plots 提取策略净值数据（使用现有索引），共 {len(strategy_nav_series)} 个数据点，索引类型: {type(strategy_nav_series.index)}")
+                    
+                    # 验证数据
+                    if len(plot_data["strategy_nav"]) > 0:
+                        sample_values = plot_data["strategy_nav"].head(5).tolist()
+                        logging.info(f"策略净值（plots）前5个值: {sample_values}")
+                else:
+                    logging.warning(f"plots DataFrame 中没有 'strategy_nav' 列，可用列: {plots_df.columns.tolist()}")
             
             # 提取基准净值数据
             if "benchmark_portfolio" in analyser and isinstance(analyser["benchmark_portfolio"], pd.DataFrame):
                 benchmark_df = analyser["benchmark_portfolio"]
+                logging.info(f"benchmark_portfolio DataFrame 列: {benchmark_df.columns.tolist()}, 索引: {benchmark_df.index.name if benchmark_df.index.name else '无名称'}, 形状: {benchmark_df.shape}")
+                
                 if "unit_net_value" in benchmark_df.columns:
-                    # 将 DataFrame 转换为字典格式（日期 -> 净值）
-                    benchmark_nav_dict = benchmark_df["unit_net_value"].to_dict()
-                    plot_data["benchmark_nav"] = benchmark_nav_dict
-                    logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据，共 {len(benchmark_nav_dict)} 个数据点")
+                    # 检查是否有 date 列或索引是日期
+                    if "date" in benchmark_df.columns:
+                        # 使用 date 列作为索引
+                        benchmark_df_with_date = benchmark_df.set_index("date")
+                        benchmark_nav_series = benchmark_df_with_date["unit_net_value"]
+                        plot_data["benchmark_nav"] = benchmark_nav_series
+                        logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用date列），共 {len(benchmark_nav_series)} 个数据点，索引类型: {type(benchmark_nav_series.index)}")
+                    elif isinstance(benchmark_df.index, pd.DatetimeIndex):
+                        # 索引已经是日期
+                        benchmark_nav_series = benchmark_df["unit_net_value"]
+                        plot_data["benchmark_nav"] = benchmark_nav_series
+                        logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用DatetimeIndex），共 {len(benchmark_nav_series)} 个数据点")
+                    else:
+                        # 使用现有索引
+                        benchmark_nav_series = benchmark_df["unit_net_value"]
+                        plot_data["benchmark_nav"] = benchmark_nav_series
+                        logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用现有索引），共 {len(benchmark_nav_series)} 个数据点，索引类型: {type(benchmark_nav_series.index)}")
+                    
+                    # 验证数据
+                    if len(plot_data["benchmark_nav"]) > 0:
+                        sample_values = plot_data["benchmark_nav"].head(5).tolist()
+                        logging.info(f"基准净值前5个值: {sample_values}")
+                else:
+                    logging.warning(f"benchmark_portfolio DataFrame 中没有 'unit_net_value' 列，可用列: {benchmark_df.columns.tolist()}")
             
-            # 如果 plots 中没有 strategy_nav，尝试从 portfolio 中计算
-            if "strategy_nav" not in plot_data and "portfolio" in analyser:
-                portfolio_df = analyser["portfolio"]
-                if isinstance(portfolio_df, pd.DataFrame) and "unit_net_value" in portfolio_df.columns:
-                    nav_dict = portfolio_df["unit_net_value"].to_dict()
-                    plot_data["strategy_nav"] = nav_dict
-                    logging.info(f"从 sys_analyser.portfolio 提取策略净值数据，共 {len(nav_dict)} 个数据点")
                     
         except Exception as e:
             logging.debug(f"从 sys_analyser 提取绘图数据失败: {e}")
@@ -434,47 +492,102 @@ def generate_and_save_plot(result, output_dir: str):
     # 创建图表
     plt.figure(figsize=(12, 6))
     
-    # 绘制策略净值曲线
+    # 辅助函数：从数据中提取日期和净值
+    def extract_dates_and_values(data, data_name="数据"):
+        """从各种格式的数据中提取日期和净值"""
+        if isinstance(data, pd.Series):
+            dates = data.index
+            values = data.values
+            # 转换日期格式
+            if isinstance(dates, pd.DatetimeIndex):
+                dates = [d.date() for d in dates]
+            elif len(dates) > 0:
+                dates = [pd.Timestamp(d).date() if isinstance(d, (pd.Timestamp, pd.DatetimeIndex)) else (d.date() if hasattr(d, 'date') else d) for d in dates]
+            # 确保 dates 和 values 长度一致
+            if len(dates) != len(values):
+                logging.warning(f"{data_name}: 日期和净值数量不一致！日期: {len(dates)}, 净值: {len(values)}")
+                min_len = min(len(dates), len(values))
+                dates = dates[:min_len]
+                values = values[:min_len]
+            logging.info(f"{data_name}: Series格式，日期数量: {len(dates)}, 净值数量: {len(values)}, 前3个净值: {values[:3] if len(values) >= 3 else values}")
+            return dates, values
+        elif isinstance(data, dict):
+            dates = list(data.keys())
+            values = list(data.values())
+            # 转换日期格式
+            if dates and isinstance(dates[0], (pd.Timestamp, pd.DatetimeIndex)):
+                dates = [pd.Timestamp(d).date() if isinstance(d, (pd.Timestamp, pd.DatetimeIndex)) else d for d in dates]
+            elif dates and hasattr(dates[0], 'date'):
+                dates = [d.date() if hasattr(d, 'date') else d for d in dates]
+            logging.debug(f"{data_name}: 字典格式，日期数量: {len(dates)}, 净值数量: {len(values)}")
+            return dates, values
+        elif isinstance(data, list):
+            logging.debug(f"{data_name}: 列表格式，数量: {len(data)}")
+            return None, data
+        else:
+            logging.warning(f"{data_name}: 未知格式 {type(data)}")
+            return None, None
+    
+    # 提取策略和基准数据
+    strategy_dates = None
+    strategy_values = None
+    benchmark_dates = None
+    benchmark_values = None
+    
     if "strategy_nav" in plot_data:
-        strategy_data = plot_data["strategy_nav"]
-        if isinstance(strategy_data, dict):
-            # 如果是字典格式，提取日期和净值
-            dates = list(strategy_data.keys())
-            values = list(strategy_data.values())
-            # 转换日期格式以便绘图
-            if dates and isinstance(dates[0], (pd.Timestamp, pd.DatetimeIndex)):
-                dates = [pd.Timestamp(d).date() if isinstance(d, (pd.Timestamp, pd.DatetimeIndex)) else d for d in dates]
-            plt.plot(dates, values, label="策略净值", linewidth=2, color="#1f77b4")
-        elif isinstance(strategy_data, list):
-            # 如果是列表格式
-            plt.plot(range(len(strategy_data)), strategy_data, label="策略净值", linewidth=2, color="#1f77b4")
-        elif isinstance(strategy_data, pd.Series):
-            # 如果是 pandas Series
-            dates = strategy_data.index.tolist()
-            values = strategy_data.values.tolist()
-            if dates and isinstance(dates[0], (pd.Timestamp, pd.DatetimeIndex)):
-                dates = [pd.Timestamp(d).date() if isinstance(d, (pd.Timestamp, pd.DatetimeIndex)) else d for d in dates]
-            plt.plot(dates, values, label="策略净值", linewidth=2, color="#1f77b4")
+        strategy_dates, strategy_values = extract_dates_and_values(plot_data["strategy_nav"], "策略净值")
+        if strategy_dates is not None and strategy_values is not None:
+            logging.info(f"策略净值: 日期范围 {strategy_dates[0] if strategy_dates else 'N/A'} 至 {strategy_dates[-1] if strategy_dates else 'N/A'}, 净值范围 {min(strategy_values):.4f} 至 {max(strategy_values):.4f}")
+    
+    if "benchmark_nav" in plot_data:
+        benchmark_dates, benchmark_values = extract_dates_and_values(plot_data["benchmark_nav"], "基准净值")
+        if benchmark_dates is not None and benchmark_values is not None:
+            logging.info(f"基准净值: 日期范围 {benchmark_dates[0] if benchmark_dates else 'N/A'} 至 {benchmark_dates[-1] if benchmark_dates else 'N/A'}, 净值范围 {min(benchmark_values):.4f} 至 {max(benchmark_values):.4f}")
+    
+    # 过滤掉 None 值
+    if strategy_dates is not None and strategy_values is not None:
+        # 过滤掉 None 值
+        valid_pairs = [(d, v) for d, v in zip(strategy_dates, strategy_values) if v is not None and not (isinstance(v, float) and (np.isnan(v) or np.isinf(v)))]
+        if valid_pairs:
+            strategy_dates, strategy_values = zip(*valid_pairs)
+            strategy_dates = list(strategy_dates)
+            strategy_values = list(strategy_values)
+        else:
+            strategy_dates = None
+            strategy_values = None
+            logging.warning("策略净值数据全部为 None 或无效值")
+    
+    if benchmark_dates is not None and benchmark_values is not None:
+        # 过滤掉 None 值
+        valid_pairs = [(d, v) for d, v in zip(benchmark_dates, benchmark_values) if v is not None and not (isinstance(v, float) and (np.isnan(v) or np.isinf(v)))]
+        if valid_pairs:
+            benchmark_dates, benchmark_values = zip(*valid_pairs)
+            benchmark_dates = list(benchmark_dates)
+            benchmark_values = list(benchmark_values)
+        else:
+            benchmark_dates = None
+            benchmark_values = None
+            logging.warning("基准净值数据全部为 None 或无效值")
+    
+    # 绘制策略净值曲线
+    if strategy_dates is not None and strategy_values is not None and len(strategy_dates) > 0 and len(strategy_values) > 0:
+        logging.info(f"绘制策略净值曲线: {len(strategy_dates)} 个数据点")
+        plt.plot(strategy_dates, strategy_values, label="策略净值", linewidth=2, color="#1f77b4")
+    elif strategy_values is not None and len(strategy_values) > 0:
+        logging.info(f"绘制策略净值曲线（无日期）: {len(strategy_values)} 个数据点")
+        plt.plot(range(len(strategy_values)), strategy_values, label="策略净值", linewidth=2, color="#1f77b4")
+    else:
+        logging.warning("策略净值数据为空，无法绘制")
     
     # 绘制基准净值曲线
-    if "benchmark_nav" in plot_data:
-        benchmark_data = plot_data["benchmark_nav"]
-        if isinstance(benchmark_data, dict):
-            dates = list(benchmark_data.keys())
-            values = list(benchmark_data.values())
-            # 转换日期格式以便绘图
-            if dates and isinstance(dates[0], (pd.Timestamp, pd.DatetimeIndex)):
-                dates = [pd.Timestamp(d).date() if isinstance(d, (pd.Timestamp, pd.DatetimeIndex)) else d for d in dates]
-            plt.plot(dates, values, label="基准净值", linewidth=2, color="#ff7f0e", linestyle="--")
-        elif isinstance(benchmark_data, list):
-            plt.plot(range(len(benchmark_data)), benchmark_data, label="基准净值", linewidth=2, color="#ff7f0e", linestyle="--")
-        elif isinstance(benchmark_data, pd.Series):
-            # 如果是 pandas Series
-            dates = benchmark_data.index.tolist()
-            values = benchmark_data.values.tolist()
-            if dates and isinstance(dates[0], (pd.Timestamp, pd.DatetimeIndex)):
-                dates = [pd.Timestamp(d).date() if isinstance(d, (pd.Timestamp, pd.DatetimeIndex)) else d for d in dates]
-            plt.plot(dates, values, label="基准净值", linewidth=2, color="#ff7f0e", linestyle="--")
+    if benchmark_dates is not None and benchmark_values is not None and len(benchmark_dates) > 0 and len(benchmark_values) > 0:
+        logging.info(f"绘制基准净值曲线: {len(benchmark_dates)} 个数据点")
+        plt.plot(benchmark_dates, benchmark_values, label="基准净值", linewidth=2, color="#ff7f0e", linestyle="--")
+    elif benchmark_values is not None and len(benchmark_values) > 0:
+        logging.info(f"绘制基准净值曲线（无日期）: {len(benchmark_values)} 个数据点")
+        plt.plot(range(len(benchmark_values)), benchmark_values, label="基准净值", linewidth=2, color="#ff7f0e", linestyle="--")
+    else:
+        logging.warning("基准净值数据为空，无法绘制")
     
     # 设置图表标题和标签
     plt.title("策略净值曲线对比", fontsize=16, fontweight="bold")
