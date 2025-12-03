@@ -4,19 +4,122 @@ qlib:
 
 data:
   instruments: "csi300"
-  start_time: "2016-01-01"
+  start_time: "2020-01-01"
   end_time: "2024-12-31"
   freq: "day"
+  
+  # ========== 158 因子配置 ==========
+  # 是否使用 qlib 提供的 158 因子（Alpha158）
+  use_alpha158: true  # 设置为 true 启用 158 因子
+  
+  # 自定义 158 因子配置（可选，用于筛选因子，减少计算资源消耗）
+  # 如果不配置，将使用默认的完整 158 因子
+  alpha158_config:
+    kbar: {}  # K线特征（9个因子）
+    price:
+      windows: [0]  # 只使用当前价格，不使用历史价格
+      # feature: ["OPEN", "HIGH", "LOW"]  # 如果数据源没有VWAP，先去掉VWAP测试
+      feature: ["OPEN", "HIGH", "LOW", "VWAP"]  # 如果数据源有VWAP，可以启用
+    rolling:
+      windows: [5, 10, 20, 30, 60]  # 滚动窗口，可以只选 [5, 10, 20] 减少因子数量
+      include: ["ROC", "MA", "STD", "BETA", "MAX", "MIN", "RANK", "RSV", "CORR", "CORD", "SUMP", "VMA"]  # 只使用这些操作符
+      # exclude: ["RANK"]  # 排除某些操作符（与 include 二选一）
+  
+  # 因子筛选配置（可选，进一步筛选因子）
+  alpha158_filter:
+    # include_operators: ["ROC", "MA", "STD"]  # 只包含这些操作符
+    # exclude_operators: ["RANK", "IMAX", "IMIN"]  # 排除这些操作符
+    # include_windows: [5, 10, 20]  # 只使用这些窗口
+    # exclude_windows: [60]  # 排除这些窗口
+    # max_factors: 50  # 最多使用50个因子（按名称排序选择前N个）
+  
+  # 如果自动获取失败，可以手动指定 158 因子列表（可选）
+  # alpha158_factors:
+  #   - "($close-$open)/$open"  # 示例：因子表达式
+  #   - "Mean($close, 5)/$close"
+  
   features:
+    # ========== 技术面特征 ==========
     - "$open"
     - "$high"
     - "$low"
     - "$close"
     - "$volume"
-    - "Ref($close, 1)/$close - 1"
-    - "Ref($volume, 1)/$volume - 1"
-    - "Mean($close, 5)/$close - 1"
-    - "Std($close, 10)"
+    - "Ref($close, 1)/$close - 1"     # 前一日收益率（昨日收盘/今日收盘 - 1）
+    - "Ref($volume, 1)/$volume - 1"   # 成交量变化率（昨日成交量/今日成交量 - 1）
+    - "Mean($close, 5)/$close - 1"    # 5日均价相对当前价格的变化率
+    - "Std($close, 10)"               # 10日收盘价标准差（波动率）
+    
+    # ========== 基本面特征 ==========
+    # 估值指标
+    - "$pe"                    # 市盈率
+    - "$pb"                    # 市净率
+    - "$ps"                    # 市销率
+    - "$pcf"                   # 市现率
+    - "1/$pe"                  # 盈利收益率（E/P）
+    
+    # 盈利能力
+    - "$roe"                   # 净资产收益率
+    - "$roa"                   # 总资产收益率
+    - "$roic"                  # 投入资本回报率
+    - "$gross_profit_margin"   # 毛利率
+    - "$net_profit_margin"     # 净利率
+    
+    # 成长性
+    - "$revenue_growth"        # 营收增长率
+    - "$net_profit_growth"     # 净利润增长率
+    - "$eps_growth"            # 每股收益增长率
+    
+    # 财务质量
+    - "$current_ratio"        # 流动比率
+    - "$quick_ratio"           # 速动比率
+    - "$debt_to_equity"        # 资产负债率
+    - "$asset_turnover"        # 资产周转率
+    
+    # 基本面相对指标（与市场/行业对比）
+    - "$pe/Mean($pe, 20) - 1"  # PE相对20日均值的偏离度
+    - "$pb/Mean($pb, 20) - 1"  # PB相对20日均值的偏离度
+    - "$roe/Mean($roe, 4) - 1" # ROE相对4个季度均值的偏离度
+    
+    # ========== 情绪面特征 ==========
+    # 资金流向（如果 qlib 数据源包含）
+    - "$net_inflow"            # 净流入资金
+    - "$main_net_inflow"       # 主力净流入
+    - "$large_net_inflow"      # 大单净流入
+    - "$medium_net_inflow"    # 中单净流入
+    - "$small_net_inflow"      # 小单净流入
+    
+    # 换手率与流动性
+    - "$turnover"              # 换手率
+    - "$turnover_ratio"        # 换手率（如果字段名不同）
+    - "Mean($turnover, 5)"     # 5日平均换手率
+    - "$turnover/Mean($turnover, 20) - 1"  # 换手率相对20日均值的偏离度
+    
+    # 涨跌停情况
+    - "$is_limit_up"           # 是否涨停（0/1）
+    - "$is_limit_down"         # 是否跌停（0/1）
+    - "$limit_up_count"        # 连续涨停天数
+    - "$limit_down_count"      # 连续跌停天数
+    
+    # 融资融券（如果可用）
+    - "$margin_balance"        # 融资余额
+    - "$short_balance"         # 融券余额
+    - "$margin_ratio"          # 融资融券比例  暂无
+    - "Ref($margin_balance, 1)/$margin_balance - 1"  # 融资余额变化率
+    
+    # 北向资金（沪深港通，如果可用）
+    - "$north_net_inflow"      # 北向资金净流入
+    - "$south_net_inflow"      # 南向资金净流入（港股）
+    - "Mean($north_net_inflow, 5)"  # 5日北向资金平均净流入
+    
+    # 情绪指标衍生特征
+    - "($close - $open) / $open"  # 日内涨跌幅（情绪强度）
+    - "($high - $low) / $close"   # 振幅（波动情绪）
+    - "($close - Mean($close, 20)) / Std($close, 20)"  # 价格Z-score（偏离度）
+    
+    # 成交量情绪
+    - "$volume / Mean($volume, 20) - 1"  # 成交量相对20日均值的偏离度
+    - "($close - Ref($close, 1)) * $volume"  # 价量配合度
   label: "Ref($close, -5)/$close - 1"
   filter:
     limit_up: true
