@@ -4,7 +4,7 @@ qlib:
 
 data:
   instruments: "csi300"
-  start_time: "2020-01-01"
+  start_time: "2016-05-01"
   end_time: "2024-12-31"
   freq: "day"
   
