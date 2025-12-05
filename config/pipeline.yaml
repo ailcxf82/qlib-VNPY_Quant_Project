@@ -14,7 +14,7 @@ ensemble:
       config_key: "mlp_config"
 
 rolling:
-  train_months: 24
+  train_months: 48
   valid_months: 1
   test_months: 1
   step_months: 1

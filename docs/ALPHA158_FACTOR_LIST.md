@@ -204,5 +204,28 @@ alpha158_config:
 4. **特征重要性筛选**:
    - 训练后使用 LightGBM 的 `feature_importances_` 筛选重要特征
    - 保留重要性前 50-100 个因子
+   - 📖 **详细指南**：参见 [因子重要性衡量与筛选指南](FEATURE_IMPORTANCE_GUIDE.md)
+   
+   **使用方法**:
+   ```bash
+   # 筛选前 75 个重要特征（默认）
+   python scripts/analyze_feature_importance.py --config config/pipeline.yaml --top_k 75
+   
+   # 筛选前 50 个重要特征
+   python scripts/analyze_feature_importance.py --config config/pipeline.yaml --top_k 50
+   
+   # 筛选前 100 个重要特征，并设置最小重要性阈值
+   python scripts/analyze_feature_importance.py --config config/pipeline.yaml --top_k 100 --min_importance 0.001
+   ```
+   
+   **输出文件**:
+   - `data/logs/feature_importance.csv`: 所有特征的重要性统计（均值、标准差、最大值、最小值等）
+   - `data/logs/top_features.txt`: 前 N 个重要特征的名称列表（每行一个）
+   - `data/logs/top_N_features.csv`: 前 N 个重要特征的详细统计
+   
+   **说明**:
+   - 脚本会聚合所有训练窗口的模型特征重要性，计算平均值和标准差
+   - 按平均重要性排序，筛选出前 top_k 个特征
+   - 支持 `gain`（增益）和 `split`（分裂次数）两种重要性类型
 
 

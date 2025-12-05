@@ -108,3 +108,28 @@ class LightGBMModelWrapper:
             self.feature_names = meta.get("feature_names")
         logger.info("LightGBM 模型已加载: %s", model_path)
 
+    def get_feature_importance(self, importance_type: str = "gain") -> pd.Series:
+        """
+        获取特征重要性。
+        
+        Args:
+            importance_type: 重要性类型，可选 'gain'（增益）、'split'（分裂次数）、'gain'（默认）
+        
+        Returns:
+            pd.Series: 特征名称 -> 重要性值的映射
+        """
+        if self.booster is None:
+            raise RuntimeError("模型尚未训练或加载")
+        
+        importance = self.booster.feature_importance(importance_type=importance_type)
+        feature_names = self.feature_names or self.booster.feature_name()
+        
+        if len(importance) != len(feature_names):
+            logger.warning(
+                "特征重要性数量 (%d) 与特征名称数量 (%d) 不匹配，使用 booster 的特征名",
+                len(importance), len(feature_names)
+            )
+            feature_names = self.booster.feature_name()
+        
+        return pd.Series(importance, index=feature_names, name=f"importance_{importance_type}")
+

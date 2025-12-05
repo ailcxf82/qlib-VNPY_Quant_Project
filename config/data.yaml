@@ -4,8 +4,8 @@ qlib:
 
 data:
   instruments: "csi300"
-  start_time: "2016-05-01"
-  end_time: "2024-12-31"
+  start_time: "2018-10-01"
+  end_time: "2025-10-31"
   freq: "day"
   
   # ========== 158 因子配置 ==========
@@ -22,7 +22,8 @@ data:
       feature: ["OPEN", "HIGH", "LOW", "VWAP"]  # 如果数据源有VWAP，可以启用
     rolling:
       windows: [5, 10, 20, 30, 60]  # 滚动窗口，可以只选 [5, 10, 20] 减少因子数量
-      include: ["ROC", "MA", "STD", "BETA", "MAX", "MIN", "RANK", "RSV", "CORR", "CORD", "SUMP", "VMA"]  # 只使用这些操作符
+      # include: ["ROC", "MA", "STD", "BETA", "MAX", "MIN", "RANK", "RSV", "CORR", "CORD", "SUMP", "VMA"]  # V0.0.1 初步跑赢300指标
+      include: ["KMID", "KLEN", "KMID2","KUP", "KUP2", "KLOW", "KLOW2","KSFT", "KSFT2", "OPEN0", "HIGH0", "LOW0", "VWAP0", "ROC", "MA", "STD", "BETA", "MAX", "MIN","RESI", "QTLU", "QTLD", "QTLD", "RSV", "IMAX", "IMIN", "CORR", "CORD","SUMP", "CNTD", "VMA", "VSTD"]
       # exclude: ["RANK"]  # 排除某些操作符（与 include 二选一）
   
   # 因子筛选配置（可选，进一步筛选因子）
