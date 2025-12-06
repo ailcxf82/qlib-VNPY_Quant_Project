@@ -273,10 +273,19 @@ def init(context):
     if all_codes:
         subscribe(list(all_codes))
     
-    # 初始化调仓标记
+    # 初始化调仓标记与频率（默认每日，可通过 context_vars.rebalance_interval 配置）
     context.target_weights = {}
     context.rebalanced = False
     context.last_rebalance_date = None
+    
+    # 从配置中读取调仓频率
+    rebalance_interval = _sp_get("rebalance_interval", 1)
+    if rebalance_interval is None or rebalance_interval < 1:
+        rebalance_interval = 1
+    context.rebalance_interval = int(rebalance_interval)
+    
+    if logger:
+        logger.info(f"调仓频率设置为: 每 {context.rebalance_interval} 天调仓一次")
     
     # 保存初始资金用于计算净值
     try:
@@ -359,11 +368,29 @@ def before_trading(context):
         getattr(context, "industry_map", None),
     )
     
-    context.target_weights = target_weights
-    context.rebalanced = False
-    context.need_rebalance = True
-    if logger:
-        logger.info(f"日期 {current_date}，目标组合包含 {len(target_weights)} 只股票")
+    # 调仓频率控制：间隔 rebalance_interval 天才调一次仓
+    interval = getattr(context, "rebalance_interval", 1) or 1
+    last_date = getattr(context, "last_rebalance_date", None)
+    delta_days = (current_date - last_date).days if last_date else None
+    should_rebalance = (last_date is None) or (delta_days >= interval)
+    
+    if should_rebalance:
+        context.target_weights = target_weights
+        context.rebalanced = False
+        context.need_rebalance = True
+        if logger:
+            logger.info(
+                f"日期 {current_date}，目标组合 {len(target_weights)} 只股票，"
+                f"距上次调仓 {0 if last_date is None else delta_days} 天，执行调仓"
+            )
+    else:
+        context.target_weights = {}
+        context.rebalanced = True
+        context.need_rebalance = False
+        if logger:
+            logger.info(
+                f"日期 {current_date}，距上次调仓 {delta_days} 天 < 间隔 {interval} 天，跳过调仓"
+            )
 
 
 def handle_bar(context, bar_dict):

@@ -4,7 +4,17 @@ mlp_config: "config/model_mlp.yaml"
 stack_config: "config/model_stack.yaml"
 
 ensemble:
-  aggregator: "average"
+  # 聚合策略选项：
+  # - "average": 简单平均（Qlib 标准化后平均）
+  # - "weighted_average": 基于验证集 ICIR 的加权平均（推荐）
+  # - "meta_learner": Meta-Learner（Ridge 回归，默认 alpha=1.0）
+  # - "meta_learner_linear": Meta-Learner（线性回归）
+  # - "meta_learner_ridge": Meta-Learner（Ridge 回归，alpha=1.0）
+  aggregator: "weighted_average"
+  # Meta-Learner 参数（仅当 aggregator="meta_learner" 时使用）
+  aggregator_params:
+    model_type: "ridge"  # "linear" 或 "ridge"
+    alpha: 1.0  # Ridge 回归的正则化系数
   models:
     - name: "lgb"
       type: "lightgbm"
@@ -14,7 +24,7 @@ ensemble:
       config_key: "mlp_config"
 
 rolling:
-  train_months: 48
+  train_months: 24
   valid_months: 1
   test_months: 1
   step_months: 1

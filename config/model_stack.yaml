@@ -6,11 +6,11 @@ stack:
   embedding_dim: 32       # Embedding 向量的维度
   # 因为输入变成了稀疏的高维向量，第一层隐层需要足够宽来承载信息
   hidden_dims: [256, 128]   # 隐藏层维度，之前[256, 128]  [修改] 稍微加宽第一层
-  dropout: 0.5  # 默认0.1，修改为0.5，增加 dropout 以避免过拟合
+  dropout: 0.6  # 增加 dropout，提高正则化（从0.5增加到0.6）
   activation: "relu"
   batch_size: 2048      # 批次大小，之前2048  高维稀疏数据需要大 Batch 才能学到规律
   lr: 0.001            # 学习率，之前0.001  高维稀疏数据需要小学习率才能稳定收敛
-  weight_decay: 1e-4
+  weight_decay: 5e-4   # 增加权重衰减，提高正则化（从1e-4增加到5e-4）
   max_epochs: 50
   patience: 5
 

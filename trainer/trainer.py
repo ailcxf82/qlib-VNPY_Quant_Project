@@ -105,6 +105,20 @@ class RollingTrainer:
     def train(self):
         self.pipeline.build()
         features, labels = self.pipeline.get_all()
+        
+        # 检查标签转换是否生效
+        label_is_rank = getattr(self.pipeline, "_label_is_rank", False)
+        if label_is_rank:
+            logger.info("训练使用 Rank 转换后的标签（范围应在 [0, 1] 之间）")
+            logger.info("标签值统计: min=%.6f, max=%.6f, mean=%.6f", 
+                       labels.min(), labels.max(), labels.mean())
+            if labels.min() < 0 or labels.max() > 1:
+                logger.warning("标签值不在 [0, 1] 范围内！可能转换未生效")
+        else:
+            logger.info("训练使用原始标签（未进行 Rank 转换）")
+            logger.info("标签值统计: min=%.6f, max=%.6f, mean=%.6f", 
+                       labels.min(), labels.max(), labels.mean())
+        
         os.makedirs(self.paths["model_dir"], exist_ok=True)
         os.makedirs(self.paths["log_dir"], exist_ok=True)
         metrics: List[Dict] = []

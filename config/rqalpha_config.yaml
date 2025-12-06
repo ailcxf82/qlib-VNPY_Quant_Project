@@ -61,3 +61,9 @@ output:
   # 是否保存交易记录
   save_trades: true
 
+# 策略额外参数
+extra:
+  context_vars:
+    # 调仓频率（天），3 表示每 3 天调仓一次
+    rebalance_interval: 4
+

@@ -53,6 +53,7 @@ class QlibFeaturePipeline:
         self.label_series: pd.Series | None = None
         self._feature_mean: pd.Series | None = None
         self._feature_std: pd.Series | None = None
+        self._label_is_rank: bool = False  # 标记标签是否为排名
 
     def _init_qlib(self):
         qlib_cfg = self.config.get("qlib", {})
@@ -344,6 +345,18 @@ class QlibFeaturePipeline:
         
         logger.info("最终特征数据量: %d 行，%d 列", len(features), len(features.columns))
         logger.info("最终标签数据量: %d 行", len(label))
+
+        # 标签转换：支持转换为排名百分位
+        label_transform = self.feature_cfg.get("label_transform", {})
+        if label_transform.get("enabled", False):
+            from utils.label_transform import transform_to_rank
+            method = label_transform.get("method", "percentile")
+            groupby = label_transform.get("groupby", "datetime")
+            label = transform_to_rank(label, method=method, groupby=groupby)
+            logger.info("标签已转换为排名（方法: %s, 分组: %s）", method, groupby)
+            self._label_is_rank = True
+        else:
+            self._label_is_rank = False
 
         self._fit_norm(features)
         norm_feat = self._transform(features)

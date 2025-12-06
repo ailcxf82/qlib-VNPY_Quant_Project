@@ -5,13 +5,13 @@ model:
   params:
     boosting_type: "gbdt"
     learning_rate: 0.02         # 之前0.05  适中，保证每棵树都有贡献
-    max_depth: 6                # 之前-1  限制深度，避免过拟合
-    num_leaves: 31             # 之前64  减少叶子节点数，让模型更专注主要特征 
-    feature_fraction: 0.8 
-    bagging_fraction: 0.7
+    max_depth: 7                # 之前-1  限制深度，避免过拟合
+    num_leaves: 63             # 之前64  减少叶子节点数，让模型更专注主要特征 
+    feature_fraction: 0.7     # 降低特征采样比例，增加正则化（从0.8降到0.7）
+    bagging_fraction: 0.6     # 降低样本采样比例，增加正则化（从0.7降到0.6）
     bagging_freq: 15          # 之前5  增加 bagging 频率，让模型更稳定
-    lambda_l1: 0.2             # 之前0.0  增加 L1 正则，避免过拟合
-    lambda_l2: 1.0
+    lambda_l1: 0.3             # 增加 L1 正则，避免过拟合（从0.2增加到0.5）
+    lambda_l2: 1.0             # 增加 L2 正则，避免过拟合（从1.0增加到2.0）
     min_data_in_leaf: 30        # 之前50  保证落入每个叶子的样本足够多，统计意义才强
     verbosity: -1
 

@@ -4,7 +4,7 @@ qlib:
 
 data:
   instruments: "csi300"
-  start_time: "2018-10-01"
+  start_time: "2021-10-01"
   end_time: "2025-10-31"
   freq: "day"
   
@@ -15,15 +15,20 @@ data:
   # 自定义 158 因子配置（可选，用于筛选因子，减少计算资源消耗）
   # 如果不配置，将使用默认的完整 158 因子
   alpha158_config:
-    kbar: {}  # K线特征（9个因子）
+    # K线特征（9个因子）- 固定因子，不需要滚动窗口
+    # 配置说明：kbar: {} 表示启用所有 9 个 K 线特征（KMID, KLEN, KMID2, KUP, KUP2, KLOW, KLOW2, KSFT, KSFT2）
+    # 注意：K 线特征不应该配置 windows 和 include 参数，它们是固定的 9 个因子
+    kbar: {}  # 空字典表示启用所有 9 个 K 线特征
+    
+    # 价格特征（4个因子）- 当前价格相对收盘价
     price:
       windows: [0]  # 只使用当前价格，不使用历史价格
       # feature: ["OPEN", "HIGH", "LOW"]  # 如果数据源没有VWAP，先去掉VWAP测试
-      feature: ["OPEN", "HIGH", "LOW", "VWAP"]  # 如果数据源有VWAP，可以启用
+      feature: ["OPEN", "HIGH", "LOW", "VWAP"]  # 注意：feature 应该是 ["OPEN", "HIGH", "LOW", "VWAP"]，不是 ["OPEN0", ...]
     rolling:
       windows: [5, 10, 20, 30, 60]  # 滚动窗口，可以只选 [5, 10, 20] 减少因子数量
-      # include: ["ROC", "MA", "STD", "BETA", "MAX", "MIN", "RANK", "RSV", "CORR", "CORD", "SUMP", "VMA"]  # V0.0.1 初步跑赢300指标
-      include: ["KMID", "KLEN", "KMID2","KUP", "KUP2", "KLOW", "KLOW2","KSFT", "KSFT2", "OPEN0", "HIGH0", "LOW0", "VWAP0", "ROC", "MA", "STD", "BETA", "MAX", "MIN","RESI", "QTLU", "QTLD", "QTLD", "RSV", "IMAX", "IMIN", "CORR", "CORD","SUMP", "CNTD", "VMA", "VSTD"]
+      # include: ["ROC", "MA", "STD", "BETA", "MAX", "MIN"]  # V0.0.1 初步跑赢300指标
+      include: ["ROC", "MA", "STD", "BETA", "MAX", "MIN","RESI", "QTLU", "QTLD", "QTLD", "RSV", "IMAX", "IMIN", "CORR", "CORD","SUMP", "CNTD", "VMA", "VSTD"]
       # exclude: ["RANK"]  # 排除某些操作符（与 include 二选一）
   
   # 因子筛选配置（可选，进一步筛选因子）
@@ -50,7 +55,9 @@ data:
     - "Ref($volume, 1)/$volume - 1"   # 成交量变化率（昨日成交量/今日成交量 - 1）
     - "Mean($close, 5)/$close - 1"    # 5日均价相对当前价格的变化率
     - "Std($close, 10)"               # 10日收盘价标准差（波动率）
-    
+    - "Ref($close, 0)/Ref($close, 1) - 1 * ($volume / Mean($volume, 5) - 1)"   # 价量突变因子：当天涨幅 * (成交量 / 过去5日均量 - 1)
+    - "($close - Max($high, 60)) / $close" # 价格与近60日最高价的距离（衡量突破潜力）
+
     # ========== 基本面特征 ==========
     # 估值指标
     - "$pe"                    # 市盈率
@@ -121,7 +128,11 @@ data:
     # 成交量情绪
     - "$volume / Mean($volume, 20) - 1"  # 成交量相对20日均值的偏离度
     - "($close - Ref($close, 1)) * $volume"  # 价量配合度
-  label: "Ref($close, -5)/$close - 1"
+  label: "Ref($close, -20)/$close - 1"
+  label_transform:
+    enabled: true              # 启用标签转换
+    method: "percentile"       # 转换方法：percentile（百分位）或 rank（排名）
+    groupby: "datetime"       # 分组方式：按日期分组（截面排名）
   filter:
     limit_up: true
     limit_down: true

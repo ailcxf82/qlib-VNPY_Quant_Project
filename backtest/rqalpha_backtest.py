@@ -167,6 +167,17 @@ def run_rqalpha_backtest(
     )
     prepare_prediction_file(prediction_path, temp_prediction_path)
     
+    # 保存原始预测文件路径到输出目录，供后续分析使用
+    import shutil
+    try:
+        # 将预测文件复制到输出目录，方便后续分析
+        prediction_copy_path = os.path.join(output_dir, f"rqalpha_{os.path.basename(prediction_path)}")
+        if os.path.exists(temp_prediction_path):
+            shutil.copy2(temp_prediction_path, prediction_copy_path)
+            logging.info(f"预测文件已复制到输出目录: {prediction_copy_path}")
+    except Exception as e:
+        logging.warning(f"复制预测文件到输出目录失败: {e}")
+    
     # 加载行业映射
     industry_map = load_industry_map(industry_path)
     
@@ -177,6 +188,7 @@ def run_rqalpha_backtest(
     trading_config = rqalpha_cfg.get("trading", {})
     risk_config = rqalpha_cfg.get("risk", {})
     output_config = rqalpha_cfg.get("output", {})
+    extra_config = rqalpha_cfg.get("extra", {})
 
     # 输出目录使用项目相对路径时，转换为绝对路径
     output_dir = _resolve_path(output_config.get("output_dir", "data/backtest/rqalpha"), prefer_project_root=True)
@@ -219,7 +231,9 @@ def run_rqalpha_backtest(
             },
         },
         "extra": {
-            "log_level": "INFO",
+            "log_level": extra_config.get("log_level", "INFO"),
+            # 透传 context_vars（如 rebalance_interval）
+            "context_vars": extra_config.get("context_vars", {}),
         },
     }
     
@@ -235,6 +249,9 @@ def run_rqalpha_backtest(
         config_dict["mod"]["sys_simulation"]["matching_type"] = "next_bar"
     
     # 策略参数（通过 context.config 传递）
+    # 先获取原有的 context_vars（可能包含 rebalance_interval 等配置）
+    existing_context_vars = config_dict["extra"].get("context_vars", {})
+    
     strategy_params = {
         "prediction_file": temp_prediction_path,
         "max_position": risk_config.get("max_position", 0.3),
@@ -245,7 +262,8 @@ def run_rqalpha_backtest(
     if industry_map:
         strategy_params["industry_map"] = industry_map
     
-    config_dict["extra"]["context_vars"] = strategy_params
+    # 合并原有配置（如 rebalance_interval）和新参数，避免覆盖
+    config_dict["extra"]["context_vars"] = {**existing_context_vars, **strategy_params}
     
     # 策略脚本路径
     if strategy_path is None:
@@ -283,6 +301,16 @@ def run_rqalpha_backtest(
             json.dump(result.summary, f, ensure_ascii=False, indent=2)
         logging.info(f"回测摘要已保存到: {summary_path}")
     
+    # 提取并保存详细的回测信息（投资明细、盈亏状态、效率指标）
+    try:
+        logging.info("开始提取详细的回测信息...")
+        # 传递预测文件路径，用于增强交易明细
+        extract_and_save_detailed_results(result, output_dir, temp_prediction_path)
+    except Exception as e:
+        logging.warning(f"提取详细回测信息失败: {e}，继续执行...")
+        import traceback
+        traceback.print_exc()
+    
     # 生成并保存图表
     try:
         logging.info(f"开始生成图表...{result}")
@@ -291,6 +319,401 @@ def run_rqalpha_backtest(
         logging.warning(f"生成图表失败: {e}，继续执行...")
     
     return result
+
+
+def enhance_trades_with_prediction_and_pnl(trades_df: pd.DataFrame, output_dir: str, prediction_file_path: Optional[str] = None) -> pd.DataFrame:
+    """
+    增强交易明细：添加预测值、成本和收益信息
+    
+    参数:
+        trades_df: 原始交易明细 DataFrame
+        output_dir: 输出目录（用于查找预测文件）
+    
+    返回:
+        增强后的交易明细 DataFrame
+    """
+    import glob
+    
+    # 创建副本，避免修改原数据
+    enhanced_df = trades_df.copy()
+    
+    # 0. 处理索引问题：如果 datetime 既是索引又是列，安全地重置索引
+    def _ensure_datetime_column(df: pd.DataFrame) -> pd.DataFrame:
+        # 如果已有 datetime 列且索引也包含 datetime，先丢弃索引中的该层，避免重复列
+        if isinstance(df.index, pd.MultiIndex) and "datetime" in df.index.names:
+            if "datetime" in df.columns:
+                df = df.reset_index(level="datetime", drop=True)
+            else:
+                df = df.reset_index()
+        elif df.index.name == "datetime":
+            if "datetime" in df.columns:
+                df = df.reset_index(drop=True)
+            else:
+                df = df.reset_index()
+        
+        # 如果仍不存在 datetime 列，尝试从索引或其他列补充
+        if "datetime" not in df.columns:
+            if isinstance(df.index, pd.MultiIndex) and "datetime" in df.index.names:
+                df = df.reset_index(level="datetime")
+            elif df.index.name == "datetime":
+                df = df.reset_index()
+            elif "trading_datetime" in df.columns:
+                df["datetime"] = df["trading_datetime"]
+        return df
+    
+    enhanced_df = _ensure_datetime_column(enhanced_df)
+    
+    # 1. 尝试从预测文件中读取预测值
+    prediction_file = prediction_file_path
+    prediction_data = None
+    
+    # 如果未提供预测文件路径，尝试自动查找
+    if prediction_file is None or not os.path.exists(prediction_file):
+        # 查找预测文件（可能在 output_dir 的父目录或当前目录）
+        search_dirs = [
+            output_dir,
+            os.path.dirname(output_dir),
+            os.path.join(os.path.dirname(output_dir), "predictions"),
+        ]
+        
+        for search_dir in search_dirs:
+            if os.path.exists(search_dir):
+                # 查找 rqalpha_ 开头的预测文件
+                pattern = os.path.join(search_dir, "rqalpha_*.csv")
+                files = glob.glob(pattern)
+                if files:
+                    # 使用最新的文件
+                    prediction_file = max(files, key=os.path.getmtime)
+                    break
+        
+        # 如果没找到 rqalpha_ 开头的文件，尝试找 pred_ 开头的
+        if prediction_file is None or not os.path.exists(prediction_file):
+            for search_dir in search_dirs:
+                if os.path.exists(search_dir):
+                    pattern = os.path.join(search_dir, "pred_*.csv")
+                    files = glob.glob(pattern)
+                    if files:
+                        prediction_file = max(files, key=os.path.getmtime)
+                        break
+    
+    if prediction_file and os.path.exists(prediction_file):
+        try:
+            # 读取预测文件
+            pred_df = pd.read_csv(prediction_file)
+            if "datetime" in pred_df.columns:
+                pred_df["datetime"] = pd.to_datetime(pred_df["datetime"])
+                # 确定代码列名
+                code_col = None
+                for col in ["rq_code", "instrument", "order_book_id"]:
+                    if col in pred_df.columns:
+                        code_col = col
+                        break
+                
+                if code_col and "final" in pred_df.columns:
+                    # 创建预测值字典：{(日期, 代码): 预测值}
+                    pred_df["date"] = pred_df["datetime"].dt.date
+                    prediction_data = {}
+                    for _, row in pred_df.iterrows():
+                        date = row["date"]
+                        code = str(row[code_col])
+                        pred_value = row["final"]
+                        prediction_data[(date, code)] = pred_value
+                    
+                    logging.info(f"成功加载预测文件: {prediction_file}，共 {len(prediction_data)} 条预测记录")
+        except Exception as e:
+            logging.warning(f"读取预测文件失败: {e}")
+            prediction_data = None
+    else:
+        logging.warning(f"未找到预测文件，无法添加预测值信息")
+    
+    # 2. 添加预测值列
+    enhanced_df["prediction_value"] = None
+    if prediction_data and "datetime" in enhanced_df.columns and "order_book_id" in enhanced_df.columns:
+        enhanced_df["datetime"] = pd.to_datetime(enhanced_df["datetime"])
+        enhanced_df["date"] = enhanced_df["datetime"].dt.date
+        
+        for idx, row in enhanced_df.iterrows():
+            date = row["date"]
+            code = str(row["order_book_id"])
+            key = (date, code)
+            if key in prediction_data:
+                enhanced_df.at[idx, "prediction_value"] = prediction_data[key]
+        
+        # 删除临时日期列
+        enhanced_df = enhanced_df.drop(columns=["date"], errors="ignore")
+    
+    # 3. 计算成本和收益
+    enhanced_df["cost"] = None  # 买入成本（包含手续费）
+    enhanced_df["profit"] = None  # 卖出收益（扣除手续费）
+    enhanced_df["pnl"] = None  # 盈亏（profit - cost，对于卖出交易）
+    
+    # 按股票代码分组，计算累计成本和收益
+    if "order_book_id" in enhanced_df.columns and "side" in enhanced_df.columns:
+        # 初始化列
+        enhanced_df["cumulative_cost"] = 0.0
+        enhanced_df["cumulative_quantity"] = 0
+        enhanced_df["avg_cost"] = 0.0
+        
+        # 按股票代码分组处理
+        for code in enhanced_df["order_book_id"].unique():
+            code_mask = enhanced_df["order_book_id"] == code
+            code_trades = enhanced_df[code_mask].copy()
+            
+            # 确保 datetime 列存在后再排序
+            if "datetime" in code_trades.columns:
+                code_trades = code_trades.sort_values("datetime")
+            elif "trading_datetime" in code_trades.columns:
+                code_trades = code_trades.sort_values("trading_datetime")
+            
+            cumulative_cost = 0.0
+            cumulative_quantity = 0
+            avg_cost = 0.0
+            
+            for idx, row in code_trades.iterrows():
+                side = row.get("side", "")
+                quantity = row.get("last_quantity", 0)
+                price = row.get("last_price", 0.0)
+                commission = row.get("commission", 0.0)
+                tax = row.get("tax", 0.0)
+                
+                if side == "BUY":
+                    # 买入：计算成本
+                    trade_amount = quantity * price
+                    total_cost = trade_amount + commission + tax
+                    enhanced_df.at[idx, "cost"] = total_cost
+                    
+                    # 更新累计成本和数量（用于计算平均成本）
+                    cumulative_cost += total_cost
+                    cumulative_quantity += quantity
+                    if cumulative_quantity > 0:
+                        avg_cost = cumulative_cost / cumulative_quantity
+                    
+                    enhanced_df.at[idx, "cumulative_cost"] = cumulative_cost
+                    enhanced_df.at[idx, "cumulative_quantity"] = cumulative_quantity
+                    enhanced_df.at[idx, "avg_cost"] = avg_cost
+                    
+                elif side == "SELL":
+                    # 卖出：计算收益
+                    trade_amount = quantity * price
+                    total_cost_fees = commission + tax
+                    net_amount = trade_amount - total_cost_fees
+                    
+                    # 收益 = 卖出金额 - 手续费 - 对应持仓的成本
+                    if cumulative_quantity > 0 and avg_cost > 0:
+                        # 使用平均成本法计算收益
+                        cost_basis = quantity * avg_cost
+                        profit = net_amount - cost_basis
+                        enhanced_df.at[idx, "profit"] = net_amount
+                        enhanced_df.at[idx, "pnl"] = profit
+                        
+                        # 更新累计成本和数量
+                        cumulative_cost -= cost_basis
+                        cumulative_quantity -= quantity
+                        if cumulative_quantity > 0:
+                            avg_cost = cumulative_cost / cumulative_quantity
+                        else:
+                            avg_cost = 0.0
+                        
+                        enhanced_df.at[idx, "cumulative_cost"] = cumulative_cost
+                        enhanced_df.at[idx, "cumulative_quantity"] = cumulative_quantity
+                        enhanced_df.at[idx, "avg_cost"] = avg_cost
+                    else:
+                        # 如果没有持仓成本信息，只计算净卖出金额
+                        enhanced_df.at[idx, "profit"] = net_amount
+                        enhanced_df.at[idx, "pnl"] = net_amount
+        
+        # 删除临时列
+        enhanced_df = enhanced_df.drop(columns=["cumulative_cost", "cumulative_quantity", "avg_cost"], errors="ignore")
+    
+    return enhanced_df
+
+
+def extract_and_save_detailed_results(result, output_dir: str, prediction_file_path: Optional[str] = None):
+    """
+    从 RQAlpha 回测结果中提取详细的投资明细、盈亏状态和效率指标。
+    
+    参数:
+        result: RQAlpha 回测结果对象
+        output_dir: 输出目录路径
+        prediction_file_path: 预测文件路径（可选，用于增强交易明细）
+    """
+    import json
+    
+    detailed_results = {
+        "投资明细": [],
+        "盈亏状态": {},
+        "效率指标": {},
+    }
+    
+    # 1. 提取投资明细（持仓记录）
+    try:
+        if isinstance(result, dict) and "sys_analyser" in result:
+            analyser = result["sys_analyser"]
+            
+            # 提取持仓记录
+            if "positions" in analyser and isinstance(analyser["positions"], pd.DataFrame):
+                positions_df = analyser["positions"]
+                if not positions_df.empty:
+                    # 保存持仓明细
+                    positions_path = os.path.join(output_dir, "positions_detail.csv")
+                    positions_df.to_csv(positions_path, index=False, encoding="utf-8-sig")
+                    logging.info(f"持仓明细已保存到: {positions_path}")
+                    logging.info(f"持仓明细共 {len(positions_df)} 条记录")
+                    
+                    # 打印部分持仓明细
+                    if len(positions_df) > 0:
+                        logging.info("\n" + "="*80)
+                        logging.info("持仓明细（前10条）:")
+                        logging.info("="*80)
+                        print_df = positions_df.head(10)
+                        for col in print_df.columns:
+                            logging.info(f"  {col}: {print_df[col].tolist()}")
+            
+            # 提取交易记录
+            if "trades" in analyser and isinstance(analyser["trades"], pd.DataFrame):
+                trades_df = analyser["trades"]
+                if not trades_df.empty:
+                    # 增强交易明细：添加预测值、成本和收益
+                    logging.info("开始增强交易明细：添加预测值、成本和收益信息...")
+                    trades_df = enhance_trades_with_prediction_and_pnl(trades_df, output_dir, prediction_file_path)
+                    
+                    # 保存交易明细
+                    trades_path = os.path.join(output_dir, "trades_detail.csv")
+                    trades_df.to_csv(trades_path, index=False, encoding="utf-8-sig")
+                    logging.info(f"交易明细已保存到: {trades_path}")
+                    logging.info(f"交易明细共 {len(trades_df)} 条记录（已增强：包含预测值、成本、收益）")
+                    
+                    # 打印部分交易明细
+                    if len(trades_df) > 0:
+                        logging.info("\n" + "="*80)
+                        logging.info("交易明细（前10条，包含预测值、成本、收益）:")
+                        logging.info("="*80)
+                        # 选择关键列显示
+                        key_cols = ["datetime", "order_book_id", "side", "last_price", "last_quantity", 
+                                   "prediction_value", "cost", "profit", "commission"]
+                        available_cols = [col for col in key_cols if col in trades_df.columns]
+                        if available_cols:
+                            print_df = trades_df[available_cols].head(10)
+                            logging.info(print_df.to_string(index=False))
+                        else:
+                            print_df = trades_df.head(10)
+                            for col in print_df.columns:
+                                logging.info(f"  {col}: {print_df[col].tolist()}")
+            
+            # 提取盈亏状态
+            if "portfolio" in analyser and isinstance(analyser["portfolio"], pd.DataFrame):
+                portfolio_df = analyser["portfolio"]
+                if not portfolio_df.empty:
+                    # 计算盈亏状态
+                    if "total_value" in portfolio_df.columns:
+                        initial_value = portfolio_df["total_value"].iloc[0] if len(portfolio_df) > 0 else 0
+                        final_value = portfolio_df["total_value"].iloc[-1] if len(portfolio_df) > 0 else 0
+                        total_return = (final_value - initial_value) / initial_value if initial_value > 0 else 0
+                        
+                        detailed_results["盈亏状态"] = {
+                            "初始资金": float(initial_value),
+                            "最终资金": float(final_value),
+                            "总收益": float(final_value - initial_value),
+                            "总收益率": float(total_return * 100),
+                        }
+                        
+                        # 打印盈亏状态
+                        logging.info("\n" + "="*80)
+                        logging.info("盈亏状态:")
+                        logging.info("="*80)
+                        logging.info(f"  初始资金: {initial_value:,.2f} 元")
+                        logging.info(f"  最终资金: {final_value:,.2f} 元")
+                        logging.info(f"  总收益: {final_value - initial_value:,.2f} 元")
+                        logging.info(f"  总收益率: {total_return * 100:.2f}%")
+            
+            # 提取效率指标
+            if "summary" in analyser:
+                summary = analyser["summary"]
+                if isinstance(summary, dict):
+                    detailed_results["效率指标"] = summary
+                    
+                    # 打印效率指标
+                    logging.info("\n" + "="*80)
+                    logging.info("效率指标:")
+                    logging.info("="*80)
+                    for key, value in summary.items():
+                        if isinstance(value, (int, float)):
+                            logging.info(f"  {key}: {value:.4f}")
+                        else:
+                            logging.info(f"  {key}: {value}")
+        
+        # 2. 从 report.json 中提取更多信息
+        report_path = os.path.join(output_dir, "report.json")
+        if os.path.exists(report_path):
+            # 尝试多种编码读取 report.json，避免编码报错
+            report = None
+            encodings = ["utf-8", "utf-8-sig", "gbk", "gb2312", "latin-1"]
+            for enc in encodings:
+                try:
+                    with open(report_path, "r", encoding=enc) as f:
+                        report = json.load(f)
+                    logging.info(f"成功使用 {enc} 编码读取 report.json")
+                    break
+                except Exception:
+                    continue
+            if report is None:
+                try:
+                    with open(report_path, "rb") as f:
+                        content = f.read()
+                    try:
+                        import chardet
+                        detected = chardet.detect(content)
+                        enc = detected.get("encoding", "utf-8")
+                        logging.info(f"chardet 检测 report.json 编码: {enc}")
+                        report = json.loads(content.decode(enc))
+                    except Exception:
+                        report = json.loads(content.decode("utf-8", errors="ignore"))
+                except Exception as e:
+                    logging.warning(f"读取 report.json 失败: {e}")
+                    report = None
+                
+                # 提取更多效率指标
+                if "summary" in report:
+                    summary = report["summary"]
+                    if isinstance(summary, dict):
+                        # 合并效率指标
+                        for key, value in summary.items():
+                            if key not in detailed_results["效率指标"]:
+                                detailed_results["效率指标"][key] = value
+                        
+                        # 打印更多效率指标
+                        logging.info("\n" + "="*80)
+                        logging.info("更多效率指标（从 report.json）:")
+                        logging.info("="*80)
+                        for key, value in summary.items():
+                            if isinstance(value, (int, float)):
+                                logging.info(f"  {key}: {value:.4f}")
+                            else:
+                                logging.info(f"  {key}: {value}")
+                
+                # 提取交易统计
+                if "trades" in report:
+                    trades_info = report["trades"]
+                    if isinstance(trades_info, dict):
+                        logging.info("\n" + "="*80)
+                        logging.info("交易统计:")
+                        logging.info("="*80)
+                        for key, value in trades_info.items():
+                            if isinstance(value, (int, float)):
+                                logging.info(f"  {key}: {value:.4f}")
+                            else:
+                                logging.info(f"  {key}: {value}")
+    
+    except Exception as e:
+        logging.error(f"提取详细回测信息时出错: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # 保存详细结果到 JSON
+    detailed_path = os.path.join(output_dir, "detailed_results.json")
+    with open(detailed_path, "w", encoding="utf-8") as f:
+        json.dump(detailed_results, f, ensure_ascii=False, indent=2, default=str)
+    logging.info(f"详细回测结果已保存到: {detailed_path}")
 
 
 def generate_and_save_plot(result, output_dir: str):

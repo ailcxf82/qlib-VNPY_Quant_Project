@@ -35,6 +35,12 @@ class PredictorEngine:
             max_weight=ic_cfg.get("max_weight", 0.7),
             clip_negative=ic_cfg.get("clip_negative", True),
         )
+        # 加载数据配置以检查 label_transform
+        data_config_path = cfg.get("data_config", "config/data.yaml")
+        if isinstance(data_config_path, str):
+            self.data_cfg = load_yaml_config(data_config_path)
+        else:
+            self.data_cfg = data_config_path
 
     def load_models(self, tag: str):
         model_dir = self.paths["model_dir"]
@@ -62,6 +68,54 @@ class PredictorEngine:
         # 根据历史 IC 计算动态权重，兼顾稳定性
         weights = self.weighter.get_weights(ic_histories)
         final_pred = self.weighter.blend(preds, weights)
+        
+        # 如果训练时使用了 Rank 转换，对预测值也进行截面排名转换
+        label_transform = self.data_cfg.get("data", {}).get("label_transform", {})
+        if label_transform.get("enabled", False):
+            from utils.label_transform import transform_to_rank
+            method = label_transform.get("method", "percentile")
+            groupby = label_transform.get("groupby", "datetime")
+            logger.info("训练使用了 Rank 转换，对预测值进行截面排名转换（方法: %s, 分组: %s）", method, groupby)
+            
+            # 诊断：检查原始预测值的分布
+            unique_before = final_pred.nunique()
+            total_before = len(final_pred)
+            logger.info("Rank 转换前诊断：唯一值 %d / %d (%.2f%%)", 
+                       unique_before, total_before, unique_before/total_before*100)
+            logger.info("Rank 转换前统计：最小值=%.6f, 最大值=%.6f, 均值=%.6f, 标准差=%.6f",
+                       final_pred.min(), final_pred.max(), final_pred.mean(), final_pred.std())
+            
+            # 按日期检查原始预测值的唯一性（只检查前5个日期作为示例）
+            if isinstance(final_pred.index, pd.MultiIndex):
+                date_groups = final_pred.groupby(level="datetime")
+                sample_dates = list(date_groups)[:5]
+                for date, group in sample_dates:
+                    logger.info("  日期 %s: 唯一值 %d / %d (%.2f%%), 范围 [%.6f, %.6f]",
+                               date, group.nunique(), len(group), 
+                               group.nunique()/len(group)*100 if len(group) > 0 else 0,
+                               group.min(), group.max())
+            
+            # 对最终预测值进行截面排名转换
+            final_pred = transform_to_rank(final_pred, method=method, groupby=groupby)
+            
+            # 诊断：检查转换后的分布
+            unique_after = final_pred.nunique()
+            total_after = len(final_pred)
+            logger.info("Rank 转换后诊断：唯一值 %d / %d (%.2f%%)", 
+                       unique_after, total_after, unique_after/total_after*100)
+            
+            # 检查是否有大量重复值
+            if unique_after < total_after * 0.1:
+                logger.warning("Rank 转换后唯一值过少（%.2f%%），可能存在以下问题：", unique_after/total_after*100)
+                logger.warning("  1. 原始预测值本身就有很多重复（模型预测过于保守）")
+                logger.warning("  2. Rank 转换导致不同日期之间的排名百分位相同（这是正常现象）")
+                logger.warning("  3. 建议检查原始预测值的分布，确认模型预测质量")
+            
+            # 对各个模型的预测值也进行转换（可选，用于一致性）
+            for name in preds:
+                preds[name] = transform_to_rank(preds[name], method=method, groupby=groupby)
+            logger.info("预测值已转换为排名百分位，范围应在 [0, 1] 之间")
+        
         return final_pred, preds, weights
 
     def save_predictions(self, final_pred: pd.Series, preds: Dict[str, pd.Series], tag: str):

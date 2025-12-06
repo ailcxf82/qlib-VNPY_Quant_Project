@@ -11,6 +11,7 @@ import pandas as pd
 from qlib.model.ens.ensemble import AverageEnsemble
 
 from models.model_registry import create_model
+from models.weighted_ensemble import ICIRWeightedAverageAdapter, MetaLearnerAdapter
 
 
 class _QlibAverageAdapter:
@@ -35,21 +36,54 @@ class _QlibAverageAdapter:
 
 
 class EnsembleAggregator:
-    """将 qlib Ensemble 策略适配为 Series -> Series 的接口。"""
+    """将 Ensemble 策略适配为 Series -> Series 的接口。"""
 
     STRATEGY_MAP = {
         "average": _QlibAverageAdapter,
+        "weighted_average": ICIRWeightedAverageAdapter,
+        "meta_learner": MetaLearnerAdapter,
+        "meta_learner_ridge": lambda: MetaLearnerAdapter(model_type="ridge", alpha=1.0),
+        "meta_learner_linear": lambda: MetaLearnerAdapter(model_type="linear"),
     }
 
-    def __init__(self, strategy: str = "average"):
+    def __init__(self, strategy: str = "average", strategy_params: Optional[Dict] = None):
+        """
+        参数:
+            strategy: 聚合策略名称
+            strategy_params: 策略参数（如 meta_learner 的 alpha）
+        """
         strategy = (strategy or "average").lower()
-        adapter_cls = self.STRATEGY_MAP.get(strategy)
-        if adapter_cls is None:
+        strategy_params = strategy_params or {}
+        
+        if strategy == "meta_learner":
+            # 支持通过参数指定模型类型
+            model_type = strategy_params.get("model_type", "ridge")
+            alpha = strategy_params.get("alpha", 1.0)
+            self._adapter = MetaLearnerAdapter(model_type=model_type, alpha=alpha)
+        elif strategy in self.STRATEGY_MAP:
+            adapter_cls_or_factory = self.STRATEGY_MAP[strategy]
+            if callable(adapter_cls_or_factory) and not isinstance(adapter_cls_or_factory, type):
+                # 是工厂函数
+                self._adapter = adapter_cls_or_factory()
+            else:
+                # 是类
+                self._adapter = adapter_cls_or_factory()
+        else:
             raise ValueError(f"暂不支持的 Ensemble 策略: {strategy}")
-        self._adapter = adapter_cls()
 
     def aggregate(self, preds: Dict[str, pd.Series]) -> pd.Series:
         return self._adapter(preds)
+    
+    def fit(self, valid_preds: Dict[str, pd.Series], valid_label: pd.Series):
+        """
+        在验证集上训练聚合器（仅对 weighted_average 和 meta_learner 有效）。
+        
+        参数:
+            valid_preds: {模型名: 验证集预测值}
+            valid_label: 验证集标签
+        """
+        if hasattr(self._adapter, "fit"):
+            self._adapter.fit(valid_preds, valid_label)
 
 
 class EnsembleModelManager:
@@ -74,9 +108,10 @@ class EnsembleModelManager:
         self.models = OrderedDict()
         self._build_models()
         aggregator_strategy = (self.ensemble_cfg or {}).get("aggregator", "average")
+        aggregator_params = (self.ensemble_cfg or {}).get("aggregator_params", {})
         self.aggregator: Optional[EnsembleAggregator] = None
         if aggregator_strategy and aggregator_strategy != "disabled":
-            self.aggregator = EnsembleAggregator(aggregator_strategy)
+            self.aggregator = EnsembleAggregator(aggregator_strategy, aggregator_params)
 
     def _resolve_config_path(self, spec: Dict) -> str:
         if "config" in spec:
@@ -109,8 +144,17 @@ class EnsembleModelManager:
         valid_feat: Optional[pd.DataFrame] = None,
         valid_label: Optional[pd.Series] = None,
     ):
+        # 先训练所有基础模型
         for model in self.models.values():
             model.fit(train_feat, train_label, valid_feat, valid_label)
+        
+        # 如果聚合器需要训练（如 weighted_average 或 meta_learner），在验证集上训练
+        if self.aggregator is not None and hasattr(self.aggregator, "fit"):
+            if valid_feat is not None and valid_label is not None and len(valid_feat) > 0 and len(valid_label) > 0:
+                # 获取验证集预测（模型已训练完成）
+                valid_blend, valid_preds, _ = self.predict(valid_feat)
+                if valid_preds:
+                    self.aggregator.fit(valid_preds, valid_label)
 
     def predict(self, feat: pd.DataFrame) -> Tuple[Optional[pd.Series], Dict[str, pd.Series], Dict[str, object]]:
         preds: Dict[str, pd.Series] = {}

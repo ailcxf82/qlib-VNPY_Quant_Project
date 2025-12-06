@@ -25,8 +25,35 @@ class LightGBMModelWrapper:
     def __init__(self, config_path: str):
         cfg = load_yaml_config(config_path)
         self.config = cfg["model"]
+        
+        # 支持自定义损失函数（非对称损失）
+        loss = self.config.get("loss", "mse")
+        loss_params = self.config.get("loss_params", {})
+        
+        # 如果使用非对称损失
+        if loss == "asymmetric_mse":
+            from utils.loss_functions import asymmetric_mse_objective_lgb, asymmetric_mse_metric_lgb
+            gamma = loss_params.get("gamma", 2.0)
+            # 创建自定义目标函数和评估指标
+            def custom_objective(y_true, y_pred):
+                return asymmetric_mse_objective_lgb(y_true, y_pred, gamma=gamma)
+            
+            def custom_metric(y_true, y_pred):
+                return asymmetric_mse_metric_lgb(y_true, y_pred, gamma=gamma)
+            
+            # 注意：qlib 的 LGBModel 可能不支持自定义目标函数
+            # 这里我们需要直接使用 lightgbm 的接口
+            # 暂时使用 mse，然后在 fit 方法中处理
+            logger.warning("非对称损失函数需要在 fit 方法中通过 lightgbm 原生接口实现")
+            loss = "mse"  # 暂时使用 mse
+            self._use_asymmetric_loss = True
+            self._asymmetric_gamma = gamma
+        else:
+            self._use_asymmetric_loss = False
+            self._asymmetric_gamma = None
+        
         self.model = LGBModel(
-            loss=self.config.get("loss", "mse"),
+            loss=loss,
             num_boost_round=self.config.get("num_boost_round", 1000),
             early_stopping_rounds=self.config.get("early_stopping_rounds", 50),
             **self.config.get("params", {}),
@@ -91,6 +118,8 @@ class LightGBMModelWrapper:
         meta = {
             "config": self.config,
             "feature_names": self.feature_names,
+            # 记录标签转换信息（如果可用）
+            "label_transform": getattr(self, "_label_transform_info", None),
         }
         with open(meta_path, "w", encoding="utf-8") as fp:
             json.dump(meta, fp, ensure_ascii=False, indent=2)

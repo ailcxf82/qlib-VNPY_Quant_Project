@@ -159,7 +159,24 @@ class MLPRegressor:
             activation=self.config.get("activation", "relu"),
         ).to(self.device)
 
-        criterion = nn.MSELoss()
+        # 支持自定义损失函数
+        loss_type = self.config.get("loss", "mse")
+        loss_params = self.config.get("loss_params", {})
+        
+        if loss_type == "asymmetric_mse":
+            from utils.loss_functions import AsymmetricMSELoss
+            gamma = loss_params.get("gamma", 2.0)
+            criterion = AsymmetricMSELoss(gamma=gamma)
+            logger.info("使用非对称 MSE 损失函数，gamma=%.2f", gamma)
+        elif loss_type == "weighted_mse":
+            from utils.loss_functions import WeightedMSELoss
+            w_positive = loss_params.get("w_positive", 2.0)
+            w_negative = loss_params.get("w_negative", 0.5)
+            criterion = WeightedMSELoss(w_positive=w_positive, w_negative=w_negative)
+            logger.info("使用加权 MSE 损失函数，正向权重=%.2f，负向权重=%.2f", w_positive, w_negative)
+        else:
+            criterion = nn.MSELoss()
+            logger.info("使用标准 MSE 损失函数")
         # optimizer = torch.optim.Adam(
         #     self.model.parameters(),
         #     lr=self.config.get("lr", 1e-3),
@@ -284,7 +301,24 @@ class MLPRegressor:
             activation=self.config.get("activation", "relu"),
         ).to(self.device)
         
-        criterion = nn.MSELoss()
+        # 支持自定义损失函数
+        loss_type = self.config.get("loss", "mse")
+        loss_params = self.config.get("loss_params", {})
+        
+        if loss_type == "asymmetric_mse":
+            from utils.loss_functions import AsymmetricMSELoss
+            gamma = loss_params.get("gamma", 2.0)
+            criterion = AsymmetricMSELoss(gamma=gamma)
+            logger.info("使用非对称 MSE 损失函数，gamma=%.2f", gamma)
+        elif loss_type == "weighted_mse":
+            from utils.loss_functions import WeightedMSELoss
+            w_positive = loss_params.get("w_positive", 2.0)
+            w_negative = loss_params.get("w_negative", 0.5)
+            criterion = WeightedMSELoss(w_positive=w_positive, w_negative=w_negative)
+            logger.info("使用加权 MSE 损失函数，正向权重=%.2f，负向权重=%.2f", w_positive, w_negative)
+        else:
+            criterion = nn.MSELoss()
+            logger.info("使用标准 MSE 损失函数")
         optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=float(self.config.get("lr", 1e-3)),
