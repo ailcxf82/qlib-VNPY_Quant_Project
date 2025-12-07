@@ -358,18 +358,18 @@ class QlibFeaturePipeline:
         else:
             self._label_is_rank = False
 
-        self._fit_norm(features)
-        norm_feat = self._transform(features)
-
-        self.features_df = norm_feat
+        # 修复：不再使用全局归一化，保存原始特征
+        # 归一化将在训练时对每个窗口单独计算，避免数据泄露
+        logger.info("特征构建完成，保存原始特征（未归一化），归一化将在训练时按窗口计算")
+        self.features_df = features
         self.label_series = label
         
         # 记录实际构建的数据范围
-        if len(norm_feat) > 0:
-            datetime_level = norm_feat.index.get_level_values("datetime")
+        if len(features) > 0:
+            datetime_level = features.index.get_level_values("datetime")
             actual_start = datetime_level.min()
             actual_end = datetime_level.max()
-            logger.info("特征构建完成，样本量: %d", len(norm_feat))
+            logger.info("特征构建完成，样本量: %d", len(features))
             logger.info("实际数据日期范围: %s 到 %s (配置范围: %s 到 %s)", 
                        actual_start, actual_end, start, end)
             if pd.Timestamp(end) > actual_end:
@@ -378,7 +378,7 @@ class QlibFeaturePipeline:
             logger.warning("特征构建完成，但样本量为 0，请检查数据配置和 qlib 数据")
 
     def _fit_norm(self, features: pd.DataFrame):
-        """计算全局均值方差。"""
+        """计算均值方差（用于单个窗口的归一化）。"""
         self._feature_mean = features.mean()
         # 避免标准差为 0 导致除零
         std = features.std().replace(0, 1)
@@ -387,9 +387,28 @@ class QlibFeaturePipeline:
     def _transform(self, features: pd.DataFrame) -> pd.DataFrame:
         """应用标准化。"""
         if self._feature_mean is None or self._feature_std is None:
-            raise RuntimeError("标准化参数尚未拟合，请先调用 build()")
+            raise RuntimeError("标准化参数尚未拟合，请先调用 _fit_norm()")
         arr = (features - self._feature_mean) / self._feature_std
         return arr.clip(-5, 5)  # 简单去极值，避免极端噪声
+    
+    @staticmethod
+    def normalize_features(features: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
+        """
+        对特征进行归一化，返回归一化后的特征、均值和标准差。
+        
+        参数:
+            features: 原始特征 DataFrame
+        
+        返回:
+            normalized_features: 归一化后的特征
+            mean: 均值 Series
+            std: 标准差 Series
+        """
+        mean = features.mean()
+        std = features.std().replace(0, 1)
+        normalized = (features - mean) / std
+        normalized = normalized.clip(-5, 5)
+        return normalized, mean, std
 
     def get_slice(self, start: str, end: str) -> Tuple[pd.DataFrame, pd.Series]:
         """按时间切片返回特征。"""

@@ -65,5 +65,5 @@ output:
 extra:
   context_vars:
     # 调仓频率（天），3 表示每 3 天调仓一次
-    rebalance_interval: 4
+    rebalance_interval: 5
 

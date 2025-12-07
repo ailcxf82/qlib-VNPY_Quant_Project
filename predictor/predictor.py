@@ -41,12 +41,30 @@ class PredictorEngine:
             self.data_cfg = load_yaml_config(data_config_path)
         else:
             self.data_cfg = data_config_path
+        # 归一化参数（在 load_models 时加载）
+        self._norm_mean = None
+        self._norm_std = None
 
     def load_models(self, tag: str):
         model_dir = self.paths["model_dir"]
         logger.info("加载模型，标识: %s", tag)
         self.ensemble.load(model_dir, tag)
         self.stack.load(model_dir, tag)
+        
+        # 加载归一化参数
+        import json
+        norm_meta_path = os.path.join(model_dir, f"{tag}_norm_meta.json")
+        if os.path.exists(norm_meta_path):
+            with open(norm_meta_path, "r", encoding="utf-8") as fp:
+                norm_meta = json.load(fp)
+            self._norm_mean = pd.Series(norm_meta["feature_mean"])
+            self._norm_std = pd.Series(norm_meta["feature_std"])
+            logger.info("归一化参数已加载: 训练窗口 [%s, %s]", 
+                       norm_meta.get("train_start"), norm_meta.get("train_end"))
+        else:
+            logger.warning("未找到归一化参数文件: %s，将使用特征本身的统计量（不推荐）", norm_meta_path)
+            self._norm_mean = None
+            self._norm_std = None
 
     def predict(
         self,
@@ -54,6 +72,33 @@ class PredictorEngine:
         ic_histories: Dict[str, pd.Series],
     ) -> Tuple[pd.Series, Dict[str, pd.Series], Dict[str, float]]:
         """返回融合预测、各模型预测以及权重。"""
+        # 修复：使用训练时的归一化参数对特征进行归一化
+        if self._norm_mean is not None and self._norm_std is not None:
+            logger.info("使用训练时的归一化参数对特征进行归一化")
+            # 确保特征列顺序与归一化参数一致
+            feature_cols = [col for col in features.columns if col in self._norm_mean.index]
+            missing_cols = set(features.columns) - set(feature_cols)
+            if missing_cols:
+                logger.warning("部分特征在归一化参数中不存在，将用0填充: %s", list(missing_cols)[:10])
+            
+            # 对存在的特征进行归一化
+            if feature_cols:
+                features_norm = (features[feature_cols] - self._norm_mean[feature_cols]) / self._norm_std[feature_cols]
+                features_norm = features_norm.clip(-5, 5)
+            else:
+                logger.error("没有匹配的特征列，无法进行归一化")
+                features_norm = features.copy()
+            
+            # 填充缺失的特征（用0填充，因为已经归一化）
+            for col in missing_cols:
+                features_norm[col] = 0.0
+            
+            # 确保列顺序与原始特征一致
+            features_norm = features_norm[features.columns]
+            features = features_norm
+        else:
+            logger.warning("未加载归一化参数，使用原始特征（可能导致预测不准确）")
+        
         blend_pred, base_preds, aux = self.ensemble.predict(features)
         lgb_pred = base_preds.get("lgb")
         lgb_leaf = aux.get("lgb")

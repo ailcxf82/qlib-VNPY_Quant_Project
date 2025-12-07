@@ -159,17 +159,28 @@ class RollingTrainer:
             else:
                 logger.info("窗口 %d: 训练样本 %d，验证样本 %d", idx, len(train_feat), len(valid_feat))
 
-            # 统一训练多模型
-            self.ensemble.fit(train_feat, train_lbl, valid_feat, valid_lbl)
+            # 修复：对每个训练窗口单独计算归一化参数，避免数据泄露
+            logger.info("窗口 %d: 计算训练窗口归一化参数（仅使用训练集数据）", idx)
+            train_feat_norm, norm_mean, norm_std = self.pipeline.normalize_features(train_feat)
+            
+            # 验证集使用训练集的归一化参数（不能使用验证集数据计算归一化参数）
+            if has_valid:
+                valid_feat_norm = (valid_feat - norm_mean) / norm_std
+                valid_feat_norm = valid_feat_norm.clip(-5, 5)
+            else:
+                valid_feat_norm = None
+            
+            # 统一训练多模型（使用归一化后的特征）
+            self.ensemble.fit(train_feat_norm, train_lbl, valid_feat_norm, valid_lbl)
 
-            train_blend, train_preds, train_aux = self.ensemble.predict(train_feat)
+            train_blend, train_preds, train_aux = self.ensemble.predict(train_feat_norm)
             lgb_train_pred = train_preds.get("lgb")
             lgb_train_leaf = train_aux.get("lgb")
             if lgb_train_pred is None or lgb_train_leaf is None:
                 raise RuntimeError("LeafStackModel 需要 LightGBM 输出，请在 ensemble.models 中包含 `lgb`")
             valid_blend = valid_preds = valid_aux = None
             if has_valid:
-                valid_blend, valid_preds, valid_aux = self.ensemble.predict(valid_feat)
+                valid_blend, valid_preds, valid_aux = self.ensemble.predict(valid_feat_norm)
 
             valid_pred = valid_leaf = None
             if valid_preds is not None:
@@ -229,6 +240,20 @@ class RollingTrainer:
             tag = window.valid_end.replace("-", "")
             self.ensemble.save(self.paths["model_dir"], tag)
             self.stack.save(self.paths["model_dir"], tag)
+            
+            # 保存归一化参数（用于预测时使用）
+            import json
+            norm_meta_path = os.path.join(self.paths["model_dir"], f"{tag}_norm_meta.json")
+            norm_meta = {
+                "feature_mean": norm_mean.to_dict(),
+                "feature_std": norm_std.to_dict(),
+                "train_start": window.train_start,
+                "train_end": window.train_end,
+                "valid_end": window.valid_end,
+            }
+            with open(norm_meta_path, "w", encoding="utf-8") as fp:
+                json.dump(norm_meta, fp, ensure_ascii=False, indent=2, default=str)
+            logger.info("归一化参数已保存: %s", norm_meta_path)
 
         if metrics:
             # 记录所有窗口的 IC，用于后续动态加权或评估
