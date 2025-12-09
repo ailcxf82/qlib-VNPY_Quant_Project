@@ -16,5 +16,6 @@ model:
   weight_decay: 1e-4           # 增加权重衰减，提高正则化（从1e-4增加到5e-4）
   max_epochs: 100              # [修改] 增加轮数
   patience: 10                 # [修改] 增加早停耐心
+  predict_batch_size: 4096     # 预测时的批处理大小（避免 GPU 内存溢出，可根据 GPU 内存调整）
 
 

@@ -393,13 +393,40 @@ class MLPRegressor:
             self.model.load_state_dict(best_state)
     
     def predict_with_leaf_index(self, leaf: np.ndarray, index: pd.Index) -> pd.Series:
-        """使用叶子索引进行预测。"""
+        """使用叶子索引进行预测（批处理以避免 GPU 内存溢出）。"""
         if self.model is None:
             raise RuntimeError("MLP 模型尚未训练")
         self.model.eval()
+        
+        # 获取批处理大小（默认 4096，可根据 GPU 内存调整）
+        batch_size = self.config.get("predict_batch_size", 4096)
+        n_samples = len(leaf)
+        
+        # 如果数据量较小，直接处理
+        if n_samples <= batch_size:
+            with torch.no_grad():
+                leaf_tensor = torch.tensor(leaf, dtype=torch.long).to(self.device)
+                preds = self.model(leaf_tensor).cpu().numpy().flatten()
+            return pd.Series(preds, index=index, name="mlp_pred")
+        
+        # 批处理预测
+        logger.info(f"使用批处理预测，批次大小: {batch_size}，总样本数: {n_samples}")
+        all_preds = []
+        
         with torch.no_grad():
-            leaf_tensor = torch.tensor(leaf, dtype=torch.long).to(self.device)
-            preds = self.model(leaf_tensor).cpu().numpy().flatten()
+            for i in range(0, n_samples, batch_size):
+                end_idx = min(i + batch_size, n_samples)
+                batch_leaf = leaf[i:end_idx]
+                leaf_tensor = torch.tensor(batch_leaf, dtype=torch.long).to(self.device)
+                batch_preds = self.model(leaf_tensor).cpu().numpy().flatten()
+                all_preds.append(batch_preds)
+                
+                # 清理 GPU 缓存（每批后清理，避免内存碎片）
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        # 合并所有批次的预测结果
+        preds = np.concatenate(all_preds)
         return pd.Series(preds, index=index, name="mlp_pred")
 
     def save(self, output_dir: str, model_name: str):
