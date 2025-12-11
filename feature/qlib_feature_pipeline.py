@@ -234,7 +234,16 @@ class QlibFeaturePipeline:
             logger.error("建议：1) 检查数据源是否包含 VWAP 字段；2) 使用 alpha158_config 筛选因子")
             raise
         
-        feature_panel.columns = feats
+        # 设置列名，支持列名映射（将特定表达式映射为自定义名称）
+        feature_names = []
+        feature_name_mapping = self.feature_cfg.get("feature_name_mapping", {})
+        for feat in feats:
+            # 如果配置了列名映射，使用映射后的名称；否则使用原始表达式
+            if feat in feature_name_mapping:
+                feature_names.append(feature_name_mapping[feat])
+            else:
+                feature_names.append(feat)
+        feature_panel.columns = feature_names
         label_series = label_panel.iloc[:, 0].rename("label")
 
         # 记录原始数据量

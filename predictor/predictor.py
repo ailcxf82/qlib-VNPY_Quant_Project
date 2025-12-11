@@ -163,12 +163,27 @@ class PredictorEngine:
         
         return final_pred, preds, weights
 
-    def save_predictions(self, final_pred: pd.Series, preds: Dict[str, pd.Series], tag: str):
+    def save_predictions(
+        self,
+        final_pred: pd.Series,
+        preds: Dict[str, pd.Series],
+        tag: str,
+        extra_cols: Dict[str, pd.Series] = None,
+    ):
         os.makedirs(self.paths["prediction_dir"], exist_ok=True)
         out_path = os.path.join(self.paths["prediction_dir"], f"pred_{tag}.csv")
         df = pd.DataFrame({"final": final_pred})
         for name, series in preds.items():
             df[name] = series
+        # 追加附加列（如波动率等衍生指标），索引需与预测值对齐
+        if extra_cols:
+            for name, series in extra_cols.items():
+                if series is None:
+                    continue
+                try:
+                    df[name] = series.reindex(df.index)
+                except Exception as e:
+                    logger.warning("附加列 %s 对齐失败: %s", name, e)
         # 统一索引顺序为 (datetime, instrument)，便于后续回测与查看
         if df.index.nlevels == 2:
             try:

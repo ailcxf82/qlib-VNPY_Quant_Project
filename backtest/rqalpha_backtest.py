@@ -673,7 +673,7 @@ def extract_and_save_detailed_results(result, output_dir: str, prediction_file_p
                     report = None
                 
                 # 提取更多效率指标
-                if "summary" in report:
+                if report is not None and "summary" in report:
                     summary = report["summary"]
                     if isinstance(summary, dict):
                         # 合并效率指标

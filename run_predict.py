@@ -24,7 +24,7 @@ def parse_args():
     parser.add_argument(
         "--start",
         type=str,
-        default=os.environ.get("RUN_PRED_START", "2021-10-01"),
+        default=os.environ.get("RUN_PRED_START", "2023-10-01"),
         help="预测起始日期，默认 2018-01-01，可通过环境变量 RUN_PRED_START 覆盖",
     )
     parser.add_argument(
@@ -99,7 +99,13 @@ def main():
     predictor = PredictorEngine(args.config)
     predictor.load_models(tag)
     final_pred, preds, weights = predictor.predict(features, ic_histories)
-    predictor.save_predictions(final_pred, preds, f"{tag}_{args.start}_{args.end}")
+    # 如果特征中包含 60 日波动率（Std(Return($close, 1), 60)），将其一同输出，列名为 volatility
+    extra_cols = {}
+    if "volatility" in features.columns:
+        extra_cols["volatility"] = features["volatility"]
+    else:
+        logging.warning("特征中未找到列 volatility（Std(Return($close, 1), 60)），无法输出波动率")
+    predictor.save_predictions(final_pred, preds, f"{tag}_{args.start}_{args.end}", extra_cols=extra_cols)
     logging.info("IC 动态权重: %s", weights)
 
 

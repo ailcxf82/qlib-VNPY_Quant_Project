@@ -230,12 +230,24 @@ def init(context):
         df.set_index(["datetime", "rq_code"], inplace=True)
         signal_col = "final"
     
-    # 存储预测信号（按日期索引）
+    # 存储预测信号和波动率（按日期索引）
     context.prediction_signals = {}
+    context.volatility_data = {}
     for dt in df.index.get_level_values("datetime").unique():
         try:
-            signals = df.xs(dt)[signal_col].to_dict()
+            day_data = df.xs(dt)
+            signals = day_data[signal_col].to_dict()
             context.prediction_signals[dt.date()] = signals
+            
+            # 加载波动率数据（如果存在）
+            if "volatility" in day_data.columns:
+                volatility = day_data["volatility"].to_dict()
+                context.volatility_data[dt.date()] = volatility
+            else:
+                # 如果没有波动率数据，使用默认值（避免除零错误）
+                context.volatility_data[dt.date()] = {code: 1.0 for code in signals.keys()}
+                if logger:
+                    logger.warning(f"日期 {dt.date()} 未找到波动率数据，使用默认值 1.0")
         except Exception as e:
             logger.warning(f"日期 {dt} 信号加载失败: {e}")
             continue
@@ -361,9 +373,13 @@ def before_trading(context):
         context.target_weights = {}
         return
     
+    # 获取当日波动率数据
+    volatility = context.volatility_data.get(current_date, {})
+    
     # 构建目标组合权重
     target_weights = build_portfolio(
         signals,
+        volatility,
         context.portfolio_config,
         getattr(context, "industry_map", None),
     )
@@ -449,53 +465,86 @@ def handle_bar(context, bar_dict):
 
 def build_portfolio(
     signals: Dict[str, float],
+    volatility: Dict[str, float],
     config: Dict,
     industry_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, float]:
     """
-    根据预测信号构建组合权重。
+    根据预测信号和波动率构建组合权重。
+    
+    核心公式: 权重 ∝ 预测分 / 波动率
+    意义: 单位风险的预期收益越高，买得越多
     
     参数:
-        signals: {股票代码: 信号值}
+        signals: {股票代码: 预测分数}
+        volatility: {股票代码: 波动率}
         config: 组合配置参数
         industry_map: {股票代码: 行业名称}，可选
     
     返回:
         {股票代码: 目标权重}
     """
-    # 1. 排序并取 Top-K
-    sorted_signals = sorted(signals.items(), key=lambda x: x[1], reverse=True)
-    top_k = config["top_k"]
-    filtered = dict(sorted_signals[:top_k])
+    # 1. 过滤预测分数为负数的股票
+    positive_signals = {code: score for code, score in signals.items() if score > 0}
     
-    if not filtered:
+    if not positive_signals:
+        if logger:
+            logger.warning("所有股票的预测分数都为负数或零，无法构建组合")
         return {}
     
-    # 2. 线性衰减权重
-    ranks = list(range(1, len(filtered) + 1))
-    weights = {}
-    for i, (code, signal) in enumerate(filtered.items()):
-        weight = (top_k - ranks[i] + 1) / top_k
-        weights[code] = weight
+    # 2. 按预测分数排序，取前10名
+    top_k = config.get("top_k", 10)
+    sorted_signals = sorted(positive_signals.items(), key=lambda x: x[1], reverse=True)
+    top_stocks = dict(sorted_signals[:top_k])
     
-    # 3. 归一化并应用仓位限制
-    total_weight = sum(weights.values())
-    if total_weight > 0:
-        max_position = config["max_position"]
-        weights = {code: w / total_weight * max_position for code, w in weights.items()}
+    if not top_stocks:
+        return {}
     
-    # 4. 单股权重裁剪
-    max_stock_weight = config["max_stock_weight"]
+    # 3. 计算综合得分：预测分 / 波动率
+    # 防止波动率为0导致除零错误，加一个极小值
+    epsilon = 1e-6
+    scores = {}
+    for code, pred_score in top_stocks.items():
+        vol = volatility.get(code, 1.0)  # 如果没有波动率数据，使用默认值1.0
+        vol = max(vol, epsilon)  # 防止除零错误
+        score = pred_score / vol
+        scores[code] = score
+    
+    # 4. 归一化权重
+    total_score = sum(scores.values())
+    if total_score <= 0:
+        if logger:
+            logger.warning("综合得分总和为0或负数，无法计算权重")
+        return {}
+    
+    max_position = config.get("max_position", 0.3)
+    weights = {code: (score / total_score) * max_position for code, score in scores.items()}
+    
+    # 5. 防止单只股票仓位过重，例如限制最大 20%
+    max_stock_weight = config.get("max_stock_weight", 0.2)
     weights = {code: min(w, max_stock_weight) for code, w in weights.items()}
     
-    # 重新归一化
+    # 6. 重新归一化（因为截断后总和可能小于1）
     total_weight = sum(weights.values())
     if total_weight > 0:
-        weights = {code: w / total_weight * max_position for code, w in weights.items()}
+        # 重新归一化到 max_position
+        weights = {code: (w / total_weight) * max_position for code, w in weights.items()}
+    else:
+        if logger:
+            logger.warning("权重总和为0，无法归一化")
+        return {}
     
-    # 5. 行业权重裁剪（如果提供行业映射）
+    # 7. 行业权重裁剪（如果提供行业映射）
     if industry_map:
-        weights = apply_industry_constraint(weights, industry_map, config["max_industry_weight"], max_position)
+        max_industry_weight = config.get("max_industry_weight", 0.2)
+        weights = apply_industry_constraint(weights, industry_map, max_industry_weight, max_position)
+    
+    if logger:
+        logger.debug(
+            f"组合构建完成：选中 {len(weights)} 只股票，"
+            f"总权重 {sum(weights.values()):.4f}，"
+            f"最大单股权重 {max(weights.values()):.4f}"
+        )
     
     return weights
 

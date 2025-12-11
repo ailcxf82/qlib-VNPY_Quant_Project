@@ -4,7 +4,7 @@ qlib:
 
 data:
   instruments: "csi300"
-  start_time: "2019-10-01"
+  start_time: "2021-10-01"
   end_time: "2025-10-31"
   freq: "day"
   
@@ -88,6 +88,10 @@ data:
     - "$pe/Mean($pe, 20) - 1"  # PE相对20日均值的偏离度
     - "$pb/Mean($pb, 20) - 1"  # PB相对20日均值的偏离度
     - "$roe/Mean($roe, 4) - 1" # ROE相对4个季度均值的偏离度
+
+    # =========== 技术面特征 ==========
+    - "Std(Ref($close, 0)/Ref($close, 1) - 1, 20)" # 20日收益率标准差波动率（无 Return 运算符）
+    - "Std(Ref($close, 0)/Ref($close, 1) - 1, 60)" # 60日收益率标准差波动率（volatility，兼容无 Return 运算符）
     
     # ========== 情绪面特征 ==========
     # 资金流向（如果 qlib 数据源包含）
@@ -137,5 +141,9 @@ data:
     limit_up: true
     limit_down: true
   normalization: "zscore"
+  
+  # 特征列名映射（可选）：将特征表达式映射为自定义列名
+  feature_name_mapping:
+    "Std(Ref($close, 0)/Ref($close, 1) - 1, 60)": "volatility"  # 将 60 日波动率映射为 volatility
 
 
