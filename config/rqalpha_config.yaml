@@ -4,7 +4,7 @@
 # 回测基础参数
 base:
   # 回测起始日期（格式：YYYY-MM-DD）
-  start_date: "2021-10-01"
+  start_date: "2023-10-01"
   # 回测结束日期（格式：YYYY-MM-DD）
   end_date: "2025-10-01"
   # 初始资金（单位：元）
