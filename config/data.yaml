@@ -3,8 +3,8 @@ qlib:
   region: "cn"
 
 data:
-  instruments: "csi300"
-  start_time: "2021-10-01"
+  instruments: "csi101"
+  start_time: "2022-08-01"
   end_time: "2025-10-31"
   freq: "day"
   
@@ -63,25 +63,25 @@ data:
     - "$pe"                    # 市盈率
     - "$pb"                    # 市净率
     - "$ps"                    # 市销率
-    - "$pcf"                   # 市现率
+    # - "$pcf"                   # 市现率
     - "1/$pe"                  # 盈利收益率（E/P）
     
     # 盈利能力
     - "$roe"                   # 净资产收益率
-    - "$roa"                   # 总资产收益率
-    - "$roic"                  # 投入资本回报率
-    - "$gross_profit_margin"   # 毛利率
+    # - "$roa"                   # 总资产收益率
+    # - "$roic"                  # 投入资本回报率
+    # - "$gross_profit_margin"   # 毛利率
     - "$net_profit_margin"     # 净利率
     
     # 成长性
-    - "$revenue_growth"        # 营收增长率
+    # - "$revenue_growth"        # 营收增长率
     - "$net_profit_growth"     # 净利润增长率
     - "$eps_growth"            # 每股收益增长率
     
     # 财务质量
-    - "$current_ratio"        # 流动比率
-    - "$quick_ratio"           # 速动比率
-    - "$debt_to_equity"        # 资产负债率
+    # - "$current_ratio"        # 流动比率
+    # - "$quick_ratio"           # 速动比率
+    # - "$debt_to_equity"        # 资产负债率
     - "$asset_turnover"        # 资产周转率
     
     # 基本面相对指标（与市场/行业对比）
@@ -91,28 +91,28 @@ data:
     
     # ========== 情绪面特征 ==========
     # 资金流向（如果 qlib 数据源包含）
-    - "$net_inflow"            # 净流入资金
-    - "$main_net_inflow"       # 主力净流入
-    - "$large_net_inflow"      # 大单净流入
-    - "$medium_net_inflow"    # 中单净流入
-    - "$small_net_inflow"      # 小单净流入
+    # - "$net_inflow"            # 净流入资金
+    # - "$main_net_inflow"       # 主力净流入
+    # - "$large_net_inflow"      # 大单净流入
+    # - "$medium_net_inflow"    # 中单净流入
+    # - "$small_net_inflow"      # 小单净流入
     
     # 换手率与流动性
-    - "$turnover"              # 换手率
-    - "$turnover_ratio"        # 换手率（如果字段名不同）
-    - "Mean($turnover, 5)"     # 5日平均换手率
-    - "$turnover/Mean($turnover, 20) - 1"  # 换手率相对20日均值的偏离度
+    # - "$turnover"              # 换手率
+    # - "$turnover_ratio"        # 换手率（如果字段名不同）
+    # - "Mean($turnover, 5)"     # 5日平均换手率
+    # - "$turnover/Mean($turnover, 20) - 1"  # 换手率相对20日均值的偏离度
     
     # 涨跌停情况
-    - "$is_limit_up"           # 是否涨停（0/1）
-    - "$is_limit_down"         # 是否跌停（0/1）
-    - "$limit_up_count"        # 连续涨停天数
-    - "$limit_down_count"      # 连续跌停天数
+    # - "$is_limit_up"           # 是否涨停（0/1）
+    # - "$is_limit_down"         # 是否跌停（0/1）
+    # - "$limit_up_count"        # 连续涨停天数
+    # - "$limit_down_count"      # 连续跌停天数
     
     # 融资融券（如果可用）
     - "$margin_balance"        # 融资余额
     - "$short_balance"         # 融券余额
-    - "$margin_ratio"          # 融资融券比例  暂无
+    # - "$margin_ratio"          # 融资融券比例  暂无
     - "Ref($margin_balance, 1)/$margin_balance - 1"  # 融资余额变化率
     
     # 北向资金（沪深港通，如果可用）

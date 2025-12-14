@@ -10,7 +10,8 @@ base:
   # 初始资金（单位：元）
   initial_cash: 150000  # 15万
   # 基准指数（用于计算相对收益）
-  benchmark: "000300.XSHG"  # 沪深300
+  # benchmark: "000300.XSHG"  # 沪深300
+  benchmark: "399005.XSHE"  # 中小综指
   # 数据源（使用 tushare 或 rqalpha 内置数据）
   data_bundle_path: null  # null 表示使用默认数据源
 

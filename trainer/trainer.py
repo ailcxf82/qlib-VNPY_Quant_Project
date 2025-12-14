@@ -44,6 +44,18 @@ class RollingTrainer:
         self.pipeline = QlibFeaturePipeline(self.data_cfg_path)
         self.ensemble = EnsembleModelManager(self.cfg, self.cfg.get("ensemble"))
         self.stack = LeafStackModel(self.cfg["stack_config"])
+        
+        # 解析标签表达式，获取需要的未来天数
+        data_cfg = load_yaml_config(self.data_cfg_path)["data"]
+        label_expr = data_cfg.get("label", "Ref($close, -5)/$close - 1")
+        import re
+        self.label_future_days = 0
+        if "Ref($close, -" in label_expr:
+            match = re.search(r'Ref\(\$close,\s*-(\d+)\)', label_expr)
+            if match:
+                self.label_future_days = int(match.group(1))
+                logger.info("标签需要未来 %d 天数据来计算，验证集结束日期将自动提前 %d 天", 
+                           self.label_future_days, self.label_future_days)
 
     def _generate_windows(self) -> Iterable[Window]:
         rolling = self.cfg["rolling"]
@@ -75,8 +87,18 @@ class RollingTrainer:
         labels: pd.Series,
         start: str,
         end: str,
+        is_validation: bool = False,
     ) -> Tuple[pd.DataFrame, pd.Series]:
-        """按时间范围切片特征和标签。"""
+        """
+        按时间范围切片特征和标签。
+        
+        参数:
+            features: 特征数据
+            labels: 标签数据
+            start: 起始日期
+            end: 结束日期
+            is_validation: 是否为验证集（如果是，需要考虑标签需要未来数据）
+        """
         idx = features.index
         if not isinstance(idx, pd.MultiIndex):
             raise ValueError(f"特征索引应为 MultiIndex，实际为 {type(idx)}")
@@ -89,15 +111,34 @@ class RollingTrainer:
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
         
+        # 如果是验证集，且标签需要未来数据，需要提前结束日期
+        if is_validation and self.label_future_days > 0:
+            # 标签需要未来N天数据，所以验证集结束日期需要提前N天
+            end_ts = end_ts - pd.Timedelta(days=self.label_future_days)
+            if end_ts < start_ts:
+                # 如果提前后结束日期早于开始日期，返回空数据
+                logger.warning("验证集 [%s, %s] 需要未来 %d 天数据，调整后结束日期 %s 早于开始日期，返回空集",
+                             start, end, self.label_future_days, end_ts.strftime("%Y-%m-%d"))
+                return pd.DataFrame(), pd.Series(dtype=float)
+            logger.debug("验证集结束日期从 %s 调整为 %s（标签需要未来 %d 天数据）",
+                        end, end_ts.strftime("%Y-%m-%d"), self.label_future_days)
+        
         datetime_level = idx.get_level_values("datetime")
         mask = (datetime_level >= start_ts) & (datetime_level <= end_ts)
         
         feat = features.loc[mask]
         lbl = labels.loc[mask]
         
+        # 过滤掉标签为 NaN 的数据（这些数据没有标签，无法用于训练/验证）
+        if not lbl.empty:
+            valid_mask = ~lbl.isna()
+            feat = feat.loc[valid_mask]
+            lbl = lbl.loc[valid_mask]
+        
         logger.debug(
-            "切片 [%s, %s]: 特征样本 %d，标签样本 %d",
-            start, end, len(feat), len(lbl)
+            "切片 [%s, %s]: 特征样本 %d，标签样本 %d（过滤NaN后）",
+            start, end_ts.strftime("%Y-%m-%d") if is_validation and self.label_future_days > 0 else end, 
+            len(feat), len(lbl)
         )
         
         return feat, lbl
@@ -132,8 +173,8 @@ class RollingTrainer:
         for idx, window in enumerate(self._generate_windows()):
             logger.info("==== 滚动窗口 %d: 训练 [%s, %s] 验证 [%s, %s] ====", 
                        idx, window.train_start, window.train_end, window.valid_start, window.valid_end)
-            train_feat, train_lbl = self._slice(features, labels, window.train_start, window.train_end)
-            valid_feat, valid_lbl = self._slice(features, labels, window.valid_start, window.valid_end)
+            train_feat, train_lbl = self._slice(features, labels, window.train_start, window.train_end, is_validation=False)
+            valid_feat, valid_lbl = self._slice(features, labels, window.valid_start, window.valid_end, is_validation=True)
             
             if len(train_feat) < self.cfg["rolling"].get("min_samples", 1000):
                 logger.warning("训练样本不足 (%d < %d)，跳过该窗口", 

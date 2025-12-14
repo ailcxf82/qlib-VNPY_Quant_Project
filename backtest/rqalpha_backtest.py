@@ -167,20 +167,6 @@ def run_rqalpha_backtest(
     )
     prepare_prediction_file(prediction_path, temp_prediction_path)
     
-    # 保存原始预测文件路径到输出目录，供后续分析使用
-    import shutil
-    try:
-        # 将预测文件复制到输出目录，方便后续分析
-        prediction_copy_path = os.path.join(output_dir, f"rqalpha_{os.path.basename(prediction_path)}")
-        if os.path.exists(temp_prediction_path):
-            shutil.copy2(temp_prediction_path, prediction_copy_path)
-            logging.info(f"预测文件已复制到输出目录: {prediction_copy_path}")
-    except Exception as e:
-        logging.warning(f"复制预测文件到输出目录失败: {e}")
-    
-    # 加载行业映射
-    industry_map = load_industry_map(industry_path)
-    
     # 构建 RQAlpha 配置字典
     base_config = rqalpha_cfg.get("base", {})
     commission_config = rqalpha_cfg.get("commission", {})
@@ -194,11 +180,46 @@ def run_rqalpha_backtest(
     output_dir = _resolve_path(output_config.get("output_dir", "data/backtest/rqalpha"), prefer_project_root=True)
     os.makedirs(output_dir, exist_ok=True)
     
+    # 保存原始预测文件路径到输出目录，供后续分析使用（移到output_dir定义之后）
+    import shutil
+    try:
+        # 将预测文件复制到输出目录，方便后续分析
+        prediction_copy_path = os.path.join(output_dir, f"rqalpha_{os.path.basename(prediction_path)}")
+        if os.path.exists(temp_prediction_path):
+            shutil.copy2(temp_prediction_path, prediction_copy_path)
+            logging.info(f"预测文件已复制到输出目录: {prediction_copy_path}")
+    except Exception as e:
+        logging.warning(f"复制预测文件到输出目录失败: {e}")
+    
+    # 加载行业映射
+    industry_map = load_industry_map(industry_path)
+    
     # 使用预测文件的日期范围（如果配置中未指定）
     start_date = base_config.get("start_date") or pred_start
     end_date = base_config.get("end_date") or pred_end
     
+    # 读取基准配置并输出日志
+    benchmark_code = base_config.get("benchmark", "000300.XSHG")
+    logging.info("="*80)
+    logging.info("基准配置信息:")
+    logging.info(f"  配置文件中的基准代码: {base_config.get('benchmark', '未设置（使用默认值）')}")
+    logging.info(f"  实际使用的基准代码: {benchmark_code}")
+    
+    # 验证基准代码格式
+    if benchmark_code:
+        if not isinstance(benchmark_code, str):
+            logging.warning(f"基准代码格式错误: 应为字符串，实际为 {type(benchmark_code)}")
+        elif "." not in benchmark_code:
+            logging.warning(f"基准代码格式可能错误: 缺少交易所后缀（应为 '代码.交易所' 格式，如 '000300.XSHG'）")
+        else:
+            code_part, exchange_part = benchmark_code.split(".", 1)
+            logging.info(f"  基准代码解析: 代码={code_part}, 交易所={exchange_part}")
+            if exchange_part not in ["XSHG", "XSHE"]:
+                logging.warning(f"  交易所后缀 '{exchange_part}' 可能不正确，标准格式应为 XSHG（上海）或 XSHE（深圳）")
+    logging.info("="*80)
+    
     # RQAlpha 配置
+    # 注意：base.benchmark 已被弃用，只使用 mod.sys_analyser.benchmark
     config_dict = {
         "base": {
             "start_date": start_date,
@@ -206,7 +227,7 @@ def run_rqalpha_backtest(
             "accounts": {
                 "stock": base_config.get("initial_cash", 10000000),
             },
-            "benchmark": base_config.get("benchmark", "000300.XSHG"),
+            # "benchmark": benchmark_code,  # 已弃用，改用 mod.sys_analyser.benchmark
             "data_bundle_path": base_config.get("data_bundle_path"),
         },
         "mod": {
@@ -220,7 +241,7 @@ def run_rqalpha_backtest(
             "sys_analyser": {
                 "enabled": True,
                 "output_file": os.path.join(output_dir, "report.json"),
-                "benchmark": base_config.get("benchmark", "000300.XSHG"),  # 修复弃用警告
+                "benchmark": benchmark_code,  # 使用新的配置方式（避免弃用警告）
             },
             "sys_simulation": {
                 "enabled": True,
@@ -281,6 +302,14 @@ def run_rqalpha_backtest(
     logging.info("开始执行 RQAlpha 回测...")
     logging.info(f"策略文件: {strategy_path}")
     logging.info(f"预测文件: {temp_prediction_path}")
+    logging.info(f"回测日期范围: {start_date} 至 {end_date}")
+    logging.info(f"基准代码: {benchmark_code}")
+    logging.info(f"初始资金: {base_config.get('initial_cash', 10000000)} 元")
+    
+    # 打印完整配置（用于调试）
+    logging.debug("RQAlpha 完整配置:")
+    import json
+    logging.debug(json.dumps(config_dict, indent=2, default=str, ensure_ascii=False))
     
     # RQAlpha 的回测调用方式
     try:
@@ -301,6 +330,22 @@ def run_rqalpha_backtest(
             json.dump(result.summary, f, ensure_ascii=False, indent=2)
         logging.info(f"回测摘要已保存到: {summary_path}")
     
+    # 验证基准数据是否被正确加载
+    try:
+        if isinstance(result, dict) and "sys_analyser" in result:
+            analyser = result["sys_analyser"]
+            if "benchmark_portfolio" in analyser:
+                benchmark_df = analyser.get("benchmark_portfolio")
+                if benchmark_df is not None and not (isinstance(benchmark_df, pd.DataFrame) and benchmark_df.empty):
+                    logging.info(f"✓ 基准数据已成功加载，数据点数量: {len(benchmark_df) if isinstance(benchmark_df, pd.DataFrame) else 'N/A'}")
+                else:
+                    logging.warning(f"⚠ 基准数据为空或未加载，基准代码 '{benchmark_code}' 可能无效或数据源中不存在")
+                    logging.warning(f"  请检查：1) 基准代码是否正确 2) 数据源是否包含该基准数据 3) 回测日期范围内是否有数据")
+            else:
+                logging.warning(f"⚠ 回测结果中未找到基准数据，基准代码 '{benchmark_code}' 可能无效")
+    except Exception as e:
+        logging.debug(f"检查基准数据时出错: {e}")
+    
     # 提取并保存详细的回测信息（投资明细、盈亏状态、效率指标）
     try:
         logging.info("开始提取详细的回测信息...")
@@ -314,7 +359,7 @@ def run_rqalpha_backtest(
     # 生成并保存图表
     try:
         logging.info(f"开始生成图表...{result}")
-        generate_and_save_plot(result, output_dir)
+        generate_and_save_plot(result, output_dir, benchmark_code)
     except Exception as e:
         logging.warning(f"生成图表失败: {e}，继续执行...")
     
@@ -671,7 +716,9 @@ def extract_and_save_detailed_results(result, output_dir: str, prediction_file_p
                 except Exception as e:
                     logging.warning(f"读取 report.json 失败: {e}")
                     report = None
-                
+            
+            # 提取更多效率指标（需要在 report 不为 None 时执行）
+            if report is not None:
                 # 提取更多效率指标
                 if "summary" in report:
                     summary = report["summary"]
@@ -703,6 +750,8 @@ def extract_and_save_detailed_results(result, output_dir: str, prediction_file_p
                                 logging.info(f"  {key}: {value:.4f}")
                             else:
                                 logging.info(f"  {key}: {value}")
+            else:
+                logging.warning("report.json 读取失败，无法提取额外信息")
     
     except Exception as e:
         logging.error(f"提取详细回测信息时出错: {e}")
@@ -716,13 +765,14 @@ def extract_and_save_detailed_results(result, output_dir: str, prediction_file_p
     logging.info(f"详细回测结果已保存到: {detailed_path}")
 
 
-def generate_and_save_plot(result, output_dir: str):
+def generate_and_save_plot(result, output_dir: str, benchmark_code: Optional[str] = None):
     """
     从 RQAlpha 回测结果中提取绘图数据，生成图表并保存。
     
     参数:
         result: RQAlpha 回测结果对象
         output_dir: 输出目录路径
+        benchmark_code: 基准代码（用于在图表中显示）
     """
     import matplotlib.pyplot as plt
     import json
@@ -787,35 +837,93 @@ def generate_and_save_plot(result, output_dir: str):
                     logging.warning(f"plots DataFrame 中没有 'strategy_nav' 列，可用列: {plots_df.columns.tolist()}")
             
             # 提取基准净值数据
-            if "benchmark_portfolio" in analyser and isinstance(analyser["benchmark_portfolio"], pd.DataFrame):
+            # 方法1: 优先从 benchmark_portfolio 中提取（RQAlpha 自动生成的基准数据）
+            if "benchmark_portfolio" in analyser:
                 benchmark_df = analyser["benchmark_portfolio"]
-                logging.info(f"benchmark_portfolio DataFrame 列: {benchmark_df.columns.tolist()}, 索引: {benchmark_df.index.name if benchmark_df.index.name else '无名称'}, 形状: {benchmark_df.shape}")
+                if benchmark_df is not None and isinstance(benchmark_df, pd.DataFrame) and not benchmark_df.empty:
+                    logging.info(f"benchmark_portfolio DataFrame 列: {benchmark_df.columns.tolist()}, 索引: {benchmark_df.index.name if benchmark_df.index.name else '无名称'}, 形状: {benchmark_df.shape}")
+                    
+                    if "unit_net_value" in benchmark_df.columns:
+                        # 检查是否有 date 列或索引是日期
+                        if "date" in benchmark_df.columns:
+                            # 使用 date 列作为索引
+                            benchmark_df_with_date = benchmark_df.set_index("date")
+                            benchmark_nav_series = benchmark_df_with_date["unit_net_value"]
+                            plot_data["benchmark_nav"] = benchmark_nav_series
+                            logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用date列），共 {len(benchmark_nav_series)} 个数据点，索引类型: {type(benchmark_nav_series.index)}")
+                        elif isinstance(benchmark_df.index, pd.DatetimeIndex):
+                            # 索引已经是日期
+                            benchmark_nav_series = benchmark_df["unit_net_value"]
+                            plot_data["benchmark_nav"] = benchmark_nav_series
+                            logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用DatetimeIndex），共 {len(benchmark_nav_series)} 个数据点")
+                        else:
+                            # 使用现有索引
+                            benchmark_nav_series = benchmark_df["unit_net_value"]
+                            plot_data["benchmark_nav"] = benchmark_nav_series
+                            logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用现有索引），共 {len(benchmark_nav_series)} 个数据点，索引类型: {type(benchmark_nav_series.index)}")
+                        
+                        # 验证数据
+                        if len(plot_data["benchmark_nav"]) > 0:
+                            sample_values = plot_data["benchmark_nav"].head(5).tolist()
+                            logging.info(f"基准净值前5个值: {sample_values}")
+                    else:
+                        logging.warning(f"benchmark_portfolio DataFrame 中没有 'unit_net_value' 列，可用列: {benchmark_df.columns.tolist()}")
+                else:
+                    logging.debug(f"benchmark_portfolio 为空或不是 DataFrame: {type(benchmark_df)}")
+            
+            # 方法2: 如果 benchmark_portfolio 中没有数据，尝试从 plots 中提取（策略中 plot() 函数保存的数据）
+            if "benchmark_nav" not in plot_data and "plots" in analyser and isinstance(analyser["plots"], pd.DataFrame):
+                plots_df = analyser["plots"]
+                logging.info(f"尝试从 plots 中提取基准净值，plots DataFrame 列: {plots_df.columns.tolist()}")
                 
-                if "unit_net_value" in benchmark_df.columns:
+                if "benchmark_nav" in plots_df.columns:
                     # 检查是否有 date 列或索引是日期
-                    if "date" in benchmark_df.columns:
+                    if "date" in plots_df.columns:
                         # 使用 date 列作为索引
-                        benchmark_df_with_date = benchmark_df.set_index("date")
-                        benchmark_nav_series = benchmark_df_with_date["unit_net_value"]
+                        plots_df_with_date = plots_df.set_index("date")
+                        benchmark_nav_series = plots_df_with_date["benchmark_nav"]
                         plot_data["benchmark_nav"] = benchmark_nav_series
-                        logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用date列），共 {len(benchmark_nav_series)} 个数据点，索引类型: {type(benchmark_nav_series.index)}")
-                    elif isinstance(benchmark_df.index, pd.DatetimeIndex):
+                        logging.info(f"从 sys_analyser.plots 提取基准净值数据（使用date列），共 {len(benchmark_nav_series)} 个数据点，索引类型: {type(benchmark_nav_series.index)}")
+                    elif isinstance(plots_df.index, pd.DatetimeIndex):
                         # 索引已经是日期
-                        benchmark_nav_series = benchmark_df["unit_net_value"]
+                        benchmark_nav_series = plots_df["benchmark_nav"]
                         plot_data["benchmark_nav"] = benchmark_nav_series
-                        logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用DatetimeIndex），共 {len(benchmark_nav_series)} 个数据点")
+                        logging.info(f"从 sys_analyser.plots 提取基准净值数据（使用DatetimeIndex），共 {len(benchmark_nav_series)} 个数据点")
                     else:
                         # 使用现有索引
-                        benchmark_nav_series = benchmark_df["unit_net_value"]
+                        benchmark_nav_series = plots_df["benchmark_nav"]
                         plot_data["benchmark_nav"] = benchmark_nav_series
-                        logging.info(f"从 sys_analyser.benchmark_portfolio 提取基准净值数据（使用现有索引），共 {len(benchmark_nav_series)} 个数据点，索引类型: {type(benchmark_nav_series.index)}")
+                        logging.info(f"从 sys_analyser.plots 提取基准净值数据（使用现有索引），共 {len(benchmark_nav_series)} 个数据点，索引类型: {type(benchmark_nav_series.index)}")
                     
                     # 验证数据
                     if len(plot_data["benchmark_nav"]) > 0:
                         sample_values = plot_data["benchmark_nav"].head(5).tolist()
-                        logging.info(f"基准净值前5个值: {sample_values}")
+                        logging.info(f"基准净值（plots）前5个值: {sample_values}")
                 else:
-                    logging.warning(f"benchmark_portfolio DataFrame 中没有 'unit_net_value' 列，可用列: {benchmark_df.columns.tolist()}")
+                    logging.debug(f"plots DataFrame 中没有 'benchmark_nav' 列，可用列: {plots_df.columns.tolist()}")
+            
+            # 如果仍然没有基准数据，记录警告
+            if "benchmark_nav" not in plot_data:
+                logging.warning("⚠ 未找到基准净值数据")
+                logging.warning("  可能原因:")
+                logging.warning("    1. 基准代码配置可能无效")
+                logging.warning("    2. RQAlpha 未正确生成基准数据")
+                logging.warning("    3. 策略中未正确调用 plot('benchmark_nav', ...)")
+                logging.warning(f"  请检查配置的基准代码是否正确，以及回测日志中的基准配置信息")
+                # 输出 analyser 中可用的键，帮助调试
+                if isinstance(analyser, dict):
+                    logging.warning(f"  analyser 中可用的键: {list(analyser.keys())}")
+            else:
+                # 成功提取基准数据，输出详细信息
+                benchmark_nav = plot_data["benchmark_nav"]
+                logging.info(f"✓ 成功提取基准净值数据")
+                logging.info(f"  数据类型: {type(benchmark_nav)}")
+                if isinstance(benchmark_nav, pd.Series):
+                    logging.info(f"  数据长度: {len(benchmark_nav)}")
+                    logging.info(f"  索引类型: {type(benchmark_nav.index)}")
+                    logging.info(f"  前5个值: {benchmark_nav.head().tolist()}")
+                    logging.info(f"  后5个值: {benchmark_nav.tail().tolist()}")
+                    logging.info(f"  净值范围: {benchmark_nav.min():.4f} 至 {benchmark_nav.max():.4f}")
             
                     
         except Exception as e:
@@ -1003,17 +1111,58 @@ def generate_and_save_plot(result, output_dir: str):
         logging.warning("策略净值数据为空，无法绘制")
     
     # 绘制基准净值曲线
+    # 确定基准标签（包含基准代码）
+    benchmark_label = "基准净值"
+    if benchmark_code:
+        # 基准代码到名称的映射
+        benchmark_names = {
+            "000300.XSHG": "沪深300",
+            "000905.XSHG": "中证500",
+            "399005.XSHE": "中小板指",
+            "399101.XSHE": "中小综指",
+            "399006.XSHE": "创业板指",
+        }
+        benchmark_name = benchmark_names.get(benchmark_code, benchmark_code)
+        benchmark_label = f"基准净值 ({benchmark_name})"
+        logging.info(f"基准指数代码: {benchmark_code} ({benchmark_name})")
+    
     if benchmark_dates is not None and benchmark_values is not None and len(benchmark_dates) > 0 and len(benchmark_values) > 0:
         logging.info(f"绘制基准净值曲线: {len(benchmark_dates)} 个数据点")
-        plt.plot(benchmark_dates, benchmark_values, label="基准净值", linewidth=2, color="#ff7f0e", linestyle="--")
+        logging.info(f"  基准指数: {benchmark_code if benchmark_code else '未指定'}")
+        logging.info(f"  基准净值范围: {min(benchmark_values):.4f} 至 {max(benchmark_values):.4f}")
+        plt.plot(benchmark_dates, benchmark_values, label=benchmark_label, linewidth=2, color="#ff7f0e", linestyle="--")
     elif benchmark_values is not None and len(benchmark_values) > 0:
         logging.info(f"绘制基准净值曲线（无日期）: {len(benchmark_values)} 个数据点")
-        plt.plot(range(len(benchmark_values)), benchmark_values, label="基准净值", linewidth=2, color="#ff7f0e", linestyle="--")
+        logging.info(f"  基准指数: {benchmark_code if benchmark_code else '未指定'}")
+        logging.info(f"  基准净值范围: {min(benchmark_values):.4f} 至 {max(benchmark_values):.4f}")
+        plt.plot(range(len(benchmark_values)), benchmark_values, label=benchmark_label, linewidth=2, color="#ff7f0e", linestyle="--")
     else:
-        logging.warning("基准净值数据为空，无法绘制")
+        logging.warning("⚠ 基准净值数据为空，无法绘制")
+        logging.warning(f"  基准指数代码: {benchmark_code if benchmark_code else '未指定'}")
+        logging.warning(f"  benchmark_dates: {benchmark_dates}")
+        logging.warning(f"  benchmark_values: {benchmark_values}")
+        logging.warning(f"  plot_data 中的键: {list(plot_data.keys())}")
+        if "benchmark_nav" in plot_data:
+            logging.warning(f"  benchmark_nav 数据类型: {type(plot_data['benchmark_nav'])}")
+            if isinstance(plot_data["benchmark_nav"], pd.Series):
+                logging.warning(f"  benchmark_nav Series 长度: {len(plot_data['benchmark_nav'])}")
+                logging.warning(f"  benchmark_nav 前5个值: {plot_data['benchmark_nav'].head().tolist()}")
     
     # 设置图表标题和标签
-    plt.title("策略净值曲线对比", fontsize=16, fontweight="bold")
+    title = "策略净值曲线对比"
+    if benchmark_code:
+        benchmark_names = {
+            "000300.XSHG": "沪深300",
+            "000905.XSHG": "中证500",
+            "399005.XSHE": "中小板指",
+            "399101.XSHE": "中小综指",
+            "399006.XSHE": "创业板指",
+        }
+        benchmark_name = benchmark_names.get(benchmark_code, benchmark_code)
+        title = f"策略净值曲线对比 (基准: {benchmark_name})"
+        logging.info(f"图表标题: {title}")
+    
+    plt.title(title, fontsize=16, fontweight="bold")
     plt.xlabel("交易日", fontsize=12)
     plt.ylabel("净值", fontsize=12)
     plt.legend(loc="best", fontsize=10)
