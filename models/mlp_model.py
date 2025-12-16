@@ -256,6 +256,16 @@ class MLPRegressor:
     def predict(self, feat: pd.DataFrame) -> pd.Series:
         if self.model is None:
             raise RuntimeError("MLP 模型尚未训练")
+        
+        # 检查特征数量是否匹配（如果模型已加载，应该有 input_dim）
+        if self._input_dim is not None:
+            actual_dim = feat.shape[1]
+            if actual_dim != self._input_dim:
+                raise ValueError(
+                    f"MLP 模型特征数量不匹配：期望 {self._input_dim}，实际 {actual_dim}。"
+                    f"请确保预测时使用的特征与训练时一致。"
+                )
+        
         self.model.eval()
         with torch.no_grad():
             preds = self.model(torch.tensor(feat.values, dtype=torch.float32).to(self.device)).cpu().numpy().flatten()

@@ -107,9 +107,9 @@ def analyze_prediction_quality(prediction_file: str, config_file: str = "config/
             print(f"   为预测代码添加 SH/SZ 前缀...")
             def add_prefix(code):
                 code_str = str(code).zfill(6)  # 确保6位数字
-                if code_str.startswith(("600", "601", "603", "688")):
+                if code_str.startswith(("600", "601", "603", "688", "5")):
                     return f"SH{code_str}"
-                elif code_str.startswith(("000", "001", "002", "300")):
+                elif code_str.startswith(("000", "001", "002", "300", "159")):
                     return f"SZ{code_str}"
                 else:
                     return code_str

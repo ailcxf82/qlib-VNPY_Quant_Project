@@ -84,6 +84,10 @@ def convert_qlib_code_to_rqalpha(instrument) -> str:
     elif code_str.startswith("0") or code_str.startswith("3"):
         # 0、3开头的是深圳（SZ）
         return f"{code_str}.XSHE"
+    # elif code_str.startswith("1"):
+    #     return f"{code_str}.XSHG"
+    # elif code_str.startswith("5"):
+    #     return f"{code_str}.XSHE"
     else:
         # 未知格式，返回原样（可能会报错，但至少不会崩溃）
         logging.warning(f"无法识别股票代码格式: {code_str}，返回原值")
@@ -134,6 +138,8 @@ def run_rqalpha_backtest(
     prediction_path: str,
     industry_path: Optional[str] = None,
     strategy_path: Optional[str] = None,
+    *,
+    full_invested: bool = False,
 ):
     """
     执行 RQAlpha 回测。
@@ -279,6 +285,7 @@ def run_rqalpha_backtest(
         "max_stock_weight": risk_config.get("max_stock_weight", 0.05),
         "max_industry_weight": risk_config.get("max_industry_weight", 0.2),
         "top_k": risk_config.get("top_k", 50),
+        "full_invested": bool(full_invested),
     }
     if industry_map:
         strategy_params["industry_map"] = industry_map
@@ -1208,6 +1215,7 @@ if __name__ == "__main__":
     parser.add_argument("--prediction", type=str, required=True, help="预测信号文件路径")
     parser.add_argument("--industry", type=str, default=None, help="行业映射文件路径")
     parser.add_argument("--strategy", type=str, default=None, help="策略脚本路径（可选）")
+    parser.add_argument("--full-invested", action="store_true", help="满仓回测：忽略仓位/单股/行业限制，权重归一化为100%")
     
     args = parser.parse_args()
     
@@ -1221,5 +1229,6 @@ if __name__ == "__main__":
         args.prediction,
         args.industry,
         args.strategy,
+        full_invested=args.full_invested,
     )
 

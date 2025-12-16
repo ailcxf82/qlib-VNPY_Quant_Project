@@ -237,6 +237,17 @@ class QlibFeaturePipeline:
         feature_panel.columns = feats
         label_series = label_panel.iloc[:, 0].rename("label")
 
+        # 诊断：D.features 返回的原始日期范围（不受后续对齐/清理影响）
+        try:
+            if len(feature_panel) > 0 and isinstance(feature_panel.index, pd.MultiIndex) and "datetime" in feature_panel.index.names:
+                _dt = feature_panel.index.get_level_values("datetime")
+                logger.info("原始特征日期范围(D.features): %s 到 %s", _dt.min(), _dt.max())
+            if len(label_series) > 0 and isinstance(label_series.index, pd.MultiIndex) and "datetime" in label_series.index.names:
+                _dt = label_series.index.get_level_values("datetime")
+                logger.info("原始标签日期范围(D.features): %s 到 %s", _dt.min(), _dt.max())
+        except Exception as e:
+            logger.debug("打印原始日期范围失败(可忽略): %s", e)
+
         # 记录原始数据量
         logger.info("原始特征数据量: %d 行，%d 列", len(feature_panel), len(feature_panel.columns))
         logger.info("原始标签数据量: %d 行", len(label_series))
@@ -262,6 +273,13 @@ class QlibFeaturePipeline:
         # inner join 先对齐索引
         combined = feature_panel.join(label_series, how="inner")
         logger.info("对齐后数据量: %d 行", len(combined))
+        # 诊断：对齐后的日期范围
+        try:
+            if len(combined) > 0 and isinstance(combined.index, pd.MultiIndex) and "datetime" in combined.index.names:
+                _dt = combined.index.get_level_values("datetime")
+                logger.info("对齐后日期范围(join): %s 到 %s", _dt.min(), _dt.max())
+        except Exception as e:
+            logger.debug("打印对齐后日期范围失败(可忽略): %s", e)
         
         # 检查对齐后的缺失值
         if len(combined) > 0:
@@ -282,41 +300,59 @@ class QlibFeaturePipeline:
                 logger.warning("标签缺失: %d 行 (%.2f%%)，这可能是由于标签计算需要未来数据（Ref($close, -5)）", 
                              label_nan_count, label_nan_count / len(combined) * 100)
             
-            # 如果缺失值过多，使用更宽松的 dropna 策略
-            # 只删除标签为 NaN 的行，特征中的 NaN 可以后续填充
-            if combined_nan_pct > 50 or len(all_nan_cols) > 0:
-                logger.warning("缺失值比例过高 (%.2f%%) 或存在全 NaN 特征 (%d 个)，使用宽松的清理策略", 
-                             combined_nan_pct, len(all_nan_cols))
-                
+            # 缺失值清理策略：auto（默认，保持现有逻辑）/strict（全量dropna）/relaxed（只drop标签并填充特征）
+            mv_strategy = str(self.feature_cfg.get("missing_value_strategy", "auto")).strip().lower()
+            if mv_strategy not in {"auto", "strict", "relaxed"}:
+                logger.warning("未知 missing_value_strategy=%s，回退到 auto", mv_strategy)
+                mv_strategy = "auto"
+
+            def _relaxed_cleanup(df: pd.DataFrame) -> pd.DataFrame:
                 # 先删除全为 NaN 的列（这些特征不可用）
                 if all_nan_cols:
                     logger.info("删除 %d 个全为 NaN 的特征列", len(all_nan_cols))
-                    combined = combined.drop(columns=all_nan_cols)
-                
+                    df = df.drop(columns=all_nan_cols)
                 # 只删除标签为 NaN 的行
-                before_drop = len(combined)
-                combined = combined.dropna(subset=["label"])
-                logger.info("删除标签为 NaN 的行: %d -> %d", before_drop, len(combined))
-                
-                # 对于特征，使用前向填充和后向填充
-                feature_cols = [col for col in combined.columns if col != "label"]
-                if len(feature_cols) > 0:
-                    # 按股票分组填充（避免跨股票填充）
-                    if isinstance(combined.index, pd.MultiIndex) and "instrument" in combined.index.names:
-                        combined[feature_cols] = combined.groupby(level="instrument")[feature_cols].ffill().bfill()
+                before_drop = len(df)
+                df = df.dropna(subset=["label"])
+                logger.info("删除标签为 NaN 的行: %d -> %d", before_drop, len(df))
+                # 对于特征，使用前向/后向填充，最后用 0 补齐
+                feature_cols = [col for col in df.columns if col != "label"]
+                if feature_cols:
+                    if isinstance(df.index, pd.MultiIndex) and "instrument" in df.index.names:
+                        df[feature_cols] = df.groupby(level="instrument")[feature_cols].ffill().bfill()
                     else:
-                        combined[feature_cols] = combined[feature_cols].ffill().bfill()
-                    
-                    # 如果还有 NaN，用 0 填充（避免全部删除）
-                    remaining_nan = combined[feature_cols].isnull().sum().sum()
+                        df[feature_cols] = df[feature_cols].ffill().bfill()
+                    remaining_nan = df[feature_cols].isnull().sum().sum()
                     if remaining_nan > 0:
                         logger.warning("填充后仍有 %d 个 NaN，使用 0 填充", remaining_nan)
-                        combined[feature_cols] = combined[feature_cols].fillna(0)
-            else:
-                # 缺失值不多，使用严格的 dropna
+                        df[feature_cols] = df[feature_cols].fillna(0)
+                return df
+
+            if mv_strategy == "relaxed":
+                logger.warning("missing_value_strategy=relaxed：只删除 label NaN，并对特征做填充（可能引入更多填充值）")
+                combined = _relaxed_cleanup(combined)
+            elif mv_strategy == "strict":
                 before_drop = len(combined)
                 combined = combined.dropna()
-                logger.info("使用严格清理策略: %d -> %d 行", before_drop, len(combined))
+                logger.info("missing_value_strategy=strict：使用严格清理策略: %d -> %d 行", before_drop, len(combined))
+            else:
+                # auto：保持现有启发式逻辑
+                if combined_nan_pct > 50 or len(all_nan_cols) > 0:
+                    logger.warning("缺失值比例过高 (%.2f%%) 或存在全 NaN 特征 (%d 个)，使用宽松的清理策略", 
+                                 combined_nan_pct, len(all_nan_cols))
+                    combined = _relaxed_cleanup(combined)
+                else:
+                    before_drop = len(combined)
+                    combined = combined.dropna()
+                    logger.info("使用严格清理策略: %d -> %d 行", before_drop, len(combined))
+
+        # 诊断：清理后的日期范围（这是最终会影响 get_slice/预测文件起点的范围）
+        try:
+            if len(combined) > 0 and isinstance(combined.index, pd.MultiIndex) and "datetime" in combined.index.names:
+                _dt = combined.index.get_level_values("datetime")
+                logger.info("清理后日期范围(clean): %s 到 %s", _dt.min(), _dt.max())
+        except Exception as e:
+            logger.debug("打印清理后日期范围失败(可忽略): %s", e)
         
         if len(combined) == 0:
             logger.error("=" * 80)
@@ -455,6 +491,27 @@ class QlibFeaturePipeline:
         }
 
     @staticmethod
+    def _parse_instrument_pools(inst_conf: Union[str, Dict[str, Any], Tuple[str, ...], list[str]]) -> List[str]:
+        """
+        解析股票池配置，支持多个股票池（用逗号分隔）。
+        
+        返回股票池名称列表，如 ["csi101", "csi300"]
+        """
+        if isinstance(inst_conf, str):
+            # 支持逗号分隔的多个股票池，如 "csi101, csi300"
+            pools = [p.strip() for p in inst_conf.split(",") if p.strip()]
+            return pools
+        elif isinstance(inst_conf, (list, tuple)):
+            # 列表形式，直接返回
+            return [str(p).strip() for p in inst_conf if str(p).strip()]
+        elif isinstance(inst_conf, dict):
+            # 字典配置，提取市场名称
+            market_name = inst_conf.get("market", "unknown")
+            return [str(market_name)]
+        else:
+            raise ValueError(f"不支持的股票池配置类型: {type(inst_conf)}")
+
+    @staticmethod
     def _parse_instruments(inst_conf: Union[str, Dict[str, Any], Tuple[str, ...], list[str]]) -> list[str]:
         """
         将配置的股票池转换为股票代码列表。
@@ -468,12 +525,14 @@ class QlibFeaturePipeline:
         """
         if isinstance(inst_conf, str):
             # 如果是市场别名（如 "csi300"），先获取配置字典，再转换为股票列表
+            # 注意：如果包含逗号，只取第一个股票池（用于单个股票池的数据提取）
+            pool_name = inst_conf.split(",")[0].strip()
             try:
-                market_config = D.instruments(inst_conf)
+                market_config = D.instruments(pool_name)
                 # 使用 D.list_instruments() 获取股票代码列表
                 stock_list = D.list_instruments(instruments=market_config, as_list=True)
                 if isinstance(stock_list, list) and len(stock_list) > 0:
-                    logger.info("从市场 '%s' 获取到 %d 只股票", inst_conf, len(stock_list))
+                    logger.info("从市场 '%s' 获取到 %d 只股票", pool_name, len(stock_list))
                     # 确保返回的是纯数字股票代码（去掉 .SH 或 .SZ 后缀，如果存在）
                     cleaned_list = []
                     for code in stock_list:
@@ -483,11 +542,11 @@ class QlibFeaturePipeline:
                         cleaned_list.append(str(code))
                     return cleaned_list
                 else:
-                    raise ValueError(f"无法从市场 '{inst_conf}' 获取股票列表，返回结果为空")
+                    raise ValueError(f"无法从市场 '{pool_name}' 获取股票列表，返回结果为空")
             except Exception as e:
-                logger.error("无法从市场 '%s' 获取股票列表: %s", inst_conf, e)
+                logger.error("无法从市场 '%s' 获取股票列表: %s", pool_name, e)
                 logger.error("请检查：1) qlib 数据源是否包含该市场定义；2) 市场名称是否正确")
-                raise ValueError(f"无法解析股票池配置 '{inst_conf}': {e}")
+                raise ValueError(f"无法解析股票池配置 '{pool_name}': {e}")
         
         if isinstance(inst_conf, dict):
             # 如果是字典配置，也转换为股票列表

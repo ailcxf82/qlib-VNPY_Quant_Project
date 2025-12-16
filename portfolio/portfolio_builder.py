@@ -30,12 +30,23 @@ class PortfolioBuilder:
         scores: pd.Series,
         industry_map: Optional[pd.Series] = None,
         top_k: int = 100,
+        *,
+        full_invested: bool = False,
     ) -> pd.Series:
         """根据预测得分生成权重。"""
         # 1. 选取 top_k，使用线性衰减权重
         filtered = scores.dropna().sort_values(ascending=False).head(top_k)
+        if filtered.empty:
+            return pd.Series(dtype=float)
         ranks = filtered.rank(ascending=False, method="first")
         weights = (top_k - ranks + 1) / top_k
+        
+        # 满仓模式：不考虑仓位、单股、行业约束，直接归一化为 100% 仓位
+        if full_invested:
+            weights = weights / weights.sum()
+            logger.info("满仓模式：组合共选股 %d，实际仓位 %.2f%%", len(weights), weights.sum() * 100)
+            return weights
+
         # 2. 控制整体仓位
         weights = weights / weights.sum() * self.max_position
         # 3. 单股权重裁剪

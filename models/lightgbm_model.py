@@ -102,7 +102,47 @@ class LightGBMModelWrapper:
     def predict(self, feat: pd.DataFrame) -> Tuple[pd.Series, np.ndarray]:
         if self.booster is None:
             raise RuntimeError("模型尚未训练")
-        values = feat.values
+        
+        # 确保特征列与训练时一致
+        if self.feature_names is None:
+            # 如果没有保存特征名，尝试从 booster 获取
+            try:
+                self.feature_names = self.booster.feature_name()
+            except:
+                logger.warning("无法获取模型的特征名，使用输入特征列（可能导致特征不匹配）")
+                self.feature_names = list(feat.columns)
+        
+        # 对齐特征列：确保顺序和数量与训练时一致
+        aligned_feat = pd.DataFrame(index=feat.index, columns=self.feature_names, dtype=float)
+        
+        # 填充存在的特征
+        for col in self.feature_names:
+            if col in feat.columns:
+                aligned_feat[col] = feat[col]
+            else:
+                # 缺失的特征用0填充（已归一化，0表示均值）
+                aligned_feat[col] = 0.0
+                logger.debug("特征 '%s' 在预测数据中不存在，使用0填充", col)
+        
+        # 检查是否有未使用的特征
+        unused_cols = set(feat.columns) - set(self.feature_names)
+        if unused_cols:
+            logger.warning("预测数据中有 %d 个特征未在训练时使用，将被忽略: %s", 
+                         len(unused_cols), list(unused_cols)[:10])
+        
+        # 确保列顺序与训练时一致
+        aligned_feat = aligned_feat[self.feature_names]
+        
+        # 检查特征数量
+        expected_num_features = len(self.feature_names)
+        actual_num_features = len(aligned_feat.columns)
+        if expected_num_features != actual_num_features:
+            raise ValueError(
+                f"特征数量不匹配：期望 {expected_num_features}，实际 {actual_num_features}。"
+                f"期望特征: {self.feature_names[:10]}..."
+            )
+        
+        values = aligned_feat.values
         preds = self.booster.predict(values)
         # pred_leaf=True 返回每棵树的叶子编号，用作二级模型输入
         leaf_index = self.booster.predict(values, pred_leaf=True)

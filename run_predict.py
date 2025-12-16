@@ -25,13 +25,13 @@ def parse_args():
         "--start",
         type=str,
         default=os.environ.get("RUN_PRED_START", "2023-10-01"),
-        help="预测起始日期，默认 2018-01-01，可通过环境变量 RUN_PRED_START 覆盖",
+        help="预测起始日期，默认 2023-10-01，可通过环境变量 RUN_PRED_START 覆盖",
     )
     parser.add_argument(
         "--end",
         type=str,
         default=os.environ.get("RUN_PRED_END", "2025-10-01"),
-        help="预测结束日期，默认 2018-01-31，可通过环境变量 RUN_PRED_END 覆盖",
+        help="预测结束日期，默认 2025-10-01，可通过环境变量 RUN_PRED_END 覆盖",
     )
     parser.add_argument(
         "--tag",
@@ -63,15 +63,18 @@ def _load_ic_histories(log_path: str) -> Dict[str, pd.Series]:
 def _infer_latest_from_models(model_dir: str) -> str:
     """当日志缺失时，尝试在模型目录中推断最新 tag。"""
     if not os.path.exists(model_dir):
-        raise FileNotFoundError("模型目录不存在，请先运行训练或指定 --tag")
+        raise FileNotFoundError(f"模型目录不存在: {model_dir}，请先运行训练或指定 --tag")
     candidates = []
-    for name in os.listdir(model_dir):
-        if not name.endswith("_lgb.txt"):
-            continue
-        tag = name.replace("_lgb.txt", "")
-        candidates.append(tag)
+    try:
+        for name in os.listdir(model_dir):
+            if not name.endswith("_lgb.txt"):
+                continue
+            tag = name.replace("_lgb.txt", "")
+            candidates.append(tag)
+    except OSError as e:
+        raise FileNotFoundError(f"无法读取模型目录 {model_dir}: {e}")
     if not candidates:
-        raise FileNotFoundError("模型目录中未找到 *_lgb.txt 文件，无法推断 tag")
+        raise FileNotFoundError(f"模型目录 {model_dir} 中未找到 *_lgb.txt 文件，无法推断 tag。请先运行训练或指定 --tag")
     return sorted(candidates)[-1]
 
 
@@ -89,18 +92,121 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     cfg = load_yaml_config(args.config)
-    log_path = os.path.join(cfg["paths"]["log_dir"], "training_metrics.csv")
-    tag = _latest_tag(log_path, cfg["paths"]["model_dir"]) if args.tag == "auto" else args.tag
-    ic_histories = _load_ic_histories(log_path)
-
-    pipeline = QlibFeaturePipeline(cfg["data_config"])
-    pipeline.build()
-    features, _ = pipeline.get_slice(args.start, args.end)
-    predictor = PredictorEngine(args.config)
-    predictor.load_models(tag)
-    final_pred, preds, weights = predictor.predict(features, ic_histories)
-    predictor.save_predictions(final_pred, preds, f"{tag}_{args.start}_{args.end}")
-    logging.info("IC 动态权重: %s", weights)
+    data_cfg = load_yaml_config(cfg["data_config"])
+    
+    # 解析股票池列表
+    instruments_config = data_cfg["data"]["instruments"]
+    instrument_pools = QlibFeaturePipeline._parse_instrument_pools(instruments_config)
+    
+    logger = logging.getLogger(__name__)
+    logger.info("检测到 %d 个股票池: %s", len(instrument_pools), instrument_pools)
+    logger.info("预测请求日期范围: %s 到 %s（RUN_PRED_START/RUN_PRED_END 或命令行参数）", args.start, args.end)
+    
+    # 在循环开始前，保存原始的基础路径（避免在循环中被修改）
+    import copy
+    original_paths = copy.deepcopy(cfg["paths"])
+    base_model_dir = original_paths["model_dir"]
+    base_log_dir = original_paths["log_dir"]
+    
+    # 确保基础路径是绝对路径或相对于项目根目录的路径
+    if not os.path.isabs(base_model_dir):
+        base_model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), base_model_dir)
+    if not os.path.isabs(base_log_dir):
+        base_log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), base_log_dir)
+    
+    # 为每个股票池分别预测
+    for pool_name in instrument_pools:
+        logger.info("=" * 80)
+        logger.info("开始预测股票池: %s", pool_name)
+        logger.info("=" * 80)
+        
+        # 创建临时配置文件
+        import tempfile
+        import yaml
+        
+        # 创建临时数据配置文件
+        temp_data_config = data_cfg.copy()
+        temp_data_config["data"]["instruments"] = pool_name
+        
+        temp_data_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
+        yaml.dump(temp_data_config, temp_data_file, allow_unicode=True, default_flow_style=False)
+        temp_data_file.close()
+        
+        # 创建临时pipeline配置文件
+        temp_pipeline_config = copy.deepcopy(cfg)
+        temp_pipeline_config["data_config"] = temp_data_file.name
+        
+        # 使用循环开始前保存的原始基础路径，拼接股票池特定的路径
+        temp_pipeline_config["paths"]["model_dir"] = os.path.join(base_model_dir, f"{pool_name}_models")
+        temp_pipeline_config["paths"]["log_dir"] = os.path.join(base_log_dir, f"{pool_name}_logs")
+        # 预测文件夹保持统一，但文件名会包含股票池信息
+        
+        temp_pipeline_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
+        yaml.dump(temp_pipeline_config, temp_pipeline_file, allow_unicode=True, default_flow_style=False)
+        temp_pipeline_file.close()
+        
+        try:
+            # 加载对应的日志和模型
+            log_path = os.path.join(temp_pipeline_config["paths"]["log_dir"], "training_metrics.csv")
+            model_dir = temp_pipeline_config["paths"]["model_dir"]
+            
+            # 检查模型目录是否存在
+            if not os.path.exists(model_dir):
+                logger.warning("股票池 %s 的模型目录不存在: %s，跳过该股票池", pool_name, model_dir)
+                logger.warning("请先运行训练为股票池 %s 生成模型，或检查配置是否正确", pool_name)
+                continue
+            
+            try:
+                tag = _latest_tag(log_path, model_dir) if args.tag == "auto" else args.tag
+            except FileNotFoundError as e:
+                logger.error("股票池 %s 无法找到模型或日志: %s", pool_name, e)
+                logger.error("请先运行训练为股票池 %s 生成模型", pool_name)
+                continue
+            
+            ic_histories = _load_ic_histories(log_path)
+            
+            # 构建特征
+            pipeline = QlibFeaturePipeline(temp_data_file.name)
+            pipeline.build()
+            features, _ = pipeline.get_slice(args.start, args.end)
+            # 诊断：实际返回的特征日期范围（决定预测文件起点）
+            try:
+                if len(features) > 0 and isinstance(features.index, pd.MultiIndex) and "datetime" in features.index.names:
+                    dt = features.index.get_level_values("datetime")
+                    logger.info("股票池 %s 实际用于预测的特征日期范围: %s 到 %s（样本=%d）",
+                                pool_name, dt.min(), dt.max(), len(features))
+                    if pd.Timestamp(args.start) < dt.min():
+                        logger.warning("股票池 %s：请求 start=%s 早于可用特征起点=%s，因此预测文件会从 %s 开始",
+                                       pool_name, args.start, dt.min(), dt.min())
+                else:
+                    logger.warning("股票池 %s：get_slice 返回空特征（可能该范围无数据或清理后为空）", pool_name)
+            except Exception as e:
+                logger.debug("打印预测特征日期范围失败(可忽略): %s", e)
+            
+            # 预测
+            predictor = PredictorEngine(temp_pipeline_file.name)
+            try:
+                predictor.load_models(tag)
+            except FileNotFoundError as e:
+                logger.error("股票池 %s 无法加载模型 (tag=%s): %s", pool_name, tag, e)
+                logger.error("请检查模型文件是否存在: %s", model_dir)
+                continue
+            
+            final_pred, preds, weights = predictor.predict(features, ic_histories)
+            
+            # 保存预测结果，文件名包含股票池信息
+            pred_tag = f"{pool_name}_{tag}_{args.start}_{args.end}"
+            predictor.save_predictions(final_pred, preds, pred_tag)
+            logger.info("股票池 %s 预测完成，IC 动态权重: %s", pool_name, weights)
+        except Exception as e:
+            logger.error("股票池 %s 预测失败: %s", pool_name, e, exc_info=True)
+            continue
+        finally:
+            # 清理临时文件
+            if os.path.exists(temp_data_file.name):
+                os.unlink(temp_data_file.name)
+            if os.path.exists(temp_pipeline_file.name):
+                os.unlink(temp_pipeline_file.name)
 
 
 if __name__ == "__main__":

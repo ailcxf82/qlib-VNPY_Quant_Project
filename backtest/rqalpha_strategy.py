@@ -254,6 +254,7 @@ def init(context):
             "max_stock_weight": _sp_get("max_stock_weight", 0.05),
             "max_industry_weight": _sp_get("max_industry_weight", 0.2),
             "top_k": _sp_get("top_k", 50),
+            "full_invested": bool(_sp_get("full_invested", False)),
         }
         context.industry_map = _sp_get("industry_map")
     else:
@@ -263,6 +264,7 @@ def init(context):
             "max_stock_weight": getattr(context.config, "max_stock_weight", 0.05),
             "max_industry_weight": getattr(context.config, "max_industry_weight", 0.2),
             "top_k": getattr(context.config, "top_k", 50),
+            "full_invested": bool(getattr(context.config, "full_invested", False)),
         }
         context.industry_map = getattr(context.config, "industry_map", None)
     
@@ -477,6 +479,13 @@ def build_portfolio(
     for i, (code, signal) in enumerate(filtered.items()):
         weight = (top_k - ranks[i] + 1) / top_k
         weights[code] = weight
+
+    # 满仓模式：忽略仓位/单股/行业约束，权重归一化为 100%
+    if config.get("full_invested", False):
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            return {code: w / total_weight for code, w in weights.items()}
+        return {}
     
     # 3. 归一化并应用仓位限制
     total_weight = sum(weights.values())

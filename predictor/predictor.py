@@ -75,27 +75,39 @@ class PredictorEngine:
         # 修复：使用训练时的归一化参数对特征进行归一化
         if self._norm_mean is not None and self._norm_std is not None:
             logger.info("使用训练时的归一化参数对特征进行归一化")
-            # 确保特征列顺序与归一化参数一致
-            feature_cols = [col for col in features.columns if col in self._norm_mean.index]
-            missing_cols = set(features.columns) - set(feature_cols)
-            if missing_cols:
-                logger.warning("部分特征在归一化参数中不存在，将用0填充: %s", list(missing_cols)[:10])
             
-            # 对存在的特征进行归一化
-            if feature_cols:
-                features_norm = (features[feature_cols] - self._norm_mean[feature_cols]) / self._norm_std[feature_cols]
-                features_norm = features_norm.clip(-5, 5)
-            else:
-                logger.error("没有匹配的特征列，无法进行归一化")
-                features_norm = features.copy()
+            # 获取训练时的所有特征列（从归一化参数中）
+            expected_cols = list(self._norm_mean.index)
+            actual_cols = list(features.columns)
             
-            # 填充缺失的特征（用0填充，因为已经归一化）
-            for col in missing_cols:
-                features_norm[col] = 0.0
+            # 创建对齐后的特征 DataFrame，确保列顺序和数量与训练时一致
+            aligned_features = pd.DataFrame(index=features.index, columns=expected_cols, dtype=float)
             
-            # 确保列顺序与原始特征一致
-            features_norm = features_norm[features.columns]
+            # 填充存在的特征
+            for col in expected_cols:
+                if col in features.columns:
+                    aligned_features[col] = features[col]
+                else:
+                    # 缺失的特征用0填充（归一化后0表示均值）
+                    aligned_features[col] = 0.0
+                    logger.debug("特征 '%s' 在预测数据中不存在，使用0填充", col)
+            
+            # 检查是否有未使用的特征
+            unused_cols = set(actual_cols) - set(expected_cols)
+            if unused_cols:
+                logger.warning("预测数据中有 %d 个特征未在训练时使用，将被忽略: %s", 
+                             len(unused_cols), list(unused_cols)[:10])
+            
+            # 对特征进行归一化
+            features_norm = (aligned_features - self._norm_mean) / self._norm_std
+            features_norm = features_norm.clip(-5, 5)
+            
+            # 确保列顺序与训练时一致
+            features_norm = features_norm[expected_cols]
             features = features_norm
+            
+            logger.info("特征对齐完成：期望 %d 个特征，实际输入 %d 个特征，对齐后 %d 个特征", 
+                       len(expected_cols), len(actual_cols), len(features.columns))
         else:
             logger.warning("未加载归一化参数，使用原始特征（可能导致预测不准确）")
         

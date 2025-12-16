@@ -3,10 +3,16 @@ qlib:
   region: "cn"
 
 data:
-  instruments: "csi101"
-  start_time: "2022-08-01"
-  end_time: "2025-10-31"
+  instruments: "csi300,csi101"
+  start_time: "2022-07-01"
+  end_time: "2024-8-31"
   freq: "day"
+  
+  # 缺失值清理策略：
+  # - auto（默认）：根据缺失值比例自动选择 strict/relaxed
+  # - strict：对齐后直接 dropna（任何特征缺失都会丢行，可能导致回测起点被推迟）
+  # - relaxed：只丢弃 label 为 NaN 的行，特征缺失用 ffill/bfill/0 填充（更容易保留早期样本）
+  missing_value_strategy: "auto"
   
   # ========== 158 因子配置 ==========
   # 是否使用 qlib 提供的 158 因子（Alpha158）
