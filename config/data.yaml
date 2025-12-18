@@ -4,8 +4,8 @@ qlib:
 
 data:
   instruments: "csi300,csi101"
-  start_time: "2022-07-01"
-  end_time: "2024-8-31"
+  start_time: "2021-11-01"
+  end_time: "2025-11-30"
   freq: "day"
   
   # 缺失值清理策略：
@@ -104,10 +104,10 @@ data:
     # - "$small_net_inflow"      # 小单净流入
     
     # 换手率与流动性
-    # - "$turnover"              # 换手率
+    - "$turnover_rate"              # 换手率
     # - "$turnover_ratio"        # 换手率（如果字段名不同）
-    # - "Mean($turnover, 5)"     # 5日平均换手率
-    # - "$turnover/Mean($turnover, 20) - 1"  # 换手率相对20日均值的偏离度
+    - "Mean($turnover_rate, 5)"     # 5日平均换手率
+    - "$turnover_rate/Mean($turnover_rate, 20) - 1"  # 换手率相对20日均值的偏离度
     
     # 涨跌停情况
     # - "$is_limit_up"           # 是否涨停（0/1）
@@ -116,15 +116,15 @@ data:
     # - "$limit_down_count"      # 连续跌停天数
     
     # 融资融券（如果可用）
-    - "$margin_balance"        # 融资余额
-    - "$short_balance"         # 融券余额
+    # - "$margin_balance"        # 融资余额
+    # - "$short_balance"         # 融券余额
     # - "$margin_ratio"          # 融资融券比例  暂无
-    - "Ref($margin_balance, 1)/$margin_balance - 1"  # 融资余额变化率
+    # - "Ref($margin_balance, 1)/$margin_balance - 1"  # 融资余额变化率
     
     # 北向资金（沪深港通，如果可用）
-    - "$north_net_inflow"      # 北向资金净流入
-    - "$south_net_inflow"      # 南向资金净流入（港股）
-    - "Mean($north_net_inflow, 5)"  # 5日北向资金平均净流入
+    # - "$north_net_inflow"      # 北向资金净流入
+    # - "$south_net_inflow"      # 南向资金净流入（港股）
+    # - "Mean($north_net_inflow, 5)"  # 5日北向资金平均净流入
     
     # 情绪指标衍生特征
     - "($close - $open) / $open"  # 日内涨跌幅（情绪强度）

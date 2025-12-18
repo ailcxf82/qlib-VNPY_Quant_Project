@@ -176,6 +176,77 @@ class PredictorEngine:
         return final_pred, preds, weights
 
     def save_predictions(self, final_pred: pd.Series, preds: Dict[str, pd.Series], tag: str):
+        def _shift_to_next_trading_day(df: pd.DataFrame) -> pd.DataFrame:
+            """
+            将信号的 datetime 整体后移到下一个交易日，用于避免“用当日收盘价/最高价等信息做当日交易”的隐性未来信息。
+            规则：
+            - 优先使用 qlib 交易日历（若可用）
+            - 否则退化为工作日（Mon-Fri）
+            - 为避免预测范围越界：默认丢弃 shift 后日期 > 原始最大日期的样本（相当于丢弃最后一个交易日信号）
+            """
+            if not isinstance(df.index, pd.MultiIndex) or "datetime" not in df.index.names:
+                return df
+
+            orig_max_dt = pd.Timestamp(df.index.get_level_values("datetime").max()).normalize()
+            orig_min_dt = pd.Timestamp(df.index.get_level_values("datetime").min()).normalize()
+            orig_rows = len(df)
+
+            dt_vals = pd.to_datetime(df.index.get_level_values("datetime")).normalize()
+            unique_dts = pd.Index(dt_vals.unique()).sort_values()
+            if unique_dts.empty:
+                return df
+
+            # 构造交易日历
+            cal = None
+            start = pd.Timestamp(unique_dts.min()).normalize()
+            end = pd.Timestamp(unique_dts.max()).normalize() + pd.Timedelta(days=30)
+            try:
+                from qlib.data import D  # type: ignore
+                # 兼容不同版本 qlib 的接口，尽量取到交易日序列
+                cal = D.calendar(start_time=start, end_time=end, freq="day")
+                cal = pd.to_datetime(list(cal)).normalize()
+            except Exception:
+                cal = pd.bdate_range(start=start, end=end).normalize()
+
+            cal = pd.Index(cal).sort_values().unique()
+            if cal.empty:
+                return df
+
+            # 映射：dt -> 下一个交易日（严格右侧）
+            import bisect
+            cal_list = list(cal)
+            mapping = {}
+            for d in unique_dts:
+                i = bisect.bisect_right(cal_list, pd.Timestamp(d))
+                if i >= len(cal_list):
+                    # 兜底：直接加一天（后面会被 orig_max_dt 过滤掉）
+                    mapping[pd.Timestamp(d)] = pd.Timestamp(d) + pd.Timedelta(days=1)
+                else:
+                    mapping[pd.Timestamp(d)] = pd.Timestamp(cal_list[i])
+
+            # 生成新索引
+            df2 = df.copy()
+            dt_new = dt_vals.map(lambda x: mapping.get(pd.Timestamp(x), pd.Timestamp(x)))
+            df2 = df2.reset_index()
+            df2["datetime"] = pd.to_datetime(dt_new).normalize()
+            df2 = df2.set_index(df.index.names)
+            df2 = df2.sort_index()
+
+            # 丢弃越界（避免 end+1 导致回测日期超出）
+            df2 = df2.loc[df2.index.get_level_values("datetime") <= orig_max_dt]
+            new_min_dt = pd.Timestamp(df2.index.get_level_values("datetime").min()).normalize() if len(df2) > 0 else None
+            new_max_dt = pd.Timestamp(df2.index.get_level_values("datetime").max()).normalize() if len(df2) > 0 else None
+            dropped = orig_rows - len(df2)
+            logger.info(
+                "预测日期对齐(next trading day): %s~%s -> %s~%s，丢弃越界样本=%d",
+                orig_min_dt,
+                orig_max_dt,
+                new_min_dt,
+                new_max_dt,
+                dropped,
+            )
+            return df2
+
         os.makedirs(self.paths["prediction_dir"], exist_ok=True)
         out_path = os.path.join(self.paths["prediction_dir"], f"pred_{tag}.csv")
         df = pd.DataFrame({"final": final_pred})
@@ -188,6 +259,12 @@ class PredictorEngine:
             except KeyError:
                 # 如果 MultiIndex 未命名，则按照位置强制调换
                 df = df.reorder_levels([1, 0]).sort_index()
+
+        # 关键：信号日期对齐到下一个交易日（可通过环境变量关闭）
+        shift_flag = str(os.environ.get("SHIFT_PRED_TO_NEXT_DAY", "1")).strip().lower()
+        if shift_flag not in {"0", "false", "no"}:
+            df = _shift_to_next_trading_day(df)
+
         # MultiIndex 直接写入 csv，便于后续回测按日期/证券读取
         df.to_csv(out_path, index_label=["datetime", "instrument"])
         logger.info("预测结果已保存: %s", out_path)

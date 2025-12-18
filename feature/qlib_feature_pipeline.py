@@ -318,16 +318,19 @@ class QlibFeaturePipeline:
                 # 对于特征，使用前向/后向填充，最后用 0 补齐
                 feature_cols = [col for col in df.columns if col != "label"]
                 if feature_cols:
+                    # 关键：只能使用 ffill（前向填充），禁止 bfill（后向填充）。
+                    # bfill 会把“未来值”填到过去，属于典型未来数据泄漏，会显著抬高回测表现。
                     if isinstance(df.index, pd.MultiIndex) and "instrument" in df.index.names:
-                        df[feature_cols] = df.groupby(level="instrument")[feature_cols].ffill().bfill()
+                        df[feature_cols] = df.groupby(level="instrument")[feature_cols].ffill()
                     else:
-                        df[feature_cols] = df[feature_cols].ffill().bfill()
+                        df[feature_cols] = df[feature_cols].ffill()
                     remaining_nan = df[feature_cols].isnull().sum().sum()
                     if remaining_nan > 0:
                         logger.warning("填充后仍有 %d 个 NaN，使用 0 填充", remaining_nan)
                         df[feature_cols] = df[feature_cols].fillna(0)
                 return df
 
+            chosen = mv_strategy
             if mv_strategy == "relaxed":
                 logger.warning("missing_value_strategy=relaxed：只删除 label NaN，并对特征做填充（可能引入更多填充值）")
                 combined = _relaxed_cleanup(combined)
@@ -341,10 +344,15 @@ class QlibFeaturePipeline:
                     logger.warning("缺失值比例过高 (%.2f%%) 或存在全 NaN 特征 (%d 个)，使用宽松的清理策略", 
                                  combined_nan_pct, len(all_nan_cols))
                     combined = _relaxed_cleanup(combined)
+                    chosen = "relaxed"
                 else:
                     before_drop = len(combined)
                     combined = combined.dropna()
                     logger.info("使用严格清理策略: %d -> %d 行", before_drop, len(combined))
+                    chosen = "strict"
+
+            if mv_strategy == "auto":
+                logger.info("missing_value_strategy=auto：本次根据缺失情况选择 %s（已禁止 bfill，避免未来数据泄漏）", chosen)
 
         # 诊断：清理后的日期范围（这是最终会影响 get_slice/预测文件起点的范围）
         try:

@@ -54,8 +54,11 @@ class RollingTrainer:
             match = re.search(r'Ref\(\$close,\s*-(\d+)\)', label_expr)
             if match:
                 self.label_future_days = int(match.group(1))
-                logger.info("标签需要未来 %d 天数据来计算，验证集结束日期将自动提前 %d 天", 
-                           self.label_future_days, self.label_future_days)
+                logger.info(
+                    "标签需要未来 %d 天数据来计算，训练/验证切片的结束日期将自动提前 %d 天（避免跨窗口使用未来价格形成标签）",
+                    self.label_future_days,
+                    self.label_future_days,
+                )
 
     def _generate_windows(self) -> Iterable[Window]:
         rolling = self.cfg["rolling"]
@@ -110,18 +113,31 @@ class RollingTrainer:
         # 转换为 Timestamp 以确保正确比较
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
-        
-        # 如果是验证集，且标签需要未来数据，需要提前结束日期
-        if is_validation and self.label_future_days > 0:
-            # 标签需要未来N天数据，所以验证集结束日期需要提前N天
+
+        # 标签是未来收益（如 Ref($close, -20)/$close - 1）。
+        # 为避免“训练集的标签使用了验证期的价格/验证集标签使用了测试期的价格”，
+        # 训练/验证切片都需要将结束日期提前 N 天，形成 gap。
+        orig_end_ts = end_ts
+        if self.label_future_days > 0:
             end_ts = end_ts - pd.Timedelta(days=self.label_future_days)
             if end_ts < start_ts:
-                # 如果提前后结束日期早于开始日期，返回空数据
-                logger.warning("验证集 [%s, %s] 需要未来 %d 天数据，调整后结束日期 %s 早于开始日期，返回空集",
-                             start, end, self.label_future_days, end_ts.strftime("%Y-%m-%d"))
+                seg = "验证集" if is_validation else "训练集"
+                logger.warning(
+                    "%s [%s, %s] 需要未来 %d 天数据，调整后结束日期 %s 早于开始日期，返回空集",
+                    seg,
+                    start,
+                    end,
+                    self.label_future_days,
+                    end_ts.strftime("%Y-%m-%d"),
+                )
                 return pd.DataFrame(), pd.Series(dtype=float)
-            logger.debug("验证集结束日期从 %s 调整为 %s（标签需要未来 %d 天数据）",
-                        end, end_ts.strftime("%Y-%m-%d"), self.label_future_days)
+            logger.debug(
+                "%s结束日期从 %s 调整为 %s（标签需要未来 %d 天数据）",
+                "验证集" if is_validation else "训练集",
+                orig_end_ts.strftime("%Y-%m-%d"),
+                end_ts.strftime("%Y-%m-%d"),
+                self.label_future_days,
+            )
         
         datetime_level = idx.get_level_values("datetime")
         mask = (datetime_level >= start_ts) & (datetime_level <= end_ts)
@@ -137,7 +153,8 @@ class RollingTrainer:
         
         logger.debug(
             "切片 [%s, %s]: 特征样本 %d，标签样本 %d（过滤NaN后）",
-            start, end_ts.strftime("%Y-%m-%d") if is_validation and self.label_future_days > 0 else end, 
+            start,
+            end_ts.strftime("%Y-%m-%d") if self.label_future_days > 0 else end,
             len(feat), len(lbl)
         )
         
@@ -175,6 +192,15 @@ class RollingTrainer:
                        idx, window.train_start, window.train_end, window.valid_start, window.valid_end)
             train_feat, train_lbl = self._slice(features, labels, window.train_start, window.train_end, is_validation=False)
             valid_feat, valid_lbl = self._slice(features, labels, window.valid_start, window.valid_end, is_validation=True)
+            # 审计日志：显示切片后实际日期范围（已包含 label_future_days 的 gap 调整）
+            if not train_feat.empty:
+                tmin = train_feat.index.get_level_values("datetime").min()
+                tmax = train_feat.index.get_level_values("datetime").max()
+                logger.info("窗口 %d 实际训练集日期范围: %s ~ %s（样本=%d）", idx, tmin, tmax, len(train_feat))
+            if valid_feat is not None and not valid_feat.empty:
+                vmin = valid_feat.index.get_level_values("datetime").min()
+                vmax = valid_feat.index.get_level_values("datetime").max()
+                logger.info("窗口 %d 实际验证集日期范围: %s ~ %s（样本=%d）", idx, vmin, vmax, len(valid_feat))
             
             if len(train_feat) < self.cfg["rolling"].get("min_samples", 1000):
                 logger.warning("训练样本不足 (%d < %d)，跳过该窗口", 

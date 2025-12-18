@@ -19,3 +19,5 @@
     "511090.XSHG",  # 30年国债ETF
     # 国内
     "513130.XSHG",  # 恒生科技
+
+    python run_backtest.py --use-rqalpha --full-invested
