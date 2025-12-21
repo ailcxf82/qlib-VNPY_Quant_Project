@@ -175,6 +175,24 @@ def run_rqalpha_backtest(
         # 在输出目录中添加股票池名称
         new_output_dir = os.path.join(original_output_dir, pool_name)
         rqalpha_cfg.setdefault("output", {})["output_dir"] = new_output_dir
+
+        # 根据股票池自动选择基准指数（用于收益/绘图更准确）
+        # 优先读取 config/rqalpha_config.yaml 中 base.benchmark300 / base.benchmark101
+        base_cfg = rqalpha_cfg.setdefault("base", {})
+        cfg_benchmark300 = base_cfg.get("benchmark300")
+        cfg_benchmark101 = base_cfg.get("benchmark101")
+        fallback_map = {
+            "csi300": "000300.XSHG",
+            "csi101": "399005.XSHE",
+        }
+        if pool_name == "csi300":
+            benchmark = cfg_benchmark300 or fallback_map["csi300"]
+            base_cfg["benchmark"] = benchmark
+            logging.info("股票池 %s 基准指数设置为: %s", pool_name, benchmark)
+        elif pool_name == "csi101":
+            benchmark = cfg_benchmark101 or fallback_map["csi101"]
+            base_cfg["benchmark"] = benchmark
+            logging.info("股票池 %s 基准指数设置为: %s", pool_name, benchmark)
         
         # 创建临时配置文件
         temp_config_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')

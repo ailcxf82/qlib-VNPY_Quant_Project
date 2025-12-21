@@ -182,7 +182,8 @@ class PredictorEngine:
             规则：
             - 优先使用 qlib 交易日历（若可用）
             - 否则退化为工作日（Mon-Fri）
-            - 为避免预测范围越界：默认丢弃 shift 后日期 > 原始最大日期的样本（相当于丢弃最后一个交易日信号）
+            - 默认允许 **最多延伸 1 个交易日**（即允许输出“下一交易日”的买入建议），
+              超过该范围的样本会被丢弃。
             """
             if not isinstance(df.index, pd.MultiIndex) or "datetime" not in df.index.names:
                 return df
@@ -232,8 +233,12 @@ class PredictorEngine:
             df2 = df2.set_index(df.index.names)
             df2 = df2.sort_index()
 
-            # 丢弃越界（避免 end+1 导致回测日期超出）
-            df2 = df2.loc[df2.index.get_level_values("datetime") <= orig_max_dt]
+            # 丢弃越界（仅允许最多延伸 1 个交易日：即 orig_max_dt 的下一交易日）
+            # 这能满足“用最新数据给下一交易日建议”，同时避免输出无限外推的未来日期。
+            max_allowed_dt = mapping.get(pd.Timestamp(orig_max_dt))
+            if max_allowed_dt is None:
+                max_allowed_dt = orig_max_dt
+            df2 = df2.loc[df2.index.get_level_values("datetime") <= pd.Timestamp(max_allowed_dt).normalize()]
             new_min_dt = pd.Timestamp(df2.index.get_level_values("datetime").min()).normalize() if len(df2) > 0 else None
             new_max_dt = pd.Timestamp(df2.index.get_level_values("datetime").max()).normalize() if len(df2) > 0 else None
             dropped = orig_rows - len(df2)
@@ -262,8 +267,11 @@ class PredictorEngine:
 
         # 关键：信号日期对齐到下一个交易日（可通过环境变量关闭）
         shift_flag = str(os.environ.get("SHIFT_PRED_TO_NEXT_DAY", "1")).strip().lower()
+        # 写入元信息，供回测端判断是否需要反向对齐（避免回测侧出现隐性 T+2）
+        df["_meta_shifted_next_day"] = 0
         if shift_flag not in {"0", "false", "no"}:
             df = _shift_to_next_trading_day(df)
+            df["_meta_shifted_next_day"] = 1
 
         # MultiIndex 直接写入 csv，便于后续回测按日期/证券读取
         df.to_csv(out_path, index_label=["datetime", "instrument"])

@@ -4,8 +4,8 @@ qlib:
 
 data:
   instruments: "csi300,csi101"
-  start_time: "2021-11-01"
-  end_time: "2025-11-30"
+  start_time: "2023-11-01"
+  end_time: "2025-12-31"
   freq: "day"
   
   # 缺失值清理策略：
@@ -97,11 +97,11 @@ data:
     
     # ========== 情绪面特征 ==========
     # 资金流向（如果 qlib 数据源包含）
-    # - "$net_inflow"            # 净流入资金
-    # - "$main_net_inflow"       # 主力净流入
-    # - "$large_net_inflow"      # 大单净流入
-    # - "$medium_net_inflow"    # 中单净流入
-    # - "$small_net_inflow"      # 小单净流入
+    - "$net_mf_amount"            # 净流入资金
+    - "$buy_elg_amount"       # 主力净流入
+    - "$buy_lg_amount"      # 大单净流入
+    - "$buy_md_amount"    # 中单净流入
+    - "$buy_sm_amount"      # 小单净流入
     
     # 换手率与流动性
     - "$turnover_rate"              # 换手率
@@ -116,10 +116,10 @@ data:
     # - "$limit_down_count"      # 连续跌停天数
     
     # 融资融券（如果可用）
-    # - "$margin_balance"        # 融资余额
-    # - "$short_balance"         # 融券余额
+    - "$margin_balance"        # 融资余额
+    - "$short_balance"         # 融券余额
     # - "$margin_ratio"          # 融资融券比例  暂无
-    # - "Ref($margin_balance, 1)/$margin_balance - 1"  # 融资余额变化率
+    - "Ref($margin_balance, 1)/$margin_balance - 1"  # 融资余额变化率
     
     # 北向资金（沪深港通，如果可用）
     # - "$north_net_inflow"      # 北向资金净流入

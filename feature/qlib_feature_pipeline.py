@@ -199,8 +199,16 @@ class QlibFeaturePipeline:
         
         return filtered_fields
 
-    def build(self):
-        """执行特征提取。"""
+    def build(self, *, include_label: bool = True):
+        """
+        执行特征提取。
+        
+        参数:
+            include_label:
+                - True（默认）：构建训练用数据（特征 + 标签），并进行 label 对齐与清理。
+                - False：构建预测用数据（仅特征）。**不会**因为 label 缺失而截断尾部日期，
+                  用于支持在训练样本截止后继续生成未来日期的预测信号。
+        """
         feats = self.feature_cfg.get("features", []).copy()  # 使用 copy 避免修改原配置
         
         # 检查是否启用 158 因子
@@ -224,10 +232,12 @@ class QlibFeaturePipeline:
         
         
         
-        # 提取特征和标签
+        # 提取特征（以及可选的标签）
         try:
             feature_panel = D.features(instruments=instruments, fields=feats, start_time=start, end_time=end, freq=freq)
-            label_panel = D.features(instruments=instruments, fields=[label_expr], start_time=start, end_time=end, freq=freq)
+            label_panel = None
+            if include_label:
+                label_panel = D.features(instruments=instruments, fields=[label_expr], start_time=start, end_time=end, freq=freq)
         except Exception as e:
             logger.error("特征提取失败: %s", e)
             logger.error("提示：可能是 158 因子中的某些表达式在当前数据源中不可用")
@@ -235,14 +245,16 @@ class QlibFeaturePipeline:
             raise
         
         feature_panel.columns = feats
-        label_series = label_panel.iloc[:, 0].rename("label")
+        label_series = None
+        if include_label and label_panel is not None:
+            label_series = label_panel.iloc[:, 0].rename("label")
 
         # 诊断：D.features 返回的原始日期范围（不受后续对齐/清理影响）
         try:
             if len(feature_panel) > 0 and isinstance(feature_panel.index, pd.MultiIndex) and "datetime" in feature_panel.index.names:
                 _dt = feature_panel.index.get_level_values("datetime")
                 logger.info("原始特征日期范围(D.features): %s 到 %s", _dt.min(), _dt.max())
-            if len(label_series) > 0 and isinstance(label_series.index, pd.MultiIndex) and "datetime" in label_series.index.names:
+            if include_label and label_series is not None and len(label_series) > 0 and isinstance(label_series.index, pd.MultiIndex) and "datetime" in label_series.index.names:
                 _dt = label_series.index.get_level_values("datetime")
                 logger.info("原始标签日期范围(D.features): %s 到 %s", _dt.min(), _dt.max())
         except Exception as e:
@@ -250,15 +262,19 @@ class QlibFeaturePipeline:
 
         # 记录原始数据量
         logger.info("原始特征数据量: %d 行，%d 列", len(feature_panel), len(feature_panel.columns))
-        logger.info("原始标签数据量: %d 行", len(label_series))
+        if include_label and label_series is not None:
+            logger.info("原始标签数据量: %d 行", len(label_series))
         
-        # 检查缺失值情况
+        # 检查缺失值情况（label 可选）
         feature_nan_count = feature_panel.isnull().sum().sum()
         feature_nan_pct = feature_nan_count / (len(feature_panel) * len(feature_panel.columns)) * 100 if len(feature_panel) > 0 else 0
-        label_nan_count = label_series.isnull().sum()
-        label_nan_pct = label_nan_count / len(label_series) * 100 if len(label_series) > 0 else 0
-        logger.info("特征缺失值: %d (%.2f%%)，标签缺失值: %d (%.2f%%)", 
-                   feature_nan_count, feature_nan_pct, label_nan_count, label_nan_pct)
+        if include_label and label_series is not None:
+            label_nan_count = label_series.isnull().sum()
+            label_nan_pct = label_nan_count / len(label_series) * 100 if len(label_series) > 0 else 0
+            logger.info("特征缺失值: %d (%.2f%%)，标签缺失值: %d (%.2f%%)", 
+                       feature_nan_count, feature_nan_pct, label_nan_count, label_nan_pct)
+        else:
+            logger.info("特征缺失值: %d (%.2f%%)（预测模式：未构建标签）", feature_nan_count, feature_nan_pct)
         
         # 找出缺失值最多的特征（用于诊断）
         if len(feature_panel) > 0 and feature_nan_count > 0:
@@ -267,10 +283,33 @@ class QlibFeaturePipeline:
             logger.info("缺失值最多的前10个特征: %s", top_nan_cols.to_dict())
 
         feature_panel = self._normalize_index(feature_panel)
-        label_series = self._normalize_index(label_series)
+        if include_label and label_series is not None:
+            label_series = self._normalize_index(label_series)
 
-        # 基础对齐
-        # inner join 先对齐索引
+        if not include_label:
+            # 预测模式：不与 label 对齐，也不因为 label 缺失截断日期
+            combined = feature_panel.copy()
+            logger.info("预测模式：仅构建特征，不进行 label 对齐与清理。样本量: %d 行", len(combined))
+            # 对于预测，建议始终使用“宽松填充”（ffill + 0）以避免因为个别字段缺失而丢掉整行
+            if len(combined) > 0:
+                before = len(combined)
+                # 按股票分组 ffill，避免跨股票污染
+                if isinstance(combined.index, pd.MultiIndex) and "instrument" in combined.index.names:
+                    combined = combined.groupby(level="instrument").ffill()
+                else:
+                    combined = combined.ffill()
+                remaining_nan = combined.isnull().sum().sum()
+                if remaining_nan > 0:
+                    logger.warning("预测模式：ffill 后仍有 %d 个 NaN，使用 0 填充", remaining_nan)
+                    combined = combined.fillna(0)
+                logger.info("预测模式：特征缺失填充完成: %d -> %d 行", before, len(combined))
+
+            self.features_df = combined
+            # 预测模式下没有标签
+            self.label_series = pd.Series(dtype=float)
+            return
+
+        # 训练模式：基础对齐（inner join 先对齐索引）
         combined = feature_panel.join(label_series, how="inner")
         logger.info("对齐后数据量: %d 行", len(combined))
         # 诊断：对齐后的日期范围
@@ -456,7 +495,7 @@ class QlibFeaturePipeline:
 
     def get_slice(self, start: str, end: str) -> Tuple[pd.DataFrame, pd.Series]:
         """按时间切片返回特征。"""
-        if self.features_df is None or self.label_series is None:
+        if self.features_df is None:
             raise RuntimeError("尚未构建特征，请先调用 build()")
         idx = self.features_df.index
         datetime_level = idx.get_level_values("datetime")
@@ -474,7 +513,10 @@ class QlibFeaturePipeline:
         
         mask = (datetime_level >= start) & (datetime_level <= end)
         feat = self.features_df.loc[mask]
-        lbl = self.label_series.loc[mask]
+        if self.label_series is None or len(self.label_series) == 0:
+            lbl = pd.Series(dtype=float)
+        else:
+            lbl = self.label_series.loc[mask]
         
         if len(feat) == 0:
             logger.error(f"在日期范围 [{start}, {end}] 内没有找到数据")
@@ -487,9 +529,9 @@ class QlibFeaturePipeline:
         return feat, lbl
 
     def get_all(self) -> Tuple[pd.DataFrame, pd.Series]:
-        if self.features_df is None or self.label_series is None:
+        if self.features_df is None:
             raise RuntimeError("尚未构建特征，请先调用 build()")
-        return self.features_df, self.label_series
+        return self.features_df, self.label_series if self.label_series is not None else pd.Series(dtype=float)
 
     def stats(self) -> Dict[str, pd.Series]:
         """返回标准化统计量，供落地保存/加载。"""

@@ -159,6 +159,36 @@ def init(context):
         "csi300": load_prediction_csv(s2.pred_path),
     }
 
+    # 诊断：预测信号日期范围 vs 回测配置日期范围（帮助排查“全程无交易导致净值水平线”）
+    try:
+        pb_dates = []
+        for pb in context.pred_books.values():
+            pb_dates.extend(list(pb.by_date.keys()))
+        pb_dates = sorted(set([pd.Timestamp(d).normalize() for d in pb_dates]))
+        pred_min = pb_dates[0] if pb_dates else None
+        pred_max = pb_dates[-1] if pb_dates else None
+        base_cfg = getattr(context.config, "base", None)
+        cfg_start = getattr(base_cfg, "start_date", None) if base_cfg is not None else None
+        cfg_end = getattr(base_cfg, "end_date", None) if base_cfg is not None else None
+        logger.info("MSA 预测信号日期范围: %s ~ %s", pred_min, pred_max)
+        logger.info("MSA 回测配置日期范围: %s ~ %s", cfg_start, cfg_end)
+        if pred_min is not None and pred_max is not None and cfg_start and cfg_end:
+            try:
+                cs = pd.Timestamp(cfg_start).normalize()
+                ce = pd.Timestamp(cfg_end).normalize()
+                if pred_max < cs or pred_min > ce:
+                    logger.warning(
+                        "⚠ 预测信号日期与回测区间完全不重叠，策略将全程无交易（净值可能是一条水平线）。pred=%s~%s, cfg=%s~%s",
+                        pred_min,
+                        pred_max,
+                        cs,
+                        ce,
+                    )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Tushare 可选
     context.ts_client = TushareClient.try_create(cache_dir=str(cv.get("tushare_cache_dir", "data/tushare_cache")))
 

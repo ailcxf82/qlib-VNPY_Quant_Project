@@ -10,6 +10,7 @@ from typing import Optional, Dict
 
 import pandas as pd
 import numpy as np
+import pathlib
 
 try:
     from rqalpha import run_file
@@ -104,7 +105,57 @@ def prepare_prediction_file(prediction_path: str, output_path: str):
     """
     # 读取 CSV 时指定 instrument 列为字符串类型，保留前导零
     df = pd.read_csv(prediction_path, dtype={"instrument": str})
-    df["datetime"] = pd.to_datetime(df["datetime"])
+    df["datetime"] = pd.to_datetime(df["datetime"]).dt.normalize()
+
+    # 如果预测文件的 datetime 已经被“对齐到下一交易日”（trade_date），则回测侧需要反向还原到 signal_date，
+    # 否则在 RQAlpha 的 next_bar（T+1 成交）撮合下会变成隐性 T+2。
+    # 约定：predictor.save_predictions 会写入 _meta_shifted_next_day=1
+    shifted_flag = False
+    if "_meta_shifted_next_day" in df.columns:
+        try:
+            shifted_flag = int(pd.to_numeric(df["_meta_shifted_next_day"], errors="coerce").fillna(0).max()) == 1
+        except Exception:
+            shifted_flag = False
+
+    if shifted_flag:
+        import bisect
+        # 构造交易日历（尽量用 qlib，否则退化到工作日）
+        min_dt = pd.Timestamp(df["datetime"].min()).normalize()
+        max_dt = pd.Timestamp(df["datetime"].max()).normalize()
+        start = min_dt - pd.Timedelta(days=60)
+        end = max_dt + pd.Timedelta(days=5)
+        cal = None
+        try:
+            from qlib.data import D  # type: ignore
+            cal = D.calendar(start_time=start, end_time=end, freq="day")
+            cal = pd.to_datetime(list(cal)).normalize()
+        except Exception:
+            cal = pd.bdate_range(start=start, end=end).normalize()
+        cal = pd.Index(cal).sort_values().unique()
+
+        cal_list = list(cal)
+        unique_dts = pd.Index(df["datetime"].unique()).sort_values()
+        mapping_prev = {}
+        for d in unique_dts:
+            # prev trading day（严格左侧）
+            i = bisect.bisect_left(cal_list, pd.Timestamp(d))
+            if i <= 0:
+                mapping_prev[pd.Timestamp(d)] = None
+            else:
+                mapping_prev[pd.Timestamp(d)] = pd.Timestamp(cal_list[i - 1])
+
+        prev_dt = df["datetime"].map(lambda x: mapping_prev.get(pd.Timestamp(x), None))
+        before_rows = len(df)
+        df = df.assign(datetime=pd.to_datetime(prev_dt))
+        # 丢弃没有前一交易日的样本（通常只会影响最早一天）
+        df = df.dropna(subset=["datetime"])
+        after_rows = len(df)
+        logging.info(
+            "检测到预测文件已 shift 到 trade_date（_meta_shifted_next_day=1），回测侧反向还原到 signal_date：%s~%s，丢弃=%d",
+            df["datetime"].min(),
+            df["datetime"].max(),
+            before_rows - after_rows,
+        )
     
     # 转换代码格式
     df["rq_code"] = df["instrument"].apply(convert_qlib_code_to_rqalpha)
@@ -185,6 +236,55 @@ def run_rqalpha_backtest(
     # 输出目录使用项目相对路径时，转换为绝对路径
     output_dir = _resolve_path(output_config.get("output_dir", "data/backtest/rqalpha"), prefer_project_root=True)
     os.makedirs(output_dir, exist_ok=True)
+
+    # 诊断：检查 RQAlpha 数据 bundle 是否覆盖到配置 end_date（很多“只跑到某天”的根因在这里）
+    try:
+        # 推断 bundle 路径：优先使用配置；否则使用默认 ~/.rqalpha/bundle
+        bundle_path = base_config.get("data_bundle_path") if isinstance(base_config, dict) else None
+        if not bundle_path:
+            bundle_path = str(pathlib.Path.home() / ".rqalpha" / "bundle")
+        bundle_path = str(bundle_path).replace("/", os.sep)
+        if os.path.exists(bundle_path):
+            # 读取 stocks.h5 的样本尾部 datetime，估算行情数据覆盖的最后一天
+            import h5py
+
+            stocks_h5 = os.path.join(bundle_path, "stocks.h5")
+            if os.path.exists(stocks_h5):
+                with h5py.File(stocks_h5, "r") as f:
+                    keys = list(f.keys())
+                    # 采样若干只股票估算（全量扫描会非常慢）
+                    sample = keys[:50] if len(keys) >= 50 else keys
+                    last_dt = None
+                    for k in sample:
+                        ds = f[k]
+                        if ds.shape[0] <= 0:
+                            continue
+                        # datetime 字段为 int64: yyyymmddHHMMSS
+                        v = ds[-1]["datetime"] if "datetime" in ds.dtype.names else None
+                        if v is None:
+                            continue
+                        v = int(v)
+                        if last_dt is None or v > last_dt:
+                            last_dt = v
+                    if last_dt is not None:
+                        last_day = pd.to_datetime(str(last_dt)[:8], format="%Y%m%d")
+                        logging.info("检测到 RQAlpha bundle=%s（stocks.h5 采样估算最后行情日=%s）", bundle_path, last_day.date())
+                        # 若配置 end_date 晚于 bundle 覆盖，强提示用户
+                        cfg_end = base_config.get("end_date") if isinstance(base_config, dict) else None
+                        if cfg_end:
+                            try:
+                                cfg_end_ts = pd.Timestamp(cfg_end).normalize()
+                                if cfg_end_ts > last_day.normalize():
+                                    logging.warning(
+                                        "⚠ 配置 end_date=%s 晚于 RQAlpha bundle 行情数据最后覆盖日=%s，回测会被自动截断到 %s。",
+                                        cfg_end_ts.date(),
+                                        last_day.date(),
+                                        last_day.date(),
+                                    )
+                            except Exception:
+                                pass
+    except Exception:
+        pass
     
     # 保存原始预测文件路径到输出目录，供后续分析使用（移到output_dir定义之后）
     import shutil
@@ -201,8 +301,19 @@ def run_rqalpha_backtest(
     industry_map = load_industry_map(industry_path)
     
     # 使用预测文件的日期范围（如果配置中未指定）
-    start_date = base_config.get("start_date") or pred_start
-    end_date = base_config.get("end_date") or pred_end
+    cfg_start = base_config.get("start_date")
+    cfg_end = base_config.get("end_date")
+    start_date = cfg_start or pred_start
+    end_date = cfg_end or pred_end
+    logging.info(
+        "回测周期选择：config(base)=%s~%s，pred(file)=%s~%s => use=%s~%s",
+        cfg_start,
+        cfg_end,
+        pred_start,
+        pred_end,
+        start_date,
+        end_date,
+    )
     
     # 读取基准配置并输出日志
     benchmark_code = base_config.get("benchmark", "000300.XSHG")
@@ -327,6 +438,31 @@ def run_rqalpha_backtest(
     except Exception as e:
         logging.error(f"RQAlpha 回测执行失败: {e}")
         raise
+
+    # 诊断：检查“实际跑到的周期”是否被数据源截断（常见原因：本地 bundle 数据只到某个日期）
+    try:
+        actual_start = None
+        actual_end = None
+        if isinstance(result, dict) and "sys_analyser" in result:
+            analyser = result["sys_analyser"]
+            if isinstance(analyser, dict) and "summary" in analyser and isinstance(analyser["summary"], dict):
+                actual_start = analyser["summary"].get("start_date")
+                actual_end = analyser["summary"].get("end_date")
+        if actual_start and actual_end:
+            cfg_start = config_dict.get("base", {}).get("start_date")
+            cfg_end = config_dict.get("base", {}).get("end_date")
+            if cfg_start and cfg_end:
+                if str(actual_start) != str(cfg_start) or str(actual_end) != str(cfg_end):
+                    logging.warning(
+                        "⚠ 实际回测周期与配置不一致：cfg=%s~%s, actual=%s~%s。"
+                        "若 actual_end 显著早于 cfg_end，通常是数据源/bundle 缺少后续交易日数据导致被截断。",
+                        cfg_start,
+                        cfg_end,
+                        actual_start,
+                        actual_end,
+                    )
+    except Exception:
+        pass
     
     # 保存回测结果
     # 提取回测结果
@@ -712,8 +848,9 @@ def extract_and_save_detailed_results(result, output_dir: str, prediction_file_p
                 try:
                     with open(report_path, "rb") as f:
                         content = f.read()
+                    # 可选依赖：chardet。没有就退化到 utf-8 ignore。
                     try:
-                        import chardet
+                        import chardet  # type: ignore
                         detected = chardet.detect(content)
                         enc = detected.get("encoding", "utf-8")
                         logging.info(f"chardet 检测 report.json 编码: {enc}")

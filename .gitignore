@@ -64,3 +64,9 @@ backtest/__pycache__/rqalpha_backtest.cpython-311.pyc
 feature/__pycache__/qlib_feature_pipeline.cpython-311.pyc
 feature/__pycache__/qlib_feature_pipeline.cpython-313.pyc
 predictor/__pycache__/predictor.cpython-311.pyc
+backtest/__pycache__/__init__.cpython-313.pyc
+backtest/msa/__pycache__/__init__.cpython-313.pyc
+backtest/msa/__pycache__/code_utils.cpython-313.pyc
+backtest/msa/__pycache__/filters.cpython-313.pyc
+backtest/msa/__pycache__/prediction_loader.cpython-313.pyc
+backtest/msa/__pycache__/tushare_client.cpython-313.pyc

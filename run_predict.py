@@ -24,13 +24,13 @@ def parse_args():
     parser.add_argument(
         "--start",
         type=str,
-        default=os.environ.get("RUN_PRED_START", "2023-11-01"),
+        default=os.environ.get("RUN_PRED_START", "2025-11-01"),
         help="预测起始日期，默认 2023-10-01，可通过环境变量 RUN_PRED_START 覆盖",
     )
     parser.add_argument(
         "--end",
         type=str,
-        default=os.environ.get("RUN_PRED_END", "2025-11-01"),
+        default=os.environ.get("RUN_PRED_END", "2025-12-22"),
         help="预测结束日期，默认 2025-10-01，可通过环境变量 RUN_PRED_END 覆盖",
     )
     parser.add_argument(
@@ -167,7 +167,8 @@ def main():
             
             # 构建特征
             pipeline = QlibFeaturePipeline(temp_data_file.name)
-            pipeline.build()
+            # 预测模式：只构建特征，不依赖 label，避免因为 label 的未来窗口/缺失导致预测日期被截断
+            pipeline.build(include_label=False)
             features, _ = pipeline.get_slice(args.start, args.end)
             # 诊断：实际返回的特征日期范围（决定预测文件起点）
             try:

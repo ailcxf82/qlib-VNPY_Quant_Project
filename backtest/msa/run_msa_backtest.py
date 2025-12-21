@@ -92,6 +92,16 @@ def main():
     cfg.setdefault("extra", {}).setdefault("context_vars", {})
     cv = cfg["extra"]["context_vars"]
 
+    # 明确打印/校验回测周期：必须以 rqalpha_config.yaml 的 base.start_date/base.end_date 为准
+    base_cfg = cfg.get("base", {}) if isinstance(cfg, dict) else {}
+    start_date = (base_cfg.get("start_date") or "").strip() if isinstance(base_cfg, dict) else ""
+    end_date = (base_cfg.get("end_date") or "").strip() if isinstance(base_cfg, dict) else ""
+    if not start_date or not end_date:
+        raise ValueError(
+            "MSA 回测必须在 rqalpha_config.yaml 的 base.start_date/base.end_date 中显式设置回测周期（例如 2025-10-01~2025-12-18）"
+        )
+    logging.info("MSA 回测周期（来自 %s）: %s ~ %s", args.rqalpha_config, start_date, end_date)
+
     cv["pred_csi101"] = pred_csi101
     cv["pred_csi300"] = pred_csi300
     cv["alloc_strategy1"] = args.alloc1
