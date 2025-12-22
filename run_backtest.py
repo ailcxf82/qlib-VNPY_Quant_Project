@@ -117,6 +117,11 @@ def _find_latest_prediction(prediction_dir: str, pool_name: str = None) -> str:
     """
     import glob
     if pool_name:
+        # 新规则：优先固定文件名 pred_{pool}.csv（不携带日期）
+        fixed = os.path.join(prediction_dir, f"pred_{pool_name}.csv")
+        if os.path.isfile(fixed):
+            logging.info("自动选择固定预测文件: %s", fixed)
+            return fixed
         # 查找包含股票池名称的预测文件
         pattern = os.path.join(prediction_dir, f"*{pool_name}*pred*.csv")
         files = glob.glob(pattern)
@@ -248,8 +253,16 @@ def main():
         logger.info("使用指定的预测文件: %s", args.prediction)
         # 尝试从预测文件名中提取股票池名称
         import re
-        pool_name_match = re.search(r'([a-zA-Z0-9]+)_(?:pred|rqalpha_pred)', os.path.basename(args.prediction))
-        pool_name = pool_name_match.group(1) if pool_name_match else None
+        base = os.path.basename(args.prediction)
+        # 支持：pred_csi101.csv / pred_csi101_xxx.csv / rqalpha_pred_csi101.csv / rqalpha_pred_csi101_xxx.csv
+        pool_name = None
+        m = re.search(r"^(?:rqalpha_)?pred_([a-zA-Z0-9]+)(?:_.*)?\.csv$", base)
+        if m:
+            pool_name = m.group(1)
+        else:
+            # 兼容更松散的命名：xxx_{pool}_pred_yyy.csv 等
+            m2 = re.search(r"([a-zA-Z0-9]+)_(?:pred|rqalpha_pred)", base)
+            pool_name = m2.group(1) if m2 else None
         
         args.use_rqalpha = True
         if args.use_rqalpha:

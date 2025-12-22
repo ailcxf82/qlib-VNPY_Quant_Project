@@ -196,8 +196,9 @@ def main():
             final_pred, preds, weights = predictor.predict(features, ic_histories)
             
             # 保存预测结果，文件名包含股票池信息
-            pred_tag = f"{pool_name}_{tag}_{args.start}_{args.end}"
-            predictor.save_predictions(final_pred, preds, pred_tag)
+            # 新规则：预测文件名固定为 pred_{pool}.csv（不携带日期），便于传输/覆盖更新更稳定
+            # 例如：data/predictions/pred_csi101.csv
+            predictor.save_predictions(final_pred, preds, pool_name)
             logger.info("股票池 %s 预测完成，IC 动态权重: %s", pool_name, weights)
         except Exception as e:
             logger.error("股票池 %s 预测失败: %s", pool_name, e, exc_info=True)

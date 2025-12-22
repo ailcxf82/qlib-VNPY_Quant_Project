@@ -84,11 +84,17 @@ def _reverse_shift_to_signal_date_if_needed(df: pd.DataFrame) -> pd.DataFrame:
     return df2
 
 
-def load_prediction_csv(path: str, *, score_col: str = "final") -> PredictionBook:
+def load_prediction_csv(path: str, *, score_col: str = "final", dates_are: str = "auto") -> PredictionBook:
     """
     支持两种格式：
     1) datetime, instrument, final
     2) datetime, rq_code, final
+
+    参数:
+        dates_are:
+            - "auto": 若检测到 _meta_shifted_next_day=1，则将 datetime 从 trade_date 反向还原为 signal_date（默认，避免回测 T+2）
+            - "signal_date": 强制将 datetime 视为 signal_date（若检测到 shift 标记仍会反向还原）
+            - "trade_date": 强制将 datetime 视为 trade_date（不做反向还原）
     """
     df = pd.read_csv(path, dtype={"instrument": str, "rq_code": str})
     if "datetime" not in df.columns:
@@ -97,8 +103,14 @@ def load_prediction_csv(path: str, *, score_col: str = "final") -> PredictionBoo
         raise ValueError(f"预测文件缺少 {score_col} 列: {path}")
 
     df["datetime"] = pd.to_datetime(df["datetime"]).dt.normalize()
-    # 若预测文件 datetime 为 trade_date（已 shift），这里反向还原为 signal_date，避免回测侧变成隐性 T+2
-    df = _reverse_shift_to_signal_date_if_needed(df)
+    # 若预测文件 datetime 为 trade_date（已 shift），可反向还原为 signal_date，避免回测侧变成隐性 T+2
+    dates_are = str(dates_are).strip().lower() if dates_are is not None else "auto"
+    if dates_are in {"auto", "signal_date"}:
+        df = _reverse_shift_to_signal_date_if_needed(df)
+    elif dates_are in {"trade_date"}:
+        pass
+    else:
+        raise ValueError(f"dates_are 参数非法: {dates_are}，应为 auto/signal_date/trade_date")
 
     if "rq_code" in df.columns and df["rq_code"].notna().any():
         df["rq_code"] = df["rq_code"].astype(str).str.strip()

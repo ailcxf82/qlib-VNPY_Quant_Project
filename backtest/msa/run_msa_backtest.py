@@ -45,6 +45,10 @@ def _resolve_path(p: Optional[str]) -> Optional[str]:
 
 def _find_latest_prediction(pool: str) -> str:
     pred_dir = os.path.join(_PROJECT_ROOT, "data", "predictions")
+    # 新规则：优先使用固定文件名 pred_{pool}.csv
+    fixed = os.path.join(pred_dir, f"pred_{pool}.csv")
+    if os.path.isfile(fixed):
+        return fixed
     patterns = [
         os.path.join(pred_dir, f"pred_{pool}_*.csv"),
         os.path.join(pred_dir, f"*{pool}*pred*.csv"),
@@ -54,7 +58,10 @@ def _find_latest_prediction(pool: str) -> str:
         files.extend(glob.glob(pat))
     files = [f for f in files if os.path.isfile(f)]
     if not files:
-        raise FileNotFoundError(f"未找到 {pool} 的预测文件，请在 data/predictions 下生成 pred_{pool}_*.csv 或手动传入 --pred-{pool}")
+        raise FileNotFoundError(
+            f"未找到 {pool} 的预测文件，请在 data/predictions 下生成 pred_{pool}.csv（推荐）"
+            f"或 pred_{pool}_*.csv，或手动传入 --pred-{pool}"
+        )
     return max(files, key=os.path.getmtime)
 
 
@@ -70,6 +77,18 @@ def parse_args():
     p.add_argument("--alloc2", type=float, default=0.5, help="策略2（csi300）资金占比")
     # risk
     p.add_argument("--drawdown-stop", type=float, default=0.08, help="个股回撤止损阈值（如0.08=8%）")
+    # selection (Scheme C)
+    p.add_argument(
+        "--msa-selection-mode",
+        type=str,
+        default="scheme_c",
+        choices=["equal_weight", "scheme_c"],
+        help="MSA 子策略选股/权重模式：equal_weight（旧）/ scheme_c（TopM->低波动->风险预算）",
+    )
+    p.add_argument("--msa-preselect-topm", type=int, default=50, help="方案C：先按信号取 TopM 候选")
+    p.add_argument("--msa-vol-window", type=int, default=20, help="方案C：波动率窗口（天），默认20")
+    p.add_argument("--msa-vol-max", type=float, default=None, help="方案C：年化波动率上限（可选，超过剔除）")
+    p.add_argument("--msa-vol-eps", type=float, default=0.05, help="方案C：风险预算 eps，w∝1/(eps+vol)")
     return p.parse_args()
 
 
@@ -107,6 +126,13 @@ def main():
     cv["alloc_strategy1"] = args.alloc1
     cv["alloc_strategy2"] = args.alloc2
     cv["drawdown_stop"] = args.drawdown_stop
+    # scheme C params (global; strategy will map to s1/s2 defaults unless overridden)
+    cv["msa_selection_mode"] = args.msa_selection_mode
+    cv["msa_preselect_topm"] = args.msa_preselect_topm
+    cv["msa_vol_window"] = args.msa_vol_window
+    if args.msa_vol_max is not None:
+        cv["msa_vol_max"] = args.msa_vol_max
+    cv["msa_vol_eps"] = args.msa_vol_eps
 
     # 将修改后的配置写入临时文件，交给现有 runner 执行
     import tempfile

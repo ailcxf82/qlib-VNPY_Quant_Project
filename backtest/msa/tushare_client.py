@@ -245,4 +245,30 @@ class TushareClient:
         self._save_cache_df(cache_name, df)
         return df
 
+    def index_member_all(
+        self,
+        *,
+        is_new: Optional[str] = None,
+        fields: Optional[str] = None,
+        **kwargs: Any,
+    ) -> pd.DataFrame:
+        """
+        Tushare Pro: index_member_all
+
+        说明：
+        - 该接口常用于拿到“股票 -> 行业/指数归属”的映射信息（字段以实际返回为准）。
+        - 由于该接口可能返回全量数据，默认强制本地缓存，避免重复请求。
+
+        参数：
+        - is_new/fields 以及其他参数透传给 tushare pro 的 index_member_all。
+        """
+        params = self._drop_none({"is_new": is_new, "fields": fields, **(kwargs or {})})
+        cache_name = self._cache_name("index_member_all", params)
+        cached = self._load_cache_df(cache_name)
+        if cached is not None and not cached.empty:
+            return cached
+        df = self._pro.index_member_all(**params)
+        self._save_cache_df(cache_name, df)
+        return df
+
 
