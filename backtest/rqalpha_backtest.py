@@ -921,8 +921,71 @@ def generate_and_save_plot(result, output_dir: str, benchmark_code: Optional[str
     import matplotlib.pyplot as plt
     import json
     import pandas as pd
+    import matplotlib
+    from matplotlib import font_manager
+    from matplotlib.font_manager import FontProperties
+    from typing import Tuple
     
     plot_data = {}
+
+    # 注意：plt.style.use(...) 可能会覆盖字体 rcParams，所以字体设置必须放在 style.use 之后再做。
+    # 这里先定义工具函数，稍后在创建 figure 前调用。
+    def _setup_cn_font() -> Tuple[str, Optional[FontProperties]]:
+        """
+        尽可能确保中文可见：
+        - 先按 Windows 字体文件路径强制指定（最稳）
+        - 再按字体名称设置 rcParams（次稳）
+        """
+        fp: Optional[FontProperties] = None
+        font_name = ""
+        try:
+            # 1) Windows 常见字体文件（最稳）
+            win_dir = os.environ.get("WINDIR", r"C:\Windows")
+            font_files = [
+                os.path.join(win_dir, "Fonts", "msyh.ttc"),    # 微软雅黑
+                os.path.join(win_dir, "Fonts", "msyhbd.ttc"),
+                os.path.join(win_dir, "Fonts", "simhei.ttf"),  # 黑体
+                os.path.join(win_dir, "Fonts", "simsun.ttc"),  # 宋体
+            ]
+            for p in font_files:
+                if os.path.exists(p):
+                    fp = FontProperties(fname=p)
+                    try:
+                        font_name = fp.get_name()
+                    except Exception:
+                        font_name = os.path.basename(p)
+                    # rcParams 也同步设置，影响全局文本/legend
+                    matplotlib.rcParams["font.family"] = "sans-serif"
+                    matplotlib.rcParams["font.sans-serif"] = [font_name]
+                    matplotlib.rcParams["axes.unicode_minus"] = False
+                    return font_name, fp
+
+            # 2) 按字体名称（次稳）
+            candidates = [
+                "Microsoft YaHei",  # 微软雅黑
+                "SimHei",           # 黑体
+                "SimSun",
+                "PingFang SC",
+                "Noto Sans CJK SC",
+                "Source Han Sans SC",
+                "Arial Unicode MS",
+            ]
+            available = {f.name for f in font_manager.fontManager.ttflist}
+            for name in candidates:
+                if name in available:
+                    matplotlib.rcParams["font.family"] = "sans-serif"
+                    matplotlib.rcParams["font.sans-serif"] = [name]
+                    matplotlib.rcParams["axes.unicode_minus"] = False
+                    return name, None
+
+            # 兜底：至少保证负号正常
+            matplotlib.rcParams["axes.unicode_minus"] = False
+        except Exception:
+            pass
+        return "", None
+
+    font_used: str = ""
+    font_prop: Optional[FontProperties] = None
     
     # 方法0: 优先从 result 字典的 sys_analyser 中提取（这是 RQAlpha 的标准结构）
     if isinstance(result, dict) and "sys_analyser" in result:
@@ -1164,8 +1227,23 @@ def generate_and_save_plot(result, output_dir: str, benchmark_code: Optional[str
         logging.info("     可能需要检查 RQAlpha 版本或使用 RQAlpha 的 Web 界面查看报告。")
         return
     
-    # 创建图表
-    plt.figure(figsize=(12, 6))
+    # 创建图表（更接近 RQAlpha 教程风格：多条曲线 + 多个子图）
+    try:
+        plt.style.use("seaborn-v0_8")
+    except Exception:
+        pass
+    # === 字体：解决中文乱码（放在 style.use 之后，避免被覆盖） ===
+    try:
+        font_used, font_prop = _setup_cn_font()
+    except Exception:
+        font_used, font_prop = "", None
+    fig, axes = plt.subplots(
+        3,
+        1,
+        figsize=(14, 10),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.2, 1.2, 1.4]},
+    )
     
     # 辅助函数：从数据中提取日期和净值
     def extract_dates_and_values(data, data_name="数据"):
@@ -1244,13 +1322,14 @@ def generate_and_save_plot(result, output_dir: str, benchmark_code: Optional[str
             benchmark_values = None
             logging.warning("基准净值数据全部为 None 或无效值")
     
+    ax0 = axes[0]
     # 绘制策略净值曲线
     if strategy_dates is not None and strategy_values is not None and len(strategy_dates) > 0 and len(strategy_values) > 0:
         logging.info(f"绘制策略净值曲线: {len(strategy_dates)} 个数据点")
-        plt.plot(strategy_dates, strategy_values, label="策略净值", linewidth=2, color="#1f77b4")
+        ax0.plot(strategy_dates, strategy_values, label="策略净值", linewidth=2.2, color="#1f77b4")
     elif strategy_values is not None and len(strategy_values) > 0:
         logging.info(f"绘制策略净值曲线（无日期）: {len(strategy_values)} 个数据点")
-        plt.plot(range(len(strategy_values)), strategy_values, label="策略净值", linewidth=2, color="#1f77b4")
+        ax0.plot(range(len(strategy_values)), strategy_values, label="策略净值", linewidth=2.2, color="#1f77b4")
     else:
         logging.warning("策略净值数据为空，无法绘制")
     
@@ -1272,14 +1351,10 @@ def generate_and_save_plot(result, output_dir: str, benchmark_code: Optional[str
     
     if benchmark_dates is not None and benchmark_values is not None and len(benchmark_dates) > 0 and len(benchmark_values) > 0:
         logging.info(f"绘制基准净值曲线: {len(benchmark_dates)} 个数据点")
-        logging.info(f"  基准指数: {benchmark_code if benchmark_code else '未指定'}")
-        logging.info(f"  基准净值范围: {min(benchmark_values):.4f} 至 {max(benchmark_values):.4f}")
-        plt.plot(benchmark_dates, benchmark_values, label=benchmark_label, linewidth=2, color="#ff7f0e", linestyle="--")
+        ax0.plot(benchmark_dates, benchmark_values, label=benchmark_label, linewidth=2.0, color="#ff7f0e", linestyle="--")
     elif benchmark_values is not None and len(benchmark_values) > 0:
         logging.info(f"绘制基准净值曲线（无日期）: {len(benchmark_values)} 个数据点")
-        logging.info(f"  基准指数: {benchmark_code if benchmark_code else '未指定'}")
-        logging.info(f"  基准净值范围: {min(benchmark_values):.4f} 至 {max(benchmark_values):.4f}")
-        plt.plot(range(len(benchmark_values)), benchmark_values, label=benchmark_label, linewidth=2, color="#ff7f0e", linestyle="--")
+        ax0.plot(range(len(benchmark_values)), benchmark_values, label=benchmark_label, linewidth=2.0, color="#ff7f0e", linestyle="--")
     else:
         logging.warning("⚠ 基准净值数据为空，无法绘制")
         logging.warning(f"  基准指数代码: {benchmark_code if benchmark_code else '未指定'}")
@@ -1292,8 +1367,8 @@ def generate_and_save_plot(result, output_dir: str, benchmark_code: Optional[str
                 logging.warning(f"  benchmark_nav Series 长度: {len(plot_data['benchmark_nav'])}")
                 logging.warning(f"  benchmark_nav 前5个值: {plot_data['benchmark_nav'].head().tolist()}")
     
-    # 设置图表标题和标签
-    title = "策略净值曲线对比"
+    # === 子图1：净值 ===
+    title = "MSA 策略净值 vs 基准"
     if benchmark_code:
         benchmark_names = {
             "000300.XSHG": "沪深300",
@@ -1306,26 +1381,239 @@ def generate_and_save_plot(result, output_dir: str, benchmark_code: Optional[str
         title = f"策略净值曲线对比 (基准: {benchmark_name})"
         logging.info(f"图表标题: {title}")
     
-    plt.title(title, fontsize=16, fontweight="bold")
-    plt.xlabel("交易日", fontsize=12)
-    plt.ylabel("净值", fontsize=12)
-    plt.legend(loc="best", fontsize=10)
-    plt.grid(True, alpha=0.3)
-    
-    # 优化日期显示（如果有日期数据）
-    if plot_data:
+    ax0.set_title(title, fontsize=15, fontweight="bold")
+    ax0.set_ylabel("净值", fontsize=11)
+    ax0.legend(loc="best", fontsize=10)
+    ax0.grid(True, alpha=0.25)
+
+    # === 指标信息框：夏普/年化/回撤等（优先读取 RQAlpha summary，缺失则自行计算） ===
+    summary = {}
+    try:
+        if isinstance(result, dict) and "sys_analyser" in result:
+            analyser = result.get("sys_analyser") or {}
+            if isinstance(analyser, dict) and isinstance(analyser.get("summary"), dict):
+                summary = analyser.get("summary") or {}
+    except Exception:
+        summary = {}
+
+    # 自行计算（基于净值）
+    def _metrics_from_nav(vals: Optional[list]) -> Dict[str, float]:
+        out: Dict[str, float] = {}
         try:
-            from matplotlib.dates import DateFormatter
-            ax = plt.gca()
-            # 如果 x 轴是日期类型，格式化显示
-            if hasattr(ax, 'xaxis') and len(ax.get_xticklabels()) > 0:
-                # 尝试自动格式化日期
-                plt.xticks(rotation=45, ha='right')
+            if not vals or len(vals) < 3:
+                return out
+            s = pd.Series([float(x) for x in vals]).replace([np.inf, -np.inf], np.nan).dropna()
+            if len(s) < 3:
+                return out
+            total_ret = float(s.iloc[-1] / s.iloc[0] - 1.0) if float(s.iloc[0]) != 0 else 0.0
+            rets = s.pct_change().dropna()
+            vol = float(rets.std(ddof=1) * np.sqrt(252)) if len(rets) > 1 else 0.0
+            sharpe = float(rets.mean() / (rets.std(ddof=1) + 1e-12) * np.sqrt(252)) if len(rets) > 1 else 0.0
+            # 年化收益：用复利按日频估算
+            ann = float((1.0 + total_ret) ** (252.0 / max(1.0, float(len(rets)))) - 1.0)
+            # 最大回撤
+            peak = s.cummax()
+            dd = s / peak - 1.0
+            mdd = float(dd.min())
+            out.update(
+                {
+                    "total_return": total_ret,
+                    "annual_return": ann,
+                    "volatility": vol,
+                    "sharpe": sharpe,
+                    "max_drawdown": mdd,
+                }
+            )
         except Exception:
             pass
+        return out
+
+    calc = _metrics_from_nav(strategy_values if isinstance(strategy_values, list) else None)
+    def _get_first(keys: list, default=None):
+        for k in keys:
+            if k in summary and summary[k] is not None:
+                return summary[k]
+        return default
+
+    sharpe_v = _get_first(["sharpe", "sharpe_ratio"], calc.get("sharpe", None))
+    ann_v = _get_first(["annualized_returns", "annualized_return", "annual_return"], calc.get("annual_return", None))
+    mdd_v = _get_first(["max_drawdown"], calc.get("max_drawdown", None))
+    vol_v = _get_first(["volatility", "annual_volatility"], calc.get("volatility", None))
+    tot_v = _get_first(["total_returns", "total_return"], calc.get("total_return", None))
+
+    # 取回测周期（如果有日期）
+    date_start = None
+    date_end = None
+    try:
+        if strategy_dates:
+            date_start = str(strategy_dates[0])
+            date_end = str(strategy_dates[-1])
+    except Exception:
+        pass
+
+    lines = []
+    if benchmark_code:
+        lines.append(f"基准: {benchmark_code}")
+    if date_start and date_end:
+        lines.append(f"区间: {date_start} ~ {date_end}")
+    if tot_v is not None:
+        try:
+            lines.append(f"总收益: {float(tot_v):.2%}")
+        except Exception:
+            pass
+    if ann_v is not None:
+        try:
+            lines.append(f"年化: {float(ann_v):.2%}")
+        except Exception:
+            pass
+    if vol_v is not None:
+        try:
+            lines.append(f"波动: {float(vol_v):.2%}")
+        except Exception:
+            pass
+    if sharpe_v is not None:
+        try:
+            lines.append(f"夏普: {float(sharpe_v):.2f}")
+        except Exception:
+            pass
+    if mdd_v is not None:
+        try:
+            lines.append(f"最大回撤: {float(mdd_v):.2%}")
+        except Exception:
+            pass
+    if font_used:
+        lines.append(f"字体: {font_used}")
+
+    if lines:
+        ax0.text(
+            0.01,
+            0.99,
+            "\n".join(lines),
+            transform=ax0.transAxes,
+            va="top",
+            ha="left",
+            fontsize=10,
+            fontproperties=font_prop,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#999999", alpha=0.80),
+        )
+
+    # === 子图2：回撤（由净值计算） ===
+    ax1 = axes[1]
+    def _drawdown(vals: list) -> Optional[list]:
+        try:
+            if not vals:
+                return None
+            peak = -1e18
+            out = []
+            for v in vals:
+                vv = float(v)
+                peak = max(peak, vv)
+                out.append(vv / peak - 1.0 if peak > 0 else 0.0)
+            return out
+        except Exception:
+            return None
+
+    dd_s = _drawdown(strategy_values) if strategy_values is not None else None
+    if dd_s is not None:
+        if strategy_dates is not None and len(strategy_dates) == len(dd_s):
+            ax1.plot(strategy_dates, dd_s, color="#d62728", linewidth=1.6, label="策略回撤")
+        else:
+            ax1.plot(range(len(dd_s)), dd_s, color="#d62728", linewidth=1.6, label="策略回撤")
+    dd_b = _drawdown(benchmark_values) if benchmark_values is not None else None
+    if dd_b is not None:
+        if benchmark_dates is not None and len(benchmark_dates) == len(dd_b):
+            ax1.plot(benchmark_dates, dd_b, color="#9467bd", linewidth=1.2, linestyle="--", label="基准回撤")
+        else:
+            ax1.plot(range(len(dd_b)), dd_b, color="#9467bd", linewidth=1.2, linestyle="--", label="基准回撤")
+    ax1.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+    ax1.set_ylabel("回撤", fontsize=11)
+    ax1.legend(loc="best", fontsize=9)
+    ax1.grid(True, alpha=0.25)
+
+    # === 子图3：运行指标（来自策略 plot()） ===
+    ax2 = axes[2]
+    plots_df = None
+    if isinstance(result, dict) and "sys_analyser" in result:
+        try:
+            analyser = result["sys_analyser"]
+            if isinstance(analyser, dict) and "plots" in analyser and isinstance(analyser["plots"], pd.DataFrame):
+                plots_df = analyser["plots"].copy()
+        except Exception:
+            plots_df = None
+    if plots_df is not None and not plots_df.empty:
+        # 标准化 index 为日期
+        if "date" in plots_df.columns:
+            try:
+                plots_df["date"] = pd.to_datetime(plots_df["date"])
+                plots_df = plots_df.set_index("date")
+            except Exception:
+                pass
+        if not isinstance(plots_df.index, pd.DatetimeIndex):
+            try:
+                plots_df.index = pd.to_datetime(plots_df.index)
+            except Exception:
+                pass
+        plots_df = plots_df.sort_index()
+
+        # 兼容 key：rqalpha plot 名称里带斜杠会原样成为列名
+        candidates = {
+            "msa/exposure": ("仓位(市值/总资产)", "#2ca02c"),
+            "msa/cash_ratio": ("现金占比", "#17becf"),
+            "msa/turnover": ("换手(0.5*Σ|Δw|)", "#8c564b"),
+            "msa/holdings": ("持仓数", "#7f7f7f"),
+            "msa/risk_sells": ("止损卖出数", "#bcbd22"),
+        }
+        left_plotted = False
+        right_ax = ax2.twinx()
+        right_plotted = False
+
+        for col, (label, color) in candidates.items():
+            if col not in plots_df.columns:
+                continue
+            s = pd.to_numeric(plots_df[col], errors="coerce").fillna(0.0)
+            # exposure/cash 用左轴（0~1），其余用右轴
+            if col in {"msa/exposure", "msa/cash_ratio"}:
+                ax2.plot(s.index, s.values, label=label, color=color, linewidth=1.6)
+                left_plotted = True
+            else:
+                right_ax.plot(s.index, s.values, label=label, color=color, linewidth=1.2, alpha=0.9)
+                right_plotted = True
+
+        ax2.set_ylabel("比例", fontsize=11)
+        right_ax.set_ylabel("计数/换手", fontsize=11)
+        ax2.grid(True, alpha=0.25)
+        # 合并 legend
+        handles = []
+        labels = []
+        if left_plotted:
+            h, l = ax2.get_legend_handles_labels()
+            handles += h
+            labels += l
+        if right_plotted:
+            h, l = right_ax.get_legend_handles_labels()
+            handles += h
+            labels += l
+        if handles:
+            ax2.legend(handles, labels, loc="best", fontsize=9)
+    else:
+        ax2.text(0.01, 0.6, "未检测到策略 plot() 指标数据\n（可正常，仅影响第三子图）", transform=ax2.transAxes)
+        ax2.grid(True, alpha=0.15)
+        ax2.set_ylabel("指标", fontsize=11)
+
+    axes[-1].set_xlabel("交易日", fontsize=11)
+    
+    # 优化日期显示
+    try:
+        for ax in axes:
+            for label in ax.get_xticklabels():
+                label.set_rotation(45)
+                label.set_ha("right")
+    except Exception:
+        pass
     
     # 保存图片（必须在 show() 之前调用）
     plot_path = os.path.join(output_dir, "rqalpha_strategy_plot.png")
+    fig.tight_layout()
     plt.savefig(
         plot_path,
         dpi=300,                      # 分辨率（越高越清晰）
@@ -1339,9 +1627,9 @@ def generate_and_save_plot(result, output_dir: str, benchmark_code: Optional[str
     except Exception as e:
         # 在某些环境中（如无 GUI），show() 可能失败，这是正常的
         logging.debug(f"显示图表失败（可能无 GUI 环境）: {e}")
-    
+
     # 关闭图形以释放资源
-    plt.close()
+    plt.close(fig)
 
 
 if __name__ == "__main__":
