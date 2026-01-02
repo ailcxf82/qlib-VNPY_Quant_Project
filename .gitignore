@@ -71,3 +71,5 @@ backtest/msa/__pycache__/filters.cpython-313.pyc
 backtest/msa/__pycache__/prediction_loader.cpython-313.pyc
 backtest/msa/__pycache__/tushare_client.cpython-313.pyc
 predictor/__pycache__/predictor.cpython-311.pyc
+classify/__pycache__/__init__.cpython-311.pyc
+classify/__pycache__/pytorch_industry_gru.cpython-311.pyc

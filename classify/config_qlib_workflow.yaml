@@ -1,0 +1,96 @@
+# ========== Qlib 标准工作流配置文件 ==========
+# 用于 Qlib 原生工作流（qlib.run）
+# 使用方法：qlib.run(config_path="classify/config_qlib_workflow.yaml")
+
+# ========== 市场配置 ==========
+market: "all"  # 使用所有行业指数
+
+# ========== 数据处理器配置 ==========
+data_handler_config:
+  start_time: "2015-01-01"
+  end_time: "2024-12-31"
+  fit_start_time: "2015-01-01"
+  fit_end_time: "2022-12-31"
+  
+  # 数据处理器：去极值、填充缺失值
+  infer_processors:
+    - class: RobustZScoreNorm
+      kwargs:
+        fields_group: "feature"
+        clip_outlier: true
+    - class: Fillna
+      kwargs:
+        fields_group: "feature"
+  
+  # 标签处理器：截面标准化（用于排序）
+  label:
+    - class: CSZScoreNorm
+      kwargs:
+        fields_group: "label"
+  
+  # 特征表达式（Alpha 因子）
+  # 注意：这里需要根据实际数据源调整字段名
+  # 如果使用自定义数据处理器，可以在 data_handler 中定义
+  # 这里提供一个示例配置结构
+  
+  # 如果使用自定义 DataHandler，可以这样配置：
+  # data_handler:
+  #   class: IndustryDataHandler
+  #   module_path: classify.data_handler
+  #   kwargs:
+  #     start_time: "2015-01-01"
+  #     end_time: "2024-12-31"
+  #     fit_start_time: "2015-01-01"
+  #     fit_end_time: "2022-12-31"
+  #     instruments: "sw_l1_801010,sw_l1_801020,..."  # 31个行业指数
+
+# ========== 任务配置 ==========
+task:
+  # 模型配置
+  model:
+    class: IndustryGRU
+    module_path: classify.pytorch_industry_gru
+    kwargs:
+      num_features: null  # 自动推断
+      sequence_length: 60
+      hidden_size: 64
+      num_layers: 1
+      attention_hidden_dim: 64
+      dropout: 0.1
+      loss: "mse"
+      ranking_alpha: 0.5
+      batch_size: 32
+      lr: 0.001
+      weight_decay: 1e-4
+      max_epochs: 50
+      patience: 10
+  
+  # 数据集配置
+  dataset:
+    class: TSDatasetH
+    kwargs:
+      handler: data_handler_config
+      segments:
+        train: ["2015-01-01", "2022-12-31"]
+        valid: ["2023-01-01", "2023-12-31"]
+        test: ["2024-01-01", "2024-12-31"]
+  
+  # 记录器配置
+  record:
+    - class: SignalRecord
+    - class: SigAnaRecord
+      kwargs:
+        ana_long_short: false
+        ann_scaler: 252
+        label: "label"
+        metric: ["IC", "Rank IC", "Long-Short Return"]
+
+# ========== 端口配置（可选） ==========
+# port: 8080
+
+
+
+
+
+
+

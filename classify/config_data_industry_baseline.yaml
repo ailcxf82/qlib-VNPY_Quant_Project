@@ -1,0 +1,81 @@
+qlib:
+  provider_uri: "D:/qlib_data/qlib_data"
+  region: "cn"
+
+data:
+  # 行业指数路径配置
+  industry_index_path: "D:/qlib_data/qlib_data/instruments/classifyl2.txt"
+  
+  # 数据时间范围
+  start_time: "2022-12-01"
+  end_time: "2025-12-01"
+  freq: "day"
+  
+  # 缺失值处理策略
+  missing_value_strategy: "auto"
+  
+  # ========== 简化基线特征集（仅基于 OHLCV）==========
+  # 基于用户建议：仅 OHLCV 构建强基线
+  features:
+    # ========== 3.1 价量基础（多尺度）==========
+    
+    # 动量：多时间尺度收益率
+    - "$close / Ref($close, 1) - 1"      # ret_1: 1日收益率
+    - "$close / Ref($close, 5) - 1"       # ret_5: 5日收益率
+    - "$close / Ref($close, 10) - 1"      # ret_10: 10日收益率
+    - "$close / Ref($close, 20) - 1"      # ret_20: 20日收益率
+    - "$close / Ref($close, 60) - 1"      # ret_60: 60日收益率
+    - "$close / Ref($close, 120) - 1"     # ret_120: 120日收益率
+    
+    # 波动：收益率的标准差（多窗口）
+    - "Std($close / Ref($close, 1) - 1, 10)"   # std(ret_1, 10): 10日波动
+    - "Std($close / Ref($close, 1) - 1, 20)"   # std(ret_1, 20): 20日波动
+    - "Std($close / Ref($close, 1) - 1, 60)"   # std(ret_1, 60): 60日波动
+    
+    # 振幅：(high-low)/close
+    - "($high - $low) / $close"           # 振幅：日内波动率
+    
+    # 量能特征
+    - "Log($volume + 1)"                  # log(volume): 对数成交量（+1避免log(0)）
+    - "$volume / Ref($volume, 5) - 1"      # vol_chg_5: 5日成交量变化率
+    - "$volume / Ref($volume, 20) - 1"   # vol_chg_20: 20日成交量变化率
+    
+    # 价量相关性（滚动相关系数）
+    # 注意：Qlib 使用 Corr 函数，格式为 Corr(expr1, expr2, window)
+    # 使用收益率和成交量变化的相关性
+    - "Corr($close / Ref($close, 1) - 1, $volume / Ref($volume, 1) - 1, 20)"  # 20日价量相关性
+    - "Corr($close / Ref($close, 1) - 1, $volume / Ref($volume, 1) - 1, 60)"  # 60日价量相关性
+  
+  # ========== 标签配置 ==========
+  # 未来10天的收益率，用于排序预测
+  label: "Ref($close, -10) / $close - 1"
+  
+  # 标签转换配置（截面标准化，用于排序）
+  label_transform:
+    enabled: true
+    method: "rank"  # 使用排名而非百分位，更适合排序任务
+    groupby: "datetime"  # 按日期分组进行截面排名
+  
+  # 数据过滤配置
+  filter:
+    limit_up: false  # 行业指数通常不设涨跌停限制
+    limit_down: false
+  
+  # ========== 特征处理配置 ==========
+  # 特征标准化方式
+  normalization: "zscore"
+  
+  # 截面标准化配置（新增）
+  cross_sectional_normalization:
+    enabled: true              # 是否启用截面标准化
+    method: "zscore"          # 方法：'zscore' 或 'rank'
+    groupby: "datetime"       # 按日期分组进行截面标准化
+    clip: true                # 是否进行极值裁剪（winsorize）
+    clip_quantile: 0.05       # 裁剪分位数（0.05 表示裁剪上下各5%的极值）
+  
+  # 时间序列归一化配置（在训练时按窗口归一化）
+  temporal_normalization:
+    enabled: true              # 是否在训练时进行时间序列归一化
+    clip: true                 # 是否进行极值裁剪
+    clip_range: 5.0            # 裁剪范围（±5倍标准差）
+

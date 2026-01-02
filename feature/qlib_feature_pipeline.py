@@ -222,7 +222,14 @@ class QlibFeaturePipeline:
             else:
                 logger.warning("use_alpha158=True 但无法获取 158 因子，将仅使用自定义特征")
         
-        instruments = self._parse_instruments(self.feature_cfg["instruments"])
+        # 优先使用 industry_index_path（行业轮动场景），否则使用 instruments
+        if "industry_index_path" in self.feature_cfg:
+            instruments = self._parse_industry_index_path(self.feature_cfg["industry_index_path"])
+        elif "instruments" in self.feature_cfg:
+            instruments = self._parse_instruments(self.feature_cfg["instruments"])
+        else:
+            raise ValueError("配置文件中必须包含 'instruments' 或 'industry_index_path' 字段")
+        
         start = self.feature_cfg["start_time"]
         end = self.feature_cfg["end_time"]
         freq = self.feature_cfg.get("freq", "day")
@@ -441,6 +448,22 @@ class QlibFeaturePipeline:
         else:
             self._label_is_rank = False
 
+        # 截面标准化：按日期对特征进行截面标准化（非常重要，避免未来数据泄露）
+        cross_sectional_cfg = self.feature_cfg.get("cross_sectional_normalization", {})
+        if cross_sectional_cfg.get("enabled", False):
+            features = self._apply_cross_sectional_normalization(
+                features,
+                method=cross_sectional_cfg.get("method", "zscore"),
+                groupby=cross_sectional_cfg.get("groupby", "datetime"),
+                clip=cross_sectional_cfg.get("clip", False),
+                clip_quantile=cross_sectional_cfg.get("clip_quantile", 0.05),
+            )
+            logger.info("特征已应用截面标准化（方法: %s, 分组: %s）", 
+                       cross_sectional_cfg.get("method", "zscore"),
+                       cross_sectional_cfg.get("groupby", "datetime"))
+        else:
+            logger.info("未启用截面标准化，使用原始特征值")
+
         # 修复：不再使用全局归一化，保存原始特征
         # 归一化将在训练时对每个窗口单独计算，避免数据泄露
         logger.info("特征构建完成，保存原始特征（未归一化），归一化将在训练时按窗口计算")
@@ -630,6 +653,148 @@ class QlibFeaturePipeline:
             return result
         
         raise ValueError(f"不支持的股票池配置类型: {type(inst_conf)}")
+
+    def _parse_industry_index_path(self, industry_path: str) -> list[str]:
+        """
+        解析行业指数路径配置。
+        
+        支持两种格式：
+        1. 文件路径：从文件中读取行业指数代码（每行一个代码）
+        2. 逗号分隔的字符串：直接解析为列表
+        
+        参数:
+            industry_path: 行业指数路径配置
+        
+        返回:
+            行业指数代码列表
+        """
+        if not industry_path:
+            raise ValueError("industry_index_path 不能为空")
+        
+        # 检查是否为文件路径（包含路径分隔符或文件扩展名）
+        if os.path.sep in industry_path or "/" in industry_path or "\\" in industry_path or industry_path.endswith(".txt"):
+            # 从文件读取
+            if not os.path.exists(industry_path):
+                raise FileNotFoundError(f"行业指数文件不存在: {industry_path}")
+            
+            logger.info("从文件读取行业指数列表: %s", industry_path)
+            industry_list = []
+            with open(industry_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):  # 跳过空行和注释
+                        # 处理制表符分隔的格式（代码\t开始日期\t结束日期）
+                        if "\t" in line:
+                            # 制表符分隔：取第一列作为代码
+                            parts = line.split("\t")
+                            code = parts[0].strip()
+                            if code:
+                                industry_list.append(code)
+                        elif "," in line:
+                            # 逗号分隔
+                            codes = [c.strip() for c in line.split(",") if c.strip()]
+                            industry_list.extend(codes)
+                        else:
+                            # 单行单个代码
+                            if line:
+                                industry_list.append(line)
+            
+            if not industry_list:
+                raise ValueError(f"行业指数文件为空或格式不正确: {industry_path}")
+            
+            logger.info("从文件读取到 %d 个行业指数", len(industry_list))
+            return industry_list
+        else:
+            # 逗号分隔的字符串
+            industry_list = [code.strip() for code in industry_path.split(",") if code.strip()]
+            if not industry_list:
+                raise ValueError(f"无法解析行业指数路径: {industry_path}")
+            
+            logger.info("从配置字符串解析到 %d 个行业指数", len(industry_list))
+            return industry_list
+
+    def _apply_cross_sectional_normalization(
+        self,
+        features: pd.DataFrame,
+        method: str = "zscore",
+        groupby: str = "datetime",
+        clip: bool = False,
+        clip_quantile: float = 0.05,
+    ) -> pd.DataFrame:
+        """
+        对特征进行截面标准化（按日期分组）。
+        
+        这是非常重要的步骤，可以：
+        1. 消除不同时期市场环境的影响
+        2. 使特征在同一日期内具有可比性
+        3. 避免未来数据泄露（只使用当日截面数据）
+        
+        参数:
+            features: 特征 DataFrame，索引应为 MultiIndex (datetime, instrument)
+            method: 标准化方法
+                - "zscore": Z-score 标准化（均值0，标准差1）
+                - "rank": 排名标准化（转换为排名）
+            groupby: 分组列名（默认 "datetime"）
+            clip: 是否进行极值裁剪（winsorize）
+            clip_quantile: 裁剪分位数（0.05 表示裁剪上下各5%的极值）
+        
+        返回:
+            标准化后的特征 DataFrame
+        """
+        if not isinstance(features.index, pd.MultiIndex):
+            logger.warning("特征索引不是 MultiIndex，无法进行截面标准化，返回原特征")
+            return features
+        
+        if groupby not in features.index.names:
+            logger.warning("分组列 '%s' 不在索引中，无法进行截面标准化，返回原特征", groupby)
+            return features
+        
+        result = features.copy()
+        
+        # 按日期分组进行截面标准化
+        grouped = result.groupby(level=groupby)
+        
+        if method == "zscore":
+            # Z-score 标准化：每个日期内的特征标准化为均值0、标准差1
+            def zscore_transform(group):
+                mean = group.mean()
+                std = group.std().replace(0, 1)  # 避免除零
+                return (group - mean) / std
+            
+            result = grouped.apply(zscore_transform)
+            # 移除分组索引层级（如果添加了）
+            if isinstance(result.index, pd.MultiIndex) and result.index.nlevels > features.index.nlevels:
+                result = result.droplevel(0)
+            result = result.reindex(features.index)  # 确保索引顺序一致
+            
+        elif method == "rank":
+            # 排名标准化：每个日期内的特征转换为排名（0-1之间）
+            def rank_transform(group):
+                return group.rank(pct=True, method="average")
+            
+            result = grouped.apply(rank_transform)
+            # 移除分组索引层级（如果添加了）
+            if isinstance(result.index, pd.MultiIndex) and result.index.nlevels > features.index.nlevels:
+                result = result.droplevel(0)
+            result = result.reindex(features.index)  # 确保索引顺序一致
+            
+        else:
+            logger.warning("不支持的截面标准化方法: %s，返回原特征", method)
+            return features
+        
+        # 极值裁剪（winsorize）
+        if clip:
+            # 对每个特征列进行极值裁剪
+            for col in result.columns:
+                # 计算上下分位数
+                lower = result[col].quantile(clip_quantile)
+                upper = result[col].quantile(1 - clip_quantile)
+                # 裁剪极值
+                result[col] = result[col].clip(lower=lower, upper=upper)
+            
+            logger.info("已应用极值裁剪（分位数: %.2f）", clip_quantile)
+        
+        return result
 
     @staticmethod
     def _normalize_index(data: Union[pd.DataFrame, pd.Series]):

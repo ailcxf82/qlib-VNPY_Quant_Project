@@ -1,0 +1,99 @@
+qlib:
+  provider_uri: "D:/qlib_data/qlib_data"
+  region: "cn"
+
+data:
+  # 行业指数路径配置（后续会提供完整的31个申万一级行业指数路径）
+  # 示例格式：industry_index_path: "sw_l1_801010,sw_l1_801020,..." 或使用配置文件路径
+  industry_index_path: "D:/qlib_data/qlib_data/instruments/classifyl2.txt"  # 待填写：31个申万一级行业指数的完整路径
+  
+  # 数据时间范围
+  start_time: "2022-12-01"
+  end_time: "2025-12-01"
+  freq: "day"
+  
+  # 缺失值处理策略
+  missing_value_strategy: "auto"
+  
+  # ========== Alpha 因子表达式配置 ==========
+  # 行业轮动专用因子：动量、拥挤度、利率敏感度
+  
+  features:
+    # ========== 行业动量因子 (Momentum) ==========
+    # 过去20天收益率 (ROC20)
+    - "$close / Ref($close, 20) - 1"
+    
+    # 过去60天收益率 (ROC60)
+    - "$close / Ref($close, 60) - 1"
+    
+    # ========== 拥挤度因子 (Crowding) ==========
+    # 计算公式：(当前成交量 - 过去250天成交量均值) / 过去250天成交量标准差
+    # 标准化后的成交量偏离度，衡量交易活跃度
+    - "($volume - Mean($volume, 250)) / Std($volume, 250)"
+    
+    # 成交量相对均值的比率（备选拥挤度指标）
+    - "$volume / Mean($volume, 250) - 1"
+    
+    # ========== 利率敏感度因子 (Macro Beta) ==========
+    # 注意：需要先计算行业日收益率和国债收益率变化
+    # 行业日收益率
+    - "$close / Ref($close, 1) - 1"
+    
+    # 如果数据源包含10年期国债收益率字段 $bond_yield_10y，可以使用：
+    # 国债收益率日变化
+    # - "Ref($bond_yield_10y, 0) - Ref($bond_yield_10y, 1)"
+    
+    # 行业收益与国债收益率变化的60天滚动相关性
+    # 注意：Correl函数需要两个序列，这里假设有预计算的国债收益率变化字段
+    # 如果数据源没有，需要在数据准备阶段手动计算
+    # - "Correl(Ref($close, 0) / Ref($close, 1) - 1, Ref($bond_yield_10y, 0) - Ref($bond_yield_10y, 1), 60)"
+    
+    # ========== 基础价格特征 ==========
+    - "$close"
+    - "$open"
+    - "$high"
+    - "$low"
+    - "$volume"
+    
+    # 价格变化率
+    - "Ref($close, 1) / $close - 1"  # 前一日收益率
+    
+    # ========== 技术指标特征 ==========
+    # 移动平均
+    - "Mean($close, 5) / $close - 1"
+    - "Mean($close, 10) / $close - 1"
+    - "Mean($close, 20) / $close - 1"
+    
+    # 波动率
+    - "Std($close, 20)"
+    - "Std($close, 60)"
+    
+    # 价格相对位置
+    - "($close - Min($low, 20)) / (Max($high, 20) - Min($low, 20) + 1e-12)"  # RSV指标
+    
+    # 成交量特征
+    - "Mean($volume, 20) / $volume - 1"
+    - "Std($volume, 20)"
+  
+  # ========== 标签配置 ==========
+  # 未来10天的收益率，用于排序预测
+  label: "Ref($close, -10) / $close - 1"
+  
+  # 标签转换配置（截面标准化，用于排序）
+  label_transform:
+    enabled: true
+    method: "rank"  # 使用排名而非百分位，更适合排序任务
+    groupby: "datetime"  # 按日期分组进行截面排名
+  
+  # 数据过滤配置
+  filter:
+    limit_up: false  # 行业指数通常不设涨跌停限制
+    limit_down: false
+  
+  # 特征标准化方式
+  normalization: "zscore"
+
+
+
+
+

@@ -1,0 +1,153 @@
+qlib:
+  provider_uri: "D:/qlib_data/qlib_data"
+  region: "cn"
+
+data:
+  # 行业指数路径配置
+  industry_index_path: "D:/qlib_data/qlib_data/instruments/classifyl2.txt"
+  
+  # 数据时间范围
+  start_time: "2022-12-01"
+  end_time: "2025-12-01"
+  freq: "day"
+  
+  # 缺失值处理策略
+  missing_value_strategy: "auto"
+  
+  # ========== 增强特征集（充分利用所有可用数据）==========
+  # 基于用户提供的完整行业参数：open, low, high, close, change, pct_change, vol, amount, pe, pb, float_mv, total_mv
+  features:
+    # ========== 1. 价格动量特征（多时间尺度）==========
+    
+    # 使用 pct_change（如果可用，更准确）
+    - "$pct_change"                    # ret_1: 1日涨跌幅（如果数据源提供）
+    - "$close / Ref($close, 1) - 1"    # ret_1_alt: 备用计算方式
+    - "$close / Ref($close, 5) - 1"    # ret_5: 5日收益率
+    - "$close / Ref($close, 10) - 1"   # ret_10: 10日收益率
+    - "$close / Ref($close, 20) - 1"   # ret_20: 20日收益率
+    - "$close / Ref($close, 60) - 1"   # ret_60: 60日收益率
+    - "$close / Ref($close, 120) - 1"  # ret_120: 120日收益率
+    
+    # 使用 change（涨跌点位）构建相对变化
+    - "$change / $close"               # change_ratio: 涨跌点位相对收盘价
+    
+    # ========== 2. 价格波动特征 ==========
+    
+    # 收益率波动率（多窗口）
+    - "Std($pct_change, 10)"           # std_ret_10: 10日波动（如果 pct_change 可用）
+    - "Std($close / Ref($close, 1) - 1, 10)"   # std_ret_10_alt: 备用
+    - "Std($close / Ref($close, 1) - 1, 20)"   # std_ret_20: 20日波动
+    - "Std($close / Ref($close, 1) - 1, 60)"   # std_ret_60: 60日波动
+    
+    # 振幅特征（使用 high, low）
+    - "($high - $low) / $close"        # amplitude: 日内振幅
+    - "($high - $low) / Ref($high - $low, 1)"  # amplitude_chg: 振幅变化率
+    - "($close - $open) / $close"      # body_ratio: 实体相对收盘
+    - "($close - $open) / ($high - $low + 1e-12)"  # body_ratio_norm: 实体相对振幅
+    
+    # ========== 3. 量能特征（使用 vol, amount）==========
+    
+    # 成交量特征
+    - "Log($vol + 1)"                  # log_vol: 对数成交量（处理长尾分布）
+    - "$vol / Ref($vol, 5) - 1"        # vol_chg_5: 5日成交量变化率
+    - "$vol / Ref($vol, 20) - 1"      # vol_chg_20: 20日成交量变化率
+    - "$vol / Mean($vol, 20) - 1"     # vol_ma_ratio_20: 成交量相对20日均量
+    - "$vol / Mean($vol, 60) - 1"     # vol_ma_ratio_60: 成交量相对60日均量
+    
+    # 成交额特征（amount）
+    - "Log($amount + 1)"               # log_amount: 对数成交额
+    - "$amount / Ref($amount, 5) - 1"  # amount_chg_5: 5日成交额变化率
+    - "$amount / Ref($amount, 20) - 1" # amount_chg_20: 20日成交额变化率
+    - "$amount / Mean($amount, 20) - 1"  # amount_ma_ratio_20: 成交额相对20日均值
+    
+    # 价量比（成交额/成交量 = 平均成交价格）
+    - "$amount / ($vol + 1e-12)"       # avg_price: 平均成交价格
+    - "($amount / ($vol + 1e-12)) / $close - 1"  # avg_price_ratio: 平均价相对收盘价
+    
+    # 价量相关性
+    - "Corr($pct_change, $vol / Ref($vol, 1) - 1, 20)"  # price_vol_corr_20: 20日价量相关性
+    - "Corr($close / Ref($close, 1) - 1, $vol / Ref($vol, 1) - 1, 60)"  # price_vol_corr_60: 60日价量相关性
+    
+    # ========== 4. 估值特征（使用 pe, pb）==========
+    
+    # 市盈率特征
+    - "$pe"                            # pe: 市盈率（原始值）
+    - "Log($pe + 1)"                   # log_pe: 对数市盈率（处理异常值）
+    - "$pe / Mean($pe, 20) - 1"        # pe_ma_ratio_20: PE相对20日均值
+    - "$pe / Mean($pe, 60) - 1"        # pe_ma_ratio_60: PE相对60日均值
+    - "Ref($pe, 1) / $pe - 1"          # pe_chg: PE变化率
+    
+    # 市净率特征
+    - "$pb"                            # pb: 市净率（原始值）
+    - "Log($pb + 1)"                   # log_pb: 对数市净率
+    - "$pb / Mean($pb, 20) - 1"        # pb_ma_ratio_20: PB相对20日均值
+    - "$pb / Mean($pb, 60) - 1"        # pb_ma_ratio_60: PB相对60日均值
+    - "Ref($pb, 1) / $pb - 1"          # pb_chg: PB变化率
+    
+    # PE/PB 比率
+    - "$pe / ($pb + 1e-12)"            # pe_pb_ratio: PE/PB比率
+    
+    # ========== 5. 市值特征（使用 float_mv, total_mv）==========
+    
+    # 流通市值特征
+    - "Log($float_mv + 1)"             # log_float_mv: 对数流通市值
+    - "$float_mv / Ref($float_mv, 5) - 1"   # float_mv_chg_5: 5日流通市值变化率
+    - "$float_mv / Ref($float_mv, 20) - 1"  # float_mv_chg_20: 20日流通市值变化率
+    
+    # 总市值特征
+    - "Log($total_mv + 1)"            # log_total_mv: 对数总市值
+    - "$total_mv / Ref($total_mv, 5) - 1"   # total_mv_chg_5: 5日总市值变化率
+    - "$total_mv / Ref($total_mv, 20) - 1"  # total_mv_chg_20: 20日总市值变化率
+    
+    # 流通市值占比
+    - "$float_mv / ($total_mv + 1e-12)"  # float_ratio: 流通市值/总市值
+    
+    # 市值与成交额关系
+    - "$amount / ($float_mv + 1e-12)"  # turnover_float: 流通市值换手率
+    - "$amount / ($total_mv + 1e-12)"  # turnover_total: 总市值换手率
+    
+    # ========== 6. 综合特征（跨维度）==========
+    
+    # 估值与动量关系
+    - "Corr($pct_change, $pe, 20)"      # ret_pe_corr_20: 收益率与PE的20日相关性
+    - "Corr($pct_change, $pb, 20)"     # ret_pb_corr_20: 收益率与PB的20日相关性
+    
+    # 市值与动量关系
+    - "Corr($pct_change, Log($float_mv + 1), 20)"  # ret_mv_corr_20: 收益率与市值的相关性
+    
+    # 估值与量能关系
+    - "Corr($pe, $vol / Mean($vol, 20) - 1, 20)"  # pe_vol_corr_20: PE与量能的相关性
+  
+  # ========== 标签配置 ==========
+  # 未来10天的收益率，用于排序预测
+  label: "Ref($close, -10) / $close - 1"
+  
+  # 标签转换配置（截面标准化，用于排序）
+  label_transform:
+    enabled: true
+    method: "rank"  # 使用排名而非百分位，更适合排序任务
+    groupby: "datetime"  # 按日期分组进行截面排名
+  
+  # 数据过滤配置
+  filter:
+    limit_up: false  # 行业指数通常不设涨跌停限制
+    limit_down: false
+  
+  # ========== 特征处理配置 ==========
+  # 特征标准化方式
+  normalization: "zscore"
+  
+  # 截面标准化配置（非常重要）
+  cross_sectional_normalization:
+    enabled: true              # 是否启用截面标准化
+    method: "zscore"          # 方法：'zscore' 或 'rank'
+    groupby: "datetime"       # 按日期分组进行截面标准化
+    clip: true                # 是否进行极值裁剪（winsorize）
+    clip_quantile: 0.05       # 裁剪分位数（0.05 表示裁剪上下各5%的极值）
+  
+  # 时间序列归一化配置（在训练时按窗口归一化）
+  temporal_normalization:
+    enabled: true              # 是否在训练时进行时间序列归一化
+    clip: true                 # 是否进行极值裁剪
+    clip_range: 5.0            # 裁剪范围（±5倍标准差）
+

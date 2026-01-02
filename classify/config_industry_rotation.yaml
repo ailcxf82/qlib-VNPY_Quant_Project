@@ -1,0 +1,84 @@
+# ========== 行业轮动预测系统配置文件 ==========
+# 基于 Qlib 框架的 A 股行业轮动预测系统
+# 目标：预测未来 10 天的行业相对收益排名
+
+# ========== 数据配置 ==========
+# data_config: "classify/config_data_industry.yaml"
+data_config: "classify/config_data_industry_enhanced.yaml"
+
+# ========== 模型配置 ==========
+# IndustryGRU 模型配置
+industry_gru_config:
+  num_features: null  # 自动从数据中推断
+  sequence_length: 60  # 时序长度：60天
+  hidden_size: 64  # GRU 隐藏层大小
+  num_layers: 2  # GRU 层数 1
+  attention_hidden_dim: 64  # Feature Attention 隐藏层维度
+  dropout: 0.2  # Dropout 率 0.1
+  loss: "ranking"  # 损失函数类型：'mse' 或 'ranking'
+  ranking_alpha: 0.7  # Ranking Loss 权重（当 loss='ranking' 时使用）  0.5
+  batch_size: 64  # 批处理大小  32
+  lr: 0.0007  # 学习率  0.001
+  weight_decay: 1e-4  # 权重衰减
+  grad_clip: 1.0  # 梯度裁剪最大范数（None 表示不裁剪）
+  lr_scheduler: "plateau"  # 学习率调度器类型：None, "plateau", "step", "cosine" 等
+  max_epochs: 80  # 最大训练轮数  50
+  patience: 12  # 早停耐心值  10
+
+# ========== 滚动训练配置 ==========
+rolling:
+  train_months: 24  # 训练窗口：24个月
+  valid_months: 1  # 验证窗口：1个月
+  test_months: 1  # 测试窗口：1个月
+  step_months: 1  # 滚动步长：1个月
+  min_samples: 100  # 最小样本数（行业数据样本较少，降低阈值）
+
+# ========== 训练集 IC 计算配置 ==========
+# 修复数据泄露：训练集 IC 不应该使用训练数据本身进行预测（会导致 IC 虚高）
+train_ic:
+  enabled: true  # 是否计算训练集 IC（false 表示不计算，避免误导）
+  method: "ts_cv"  # 计算方法："ts_cv"（时间序列交叉验证）或 "none"（不计算）
+  # ts_cv: 使用训练集的前 80% 训练，后 20% 评估（更真实，但需要额外训练时间）
+  # none: 不计算训练集 IC（推荐，因为验证集 IC 才是真实性能指标）
+
+# ========== 诊断配置 ==========
+# 预测问题诊断：按优先级从高到低进行诊断测试
+diagnosis:
+  enabled: false  # 是否启用快速诊断（会在每个训练窗口后运行诊断测试）
+  # 诊断测试包括：
+  # 1. 完美预测自测（pred=label，IC 应接近 1）
+  # 2. 取负号测试（判断方向问题）
+  # 3. 单特征基线（判断数据是否有基本信号）
+
+# ========== IC 日志配置 ==========
+ic_logging:
+  window: 60  # IC 计算窗口
+  half_life: 20  # 半衰期
+
+# ========== 路径配置 ==========
+paths:
+  model_dir: "data/models/industry_rotation"
+  log_dir: "data/logs/industry_rotation"
+  prediction_dir: "data/predictions/industry_rotation"
+  backtest_dir: "data/backtest/industry_rotation"
+
+# ========== 组合配置 ==========
+portfolio:
+  max_position: 1.0  # 最大仓位（行业轮动通常满仓）
+  max_industry_weight: 0.15  # 单个行业最大权重（31个行业，平均约3.2%）
+  top_k: 10  # 选择排名前 K 个行业
+
+# ========== 回测指标配置 ==========
+backtest_metrics:
+  - "IC"  # 信息系数
+  - "Rank IC"  # 排名信息系数
+  - "Long-Short Return"  # 多空收益
+  - "Annual Return"  # 年化收益
+  - "Sharpe Ratio"  # 夏普比率
+  - "Max Drawdown"  # 最大回撤
+
+
+
+
+
+

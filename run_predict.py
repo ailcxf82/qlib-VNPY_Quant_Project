@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument(
         "--end",
         type=str,
-        default=os.environ.get("RUN_PRED_END", "2025-12-22"),
+        default=os.environ.get("RUN_PRED_END", "2025-12-29"),
         help="预测结束日期，默认 2025-10-01，可通过环境变量 RUN_PRED_END 覆盖",
     )
     parser.add_argument(
