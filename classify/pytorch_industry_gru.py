@@ -208,6 +208,7 @@ class RankingLoss(nn.Module):
 class IndustryGRUWrapper:
     """
     IndustryGRU 模型的封装类，提供与 Qlib 工作流兼容的接口。
+    支持集成学习（Ensemble）模式，通过训练多个模型并取平均预测来降低方差。
     """
     
     def __init__(self, config: Dict[str, Any]):
@@ -229,10 +230,23 @@ class IndustryGRUWrapper:
                 - weight_decay: 权重衰减（默认1e-4）
                 - max_epochs: 最大训练轮数（默认50）
                 - patience: 早停耐心值（默认10）
+                - num_ensemble: 集成模型数量（默认5，如果 > 1 则启用集成模式）
         """
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model: Optional[IndustryGRU] = None
+        
+        # 集成学习配置
+        self.num_ensemble = config.get("num_ensemble", 5)
+        self.is_ensemble = self.num_ensemble > 1
+        
+        # 模型存储：如果是集成模式，使用列表；否则使用单个模型
+        if self.is_ensemble:
+            self.models: Optional[list] = None  # 存储多个 IndustryGRU 实例
+            self.model = None  # 保持兼容性，但实际不使用
+        else:
+            self.model: Optional[IndustryGRU] = None
+            self.models = None
+        
         self._num_features: Optional[int] = None
         self._sequence_length: Optional[int] = None
         
@@ -259,6 +273,9 @@ class IndustryGRUWrapper:
         # 损失函数配置
         self.loss_type = config.get("loss", "mse")
         self.ranking_alpha = config.get("ranking_alpha", 0.5)
+        
+        if self.is_ensemble:
+            logger.info("启用集成学习模式，集成模型数量: %d", self.num_ensemble)
     
     def _prepare_sequences(
         self, 
@@ -545,7 +562,7 @@ class IndustryGRUWrapper:
             valid_feat: 验证特征（可选）
             valid_label: 验证标签（可选）
         """
-        # 准备时序数据
+        # 准备时序数据（所有模型共享相同的数据准备）
         train_x, train_y = self._prepare_sequences(train_feat, train_label)
         
         if train_y is None:
@@ -555,17 +572,22 @@ class IndustryGRUWrapper:
         self._num_features = train_x.shape[2]
         self._sequence_length = train_x.shape[1]
         
-        # 创建模型
-        self.model = IndustryGRU(
-            num_features=self._num_features,
-            sequence_length=self._sequence_length,
-            hidden_size=self.hidden_size,
-            num_layers=self.num_layers,
-            attention_hidden_dim=self.attention_hidden_dim,
-            dropout=self.dropout,
-        ).to(self.device)
+        # 准备验证集数据（如果提供）
+        valid_x, valid_y = None, None
+        if valid_feat is not None and valid_label is not None:
+            try:
+                # 先尝试只用验证集数据
+                valid_x, valid_y = self._prepare_sequences(valid_feat, valid_label)
+            except ValueError:
+                # 如果验证集数据不足，使用训练集的历史数据补充
+                logger.info("验证集时间窗口较短，使用训练集历史数据补充以构建完整序列（正常行为，无数据泄露）")
+                combined_feat = pd.concat([train_feat, valid_feat]).sort_index()
+                combined_label = pd.concat([train_label, valid_label]).sort_index()
+                valid_x, valid_y = self._prepare_sequences_with_history(
+                    combined_feat, combined_label, valid_feat, valid_label
+                )
         
-        # 创建损失函数
+        # 创建损失函数（所有模型共享）
         if self.loss_type == "ranking":
             criterion = RankingLoss(alpha=self.ranking_alpha)
             logger.info("使用 Ranking Loss，alpha=%.2f", self.ranking_alpha)
@@ -573,62 +595,200 @@ class IndustryGRUWrapper:
             criterion = nn.MSELoss()
             logger.info("使用 MSE Loss")
         
-        # 优化器
-        optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=self.lr,
-            weight_decay=self.weight_decay,
-        )
-        
-        # 学习率调度器
-        scheduler = None
-        if self.lr_scheduler_type == "plateau":
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode="min",  # 监控验证损失，当损失不再下降时降低学习率
-                factor=0.5,  # 学习率衰减因子
-                patience=5,  # 等待5个epoch没有改善后降低学习率
-            )
-            logger.info("使用 ReduceLROnPlateau 学习率调度器（factor=0.5, patience=5）")
-        elif self.lr_scheduler_type is not None:
-            logger.warning("不支持的学习率调度器类型: %s，将不使用调度器", self.lr_scheduler_type)
-        
-        # 梯度裁剪配置日志
-        if self.grad_clip is not None:
-            logger.info("启用梯度裁剪，最大范数: %.2f", self.grad_clip)
-        else:
-            logger.info("未启用梯度裁剪")
-        
-        # 数据加载器
-        train_dataset = TensorDataset(train_x, train_y)
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-        )
-        
-        valid_loader = None
-        if valid_feat is not None and valid_label is not None:
-            # 对于验证集，如果数据不足，使用训练集的历史数据补充
-            # 合并训练集和验证集，但只使用验证集的标签
-            try:
-                # 先尝试只用验证集数据
-                valid_x, valid_y = self._prepare_sequences(valid_feat, valid_label)
-            except ValueError:
-                # 如果验证集数据不足，使用训练集的最后部分数据补充
-                # 这是正常行为：验证窗口通常较短（1个月），而模型需要60天历史数据
-                logger.info("验证集时间窗口较短（%d天），使用训练集历史数据补充以构建完整序列（正常行为，无数据泄露）",
-                          len(valid_feat.index.get_level_values("datetime").unique()) if not valid_feat.empty else 0)
-                # 合并训练集和验证集的特征（按时间排序）
-                combined_feat = pd.concat([train_feat, valid_feat]).sort_index()
-                combined_label = pd.concat([train_label, valid_label]).sort_index()
-                
-                # 只对验证集的时间点构建序列（但可以使用训练集的历史数据）
-                valid_x, valid_y = self._prepare_sequences_with_history(
-                    combined_feat, combined_label, valid_feat, valid_label
-                )
+        # 集成学习模式：训练多个模型
+        if self.is_ensemble:
+            self.models = []
+            base_seed = 42  # 基础随机种子
             
-            if valid_y is not None and len(valid_x) > 0:
+            for i in range(self.num_ensemble):
+                logger.info("=" * 60)
+                logger.info("[Ensemble] 训练模型 %d/%d...", i + 1, self.num_ensemble)
+                logger.info("=" * 60)
+                
+                # 设置随机种子（关键：确保每个模型初始化不同）
+                seed = base_seed + i
+                torch.manual_seed(seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed(seed)
+                    torch.cuda.manual_seed_all(seed)
+                np.random.seed(seed)
+                
+                # 创建模型
+                model = IndustryGRU(
+                    num_features=self._num_features,
+                    sequence_length=self._sequence_length,
+                    hidden_size=self.hidden_size,
+                    num_layers=self.num_layers,
+                    attention_hidden_dim=self.attention_hidden_dim,
+                    dropout=self.dropout,
+                ).to(self.device)
+                
+                # 优化器
+                optimizer = torch.optim.Adam(
+                    model.parameters(),
+                    lr=self.lr,
+                    weight_decay=self.weight_decay,
+                )
+                
+                # 学习率调度器
+                scheduler = None
+                if self.lr_scheduler_type == "plateau":
+                    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                        optimizer,
+                        mode="min",
+                        factor=0.5,
+                        patience=5,
+                    )
+                elif self.lr_scheduler_type is not None:
+                    logger.warning("不支持的学习率调度器类型: %s，将不使用调度器", self.lr_scheduler_type)
+                
+                # 数据加载器（每次使用不同的随机种子，shuffle 顺序不同）
+                train_dataset = TensorDataset(train_x, train_y)
+                train_loader = DataLoader(
+                    train_dataset,
+                    batch_size=self.batch_size,
+                    shuffle=True,  # shuffle=True 配合不同的随机种子，确保数据顺序不同
+                )
+                
+                valid_loader = None
+                if valid_x is not None and valid_y is not None and len(valid_x) > 0:
+                    valid_dataset = TensorDataset(valid_x, valid_y)
+                    valid_loader = DataLoader(
+                        valid_dataset,
+                        batch_size=self.batch_size,
+                        shuffle=False,
+                    )
+                
+                # 训练单个模型
+                best_loss = float("inf")
+                wait = 0
+                best_state = None
+                
+                for epoch in range(self.max_epochs):
+                    # 训练阶段
+                    model.train()
+                    train_loss = 0.0
+                    for batch_x, batch_y in train_loader:
+                        batch_x = batch_x.to(self.device)
+                        batch_y = batch_y.to(self.device)
+                        
+                        optimizer.zero_grad()
+                        pred = model(batch_x)
+                        loss = criterion(pred, batch_y)
+                        
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            logger.warning("训练损失为 NaN 或 inf，跳过该批次")
+                            continue
+                        
+                        loss.backward()
+                        
+                        if self.grad_clip is not None:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.grad_clip)
+                        
+                        optimizer.step()
+                        train_loss += loss.item() * len(batch_x)
+                    
+                    train_loss /= len(train_loader.dataset)
+                    
+                    # 验证阶段
+                    val_loss = train_loss
+                    if valid_loader is not None:
+                        model.eval()
+                        total_loss = 0.0
+                        with torch.no_grad():
+                            for vx, vy in valid_loader:
+                                vx = vx.to(self.device)
+                                vy = vy.to(self.device)
+                                pred = model(vx)
+                                loss = criterion(pred, vy)
+                                
+                                if torch.isnan(loss) or torch.isinf(loss):
+                                    logger.warning("验证损失为 NaN 或 inf，跳过该批次")
+                                    continue
+                                
+                                total_loss += loss.item() * len(vx)
+                        val_loss = total_loss / len(valid_loader.dataset)
+                    
+                    # 更新学习率调度器
+                    if scheduler is not None:
+                        monitor_loss = val_loss if valid_loader is not None else train_loss
+                        scheduler.step(monitor_loss)
+                    
+                    if (epoch + 1) % 10 == 0 or epoch == 0:  # 每10个epoch打印一次，减少日志
+                        logger.info(
+                            "[Ensemble Model %d/%d] Epoch %d/%d: train_loss=%.6f, valid_loss=%.6f",
+                            i + 1, self.num_ensemble, epoch + 1, self.max_epochs, train_loss, val_loss
+                        )
+                    
+                    # 早停
+                    if val_loss < best_loss:
+                        best_loss = val_loss
+                        wait = 0
+                        best_state = model.state_dict().copy()
+                    else:
+                        wait += 1
+                        if wait >= self.patience:
+                            logger.info("[Ensemble Model %d/%d] 早停触发，最佳验证损失: %.6f", i + 1, self.num_ensemble, best_loss)
+                            break
+                
+                # 加载最佳模型
+                if best_state is not None:
+                    model.load_state_dict(best_state)
+                
+                self.models.append(model)
+                logger.info("[Ensemble] 模型 %d/%d 训练完成，最佳验证损失: %.6f", i + 1, self.num_ensemble, best_loss)
+            
+            logger.info("=" * 60)
+            logger.info("[Ensemble] 所有 %d 个模型训练完成", self.num_ensemble)
+            logger.info("=" * 60)
+        
+        else:
+            # 单模型模式（原有逻辑）
+            self.model = IndustryGRU(
+                num_features=self._num_features,
+                sequence_length=self._sequence_length,
+                hidden_size=self.hidden_size,
+                num_layers=self.num_layers,
+                attention_hidden_dim=self.attention_hidden_dim,
+                dropout=self.dropout,
+            ).to(self.device)
+            
+            # 优化器
+            optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+            )
+            
+            # 学习率调度器
+            scheduler = None
+            if self.lr_scheduler_type == "plateau":
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer,
+                    mode="min",
+                    factor=0.5,
+                    patience=5,
+                )
+                logger.info("使用 ReduceLROnPlateau 学习率调度器（factor=0.5, patience=5）")
+            elif self.lr_scheduler_type is not None:
+                logger.warning("不支持的学习率调度器类型: %s，将不使用调度器", self.lr_scheduler_type)
+            
+            # 梯度裁剪配置日志
+            if self.grad_clip is not None:
+                logger.info("启用梯度裁剪，最大范数: %.2f", self.grad_clip)
+            else:
+                logger.info("未启用梯度裁剪")
+            
+            # 数据加载器
+            train_dataset = TensorDataset(train_x, train_y)
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.batch_size,
+                shuffle=True,
+            )
+            
+            valid_loader = None
+            if valid_x is not None and valid_y is not None and len(valid_x) > 0:
                 valid_dataset = TensorDataset(valid_x, valid_y)
                 valid_loader = DataLoader(
                     valid_dataset,
@@ -637,93 +797,85 @@ class IndustryGRUWrapper:
                 )
             else:
                 logger.warning("验证集序列构建失败，将只使用训练集进行训练")
-                valid_loader = None
-        
-        # 训练循环
-        best_loss = float("inf")
-        wait = 0
-        best_state = None
-        
-        for epoch in range(self.max_epochs):
-            # 训练阶段
-            self.model.train()
-            train_loss = 0.0
-            for batch_x, batch_y in train_loader:
-                batch_x = batch_x.to(self.device)
-                batch_y = batch_y.to(self.device)
-                
-                optimizer.zero_grad()
-                pred = self.model(batch_x)
-                loss = criterion(pred, batch_y)
-                
-                # 检查损失是否为 NaN 或 inf
-                if torch.isnan(loss) or torch.isinf(loss):
-                    logger.warning("训练损失为 NaN 或 inf，跳过该批次")
-                    continue
-                
-                loss.backward()
-                
-                # 梯度裁剪，防止梯度爆炸
-                if self.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.grad_clip)
-                
-                optimizer.step()
-                
-                train_loss += loss.item() * len(batch_x)
             
-            train_loss /= len(train_loader.dataset)
+            # 训练循环
+            best_loss = float("inf")
+            wait = 0
+            best_state = None
             
-            # 验证阶段
-            val_loss = train_loss
-            if valid_loader is not None:
-                self.model.eval()
-                total_loss = 0.0
-                with torch.no_grad():
-                    for vx, vy in valid_loader:
-                        vx = vx.to(self.device)
-                        vy = vy.to(self.device)
-                        pred = self.model(vx)
-                        loss = criterion(pred, vy)
-                        
-                        # 检查损失是否为 NaN 或 inf
-                        if torch.isnan(loss) or torch.isinf(loss):
-                            logger.warning("验证损失为 NaN 或 inf，跳过该批次")
-                            continue
-                        
-                        total_loss += loss.item() * len(vx)
-                val_loss = total_loss / len(valid_loader.dataset)
+            for epoch in range(self.max_epochs):
+                # 训练阶段
+                self.model.train()
+                train_loss = 0.0
+                for batch_x, batch_y in train_loader:
+                    batch_x = batch_x.to(self.device)
+                    batch_y = batch_y.to(self.device)
+                    
+                    optimizer.zero_grad()
+                    pred = self.model(batch_x)
+                    loss = criterion(pred, batch_y)
+                    
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        logger.warning("训练损失为 NaN 或 inf，跳过该批次")
+                        continue
+                    
+                    loss.backward()
+                    
+                    if self.grad_clip is not None:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.grad_clip)
+                    
+                    optimizer.step()
+                    train_loss += loss.item() * len(batch_x)
+                
+                train_loss /= len(train_loader.dataset)
+                
+                # 验证阶段
+                val_loss = train_loss
+                if valid_loader is not None:
+                    self.model.eval()
+                    total_loss = 0.0
+                    with torch.no_grad():
+                        for vx, vy in valid_loader:
+                            vx = vx.to(self.device)
+                            vy = vy.to(self.device)
+                            pred = self.model(vx)
+                            loss = criterion(pred, vy)
+                            
+                            if torch.isnan(loss) or torch.isinf(loss):
+                                logger.warning("验证损失为 NaN 或 inf，跳过该批次")
+                                continue
+                            
+                            total_loss += loss.item() * len(vx)
+                    val_loss = total_loss / len(valid_loader.dataset)
+                
+                # 更新学习率调度器
+                current_lr = optimizer.param_groups[0]["lr"]
+                if scheduler is not None:
+                    monitor_loss = val_loss if valid_loader is not None else train_loss
+                    scheduler.step(monitor_loss)
+                    new_lr = optimizer.param_groups[0]["lr"]
+                    if new_lr < current_lr:
+                        logger.info("学习率已降低: %.6f -> %.6f (监控损失: %.6f)", current_lr, new_lr, monitor_loss)
+                
+                logger.info(
+                    "IndustryGRU epoch %d/%d: train_loss=%.6f, valid_loss=%.6f, lr=%.6f",
+                    epoch + 1, self.max_epochs, train_loss, val_loss, optimizer.param_groups[0]["lr"]
+                )
+                
+                # 早停
+                if val_loss < best_loss:
+                    best_loss = val_loss
+                    wait = 0
+                    best_state = self.model.state_dict().copy()
+                else:
+                    wait += 1
+                    if wait >= self.patience:
+                        logger.info("早停触发，最佳验证损失: %.6f", best_loss)
+                        break
             
-            # 更新学习率调度器（如果使用 ReduceLROnPlateau）
-            current_lr = optimizer.param_groups[0]["lr"]
-            if scheduler is not None:
-                # ReduceLROnPlateau 需要监控验证损失
-                # 如果没有验证集，使用训练损失
-                monitor_loss = val_loss if valid_loader is not None else train_loss
-                scheduler.step(monitor_loss)
-                # 检查学习率是否降低
-                new_lr = optimizer.param_groups[0]["lr"]
-                if new_lr < current_lr:
-                    logger.info("学习率已降低: %.6f -> %.6f (监控损失: %.6f)", current_lr, new_lr, monitor_loss)
-            
-            logger.info(
-                "IndustryGRU epoch %d/%d: train_loss=%.6f, valid_loss=%.6f, lr=%.6f",
-                epoch + 1, self.max_epochs, train_loss, val_loss, optimizer.param_groups[0]["lr"]
-            )
-            
-            # 早停
-            if val_loss < best_loss:
-                best_loss = val_loss
-                wait = 0
-                best_state = self.model.state_dict().copy()
-            else:
-                wait += 1
-                if wait >= self.patience:
-                    logger.info("早停触发，最佳验证损失: %.6f", best_loss)
-                    break
-        
-        # 加载最佳模型
-        if best_state is not None:
-            self.model.load_state_dict(best_state)
+            # 加载最佳模型
+            if best_state is not None:
+                self.model.load_state_dict(best_state)
     
     def predict(self, feat: pd.DataFrame, history_feat: Optional[pd.DataFrame] = None) -> pd.Series:
         """
@@ -734,25 +886,36 @@ class IndustryGRUWrapper:
             history_feat: 历史特征 DataFrame（可选，用于补充构建完整序列）
         
         返回:
-            预测 Series
+            预测 Series（集成模式下为所有模型的平均预测）
         """
-        if self.model is None:
-            raise RuntimeError("模型尚未训练")
+        # 检查模型是否已训练
+        if self.is_ensemble:
+            if self.models is None or len(self.models) == 0:
+                raise RuntimeError("集成模型尚未训练")
+        else:
+            if self.model is None:
+                raise RuntimeError("模型尚未训练")
         
-        self.model.eval()
-        
-        # 如果提供了历史数据，合并后构建序列
+        # 准备输入数据（所有模型共享相同的数据准备）
         if history_feat is not None:
             try:
-                # 先尝试只用当前数据
+                # 先尝试只用当前数据（更快）
                 x, _ = self._prepare_sequences(feat, None)
+                logger.debug("使用当前数据构建序列，样本数: %d", len(x))
             except ValueError:
                 # 如果数据不足，使用历史数据补充
-                # 这是正常行为：预测窗口可能较短，而模型需要60天历史数据
                 logger.info("预测数据时间窗口较短，使用历史数据补充以构建完整序列（正常行为，无数据泄露）")
+                import time
+                merge_start = time.time()
                 combined_feat = pd.concat([history_feat, feat]).sort_index()
+                merge_time = time.time() - merge_start
+                logger.debug("合并历史数据耗时: %.2f 秒（训练集样本: %d, 验证集样本: %d）", 
+                            merge_time, len(history_feat), len(feat))
                 # 只对 feat 的时间点进行预测
+                seq_start = time.time()
                 x, _ = self._prepare_sequences_for_prediction(combined_feat, feat)
+                seq_time = time.time() - seq_start
+                logger.debug("构建序列耗时: %.2f 秒，序列数: %d", seq_time, len(x))
         else:
             try:
                 x, _ = self._prepare_sequences(feat, None)
@@ -760,15 +923,41 @@ class IndustryGRUWrapper:
                 logger.error("无法构建时序序列，且未提供历史数据: %s", e)
                 raise
         
-        # 批处理预测
-        all_preds = []
-        with torch.no_grad():
-            for i in range(0, len(x), self.batch_size):
-                batch_x = x[i:i + self.batch_size].to(self.device)
-                batch_pred = self.model(batch_x)
-                all_preds.append(batch_pred.cpu().numpy())
+        # 集成学习模式：对所有模型预测并取平均
+        if self.is_ensemble:
+            all_model_preds = []
+            
+            for i, model in enumerate(self.models):
+                model.eval()
+                model_preds = []
+                
+                with torch.no_grad():
+                    for j in range(0, len(x), self.batch_size):
+                        batch_x = x[j:j + self.batch_size].to(self.device)
+                        batch_pred = model(batch_x)
+                        model_preds.append(batch_pred.cpu().numpy())
+                
+                model_pred = np.concatenate(model_preds).flatten()
+                all_model_preds.append(model_pred)
+            
+            # 对所有模型的预测取平均
+            all_model_preds = np.array(all_model_preds)  # shape: (num_ensemble, n_samples)
+            preds = np.mean(all_model_preds, axis=0)  # shape: (n_samples,)
+            
+            logger.debug("集成预测完成，使用 %d 个模型的平均预测", self.num_ensemble)
         
-        preds = np.concatenate(all_preds).flatten()
+        else:
+            # 单模型模式
+            self.model.eval()
+            all_preds = []
+            
+            with torch.no_grad():
+                for i in range(0, len(x), self.batch_size):
+                    batch_x = x[i:i + self.batch_size].to(self.device)
+                    batch_pred = self.model(batch_x)
+                    all_preds.append(batch_pred.cpu().numpy())
+            
+            preds = np.concatenate(all_preds).flatten()
         
         # 构建索引（使用保存的样本索引）
         if hasattr(self, '_last_sample_indices') and self._last_sample_indices:
@@ -806,46 +995,140 @@ class IndustryGRUWrapper:
         return pd.Series(preds, index=pred_index, name="industry_gru_pred")
     
     def save(self, output_dir: str, model_name: str):
-        """保存模型。"""
-        if self.model is None:
-            raise RuntimeError("无可保存的模型")
+        """
+        保存模型。
         
+        参数:
+            output_dir: 输出目录
+            model_name: 模型名称（不含扩展名）
+        """
         os.makedirs(output_dir, exist_ok=True)
-        path = os.path.join(output_dir, f"{model_name}_industry_gru.pt")
         
-        torch.save(
-            {
-                "state_dict": self.model.state_dict(),
-                "config": self.config,
-                "num_features": self._num_features,
-                "sequence_length": self._sequence_length,
-            },
-            path,
-        )
+        if self.is_ensemble:
+            # 集成模式：保存所有模型的状态字典
+            if self.models is None or len(self.models) == 0:
+                raise RuntimeError("集成模型尚未训练，无可保存的模型")
+            
+            ensemble_state_dicts = {}
+            for i, model in enumerate(self.models):
+                ensemble_state_dicts[f"model_{i}"] = model.state_dict()
+            
+            path = os.path.join(output_dir, f"{model_name}_industry_gru_ensemble.pt")
+            
+            torch.save(
+                {
+                    "ensemble_state_dicts": ensemble_state_dicts,
+                    "num_ensemble": self.num_ensemble,
+                    "config": self.config,
+                    "num_features": self._num_features,
+                    "sequence_length": self._sequence_length,
+                },
+                path,
+            )
+            
+            logger.info("IndustryGRU 集成模型已保存: %s（包含 %d 个子模型）", path, self.num_ensemble)
         
-        logger.info("IndustryGRU 模型已保存: %s", path)
+        else:
+            # 单模型模式
+            if self.model is None:
+                raise RuntimeError("模型尚未训练，无可保存的模型")
+            
+            path = os.path.join(output_dir, f"{model_name}_industry_gru.pt")
+            
+            torch.save(
+                {
+                    "state_dict": self.model.state_dict(),
+                    "config": self.config,
+                    "num_features": self._num_features,
+                    "sequence_length": self._sequence_length,
+                },
+                path,
+            )
+            
+            logger.info("IndustryGRU 模型已保存: %s", path)
     
     def load(self, output_dir: str, model_name: str):
-        """加载模型。"""
-        path = os.path.join(output_dir, f"{model_name}_industry_gru.pt")
-        if not os.path.exists(path):
-            raise FileNotFoundError(path)
+        """
+        加载模型。
         
-        ckpt = torch.load(path, map_location=self.device)
+        参数:
+            output_dir: 模型目录
+            model_name: 模型名称（不含扩展名）
+        """
+        # 先尝试加载集成模型
+        ensemble_path = os.path.join(output_dir, f"{model_name}_industry_gru_ensemble.pt")
+        single_path = os.path.join(output_dir, f"{model_name}_industry_gru.pt")
         
-        self._num_features = ckpt["num_features"]
-        self._sequence_length = ckpt["sequence_length"]
+        if os.path.exists(ensemble_path):
+            # 加载集成模型
+            ckpt = torch.load(ensemble_path, map_location=self.device)
+            
+            self._num_features = ckpt["num_features"]
+            self._sequence_length = ckpt["sequence_length"]
+            num_ensemble = ckpt.get("num_ensemble", len(ckpt["ensemble_state_dicts"]))
+            
+            # 更新配置以匹配保存的模型
+            if num_ensemble != self.num_ensemble:
+                logger.warning(
+                    "配置中的 num_ensemble (%d) 与保存的模型数量 (%d) 不一致，使用保存的数量",
+                    self.num_ensemble, num_ensemble
+                )
+                self.num_ensemble = num_ensemble
+                self.is_ensemble = num_ensemble > 1
+            
+            # 重建所有模型
+            self.models = []
+            ensemble_state_dicts = ckpt["ensemble_state_dicts"]
+            
+            for i in range(num_ensemble):
+                model = IndustryGRU(
+                    num_features=self._num_features,
+                    sequence_length=self._sequence_length,
+                    hidden_size=self.hidden_size,
+                    num_layers=self.num_layers,
+                    attention_hidden_dim=self.attention_hidden_dim,
+                    dropout=self.dropout,
+                ).to(self.device)
+                
+                model_key = f"model_{i}"
+                if model_key in ensemble_state_dicts:
+                    model.load_state_dict(ensemble_state_dicts[model_key])
+                else:
+                    logger.warning("未找到模型 %d 的状态字典，跳过", i)
+                    continue
+                
+                self.models.append(model)
+            
+            logger.info("IndustryGRU 集成模型已加载: %s（包含 %d 个子模型）", ensemble_path, len(self.models))
         
-        # 重建模型
-        self.model = IndustryGRU(
-            num_features=self._num_features,
-            sequence_length=self._sequence_length,
-            hidden_size=self.hidden_size,
-            num_layers=self.num_layers,
-            attention_hidden_dim=self.attention_hidden_dim,
-            dropout=self.dropout,
-        ).to(self.device)
+        elif os.path.exists(single_path):
+            # 加载单模型
+            ckpt = torch.load(single_path, map_location=self.device)
+            
+            self._num_features = ckpt["num_features"]
+            self._sequence_length = ckpt["sequence_length"]
+            
+            # 如果当前配置是集成模式，但加载的是单模型，需要调整
+            if self.is_ensemble:
+                logger.warning("配置为集成模式，但加载的是单模型，切换到单模型模式")
+                self.is_ensemble = False
+                self.models = None
+            
+            # 重建模型
+            self.model = IndustryGRU(
+                num_features=self._num_features,
+                sequence_length=self._sequence_length,
+                hidden_size=self.hidden_size,
+                num_layers=self.num_layers,
+                attention_hidden_dim=self.attention_hidden_dim,
+                dropout=self.dropout,
+            ).to(self.device)
+            
+            self.model.load_state_dict(ckpt["state_dict"])
+            logger.info("IndustryGRU 模型已加载: %s", single_path)
         
-        self.model.load_state_dict(ckpt["state_dict"])
-        logger.info("IndustryGRU 模型已加载: %s", path)
+        else:
+            raise FileNotFoundError(
+                f"未找到模型文件。尝试了以下路径：\n  - {ensemble_path}\n  - {single_path}"
+            )
 

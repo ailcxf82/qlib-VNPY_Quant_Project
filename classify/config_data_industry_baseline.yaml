@@ -52,7 +52,7 @@ data:
   
   # 标签转换配置（截面标准化，用于排序）
   label_transform:
-    enabled: true
+    enabled: false
     method: "rank"  # 使用排名而非百分位，更适合排序任务
     groupby: "datetime"  # 按日期分组进行截面排名
   

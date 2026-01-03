@@ -391,7 +391,13 @@ def main():
         if has_valid:
             try:
                 # 对于验证集，使用训练集数据作为历史数据补充
+                logger.info("窗口 %d: 开始验证集预测（可能需要一些时间构建序列）...", idx)
+                import time
+                predict_start = time.time()
                 valid_pred = model.predict(valid_feat_norm, history_feat=train_feat_norm)
+                predict_time = time.time() - predict_start
+                logger.info("窗口 %d: 验证集预测完成，耗时 %.2f 秒", idx, predict_time)
+                
                 valid_ic = _rank_ic(valid_pred, valid_lbl)
                 metric["valid_ic"] = float(valid_ic)
                 logger.info("窗口 %d: 训练集 IC=%.4f, 验证集 IC=%.4f", idx, train_ic, valid_ic)
@@ -453,8 +459,15 @@ def main():
         if df["valid_ic"].notna().any():
             logger.info("  - 平均验证集 IC: %.4f", df["valid_ic"].mean())
             logger.info("  - 验证集 IC 标准差: %.4f", df["valid_ic"].std())
-        logger.info("  - 平均训练集 IC: %.4f", df["train_ic"].mean())
-        logger.info("  - 训练集 IC 标准差: %.4f", df["train_ic"].std())
+        else:
+            logger.info("  - 平均验证集 IC: N/A（无有效数据）")
+            logger.info("  - 验证集 IC 标准差: N/A（无有效数据）")
+        if df["train_ic"].notna().any():
+            logger.info("  - 平均训练集 IC: %.4f", df["train_ic"].mean())
+            logger.info("  - 训练集 IC 标准差: %.4f", df["train_ic"].std())
+        else:
+            logger.info("  - 平均训练集 IC: N/A（训练集 IC 计算已禁用，见 train_ic.enabled 配置）")
+            logger.info("  - 训练集 IC 标准差: N/A（训练集 IC 计算已禁用）")
     else:
         logger.warning("未产出任何训练窗口指标")
     

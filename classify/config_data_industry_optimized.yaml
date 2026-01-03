@@ -1,0 +1,103 @@
+qlib:
+  provider_uri: "D:/qlib_data/qlib_data"
+  region: "cn"
+
+data:
+  # 行业指数路径配置
+  industry_index_path: "D:/qlib_data/qlib_data/instruments/classifyl2.txt"
+  
+  # 数据时间范围
+  start_time: "2022-12-01"
+  end_time: "2025-12-01"
+  freq: "day"
+  
+  # 缺失值处理策略
+  missing_value_strategy: "auto"
+  
+  # ========== 优化特征集（聚焦核心信号，减少噪声）==========
+  # 策略：使用最核心的特征，确保每个特征都有明确的金融意义
+  features:
+    # ========== 1. 价格动量特征（核心，多时间尺度）==========
+    
+    # 短期动量（1-10天）
+    - "$pct_change"                    # ret_1: 1日涨跌幅（最准确）
+    - "$close / Ref($close, 5) - 1"    # ret_5: 5日收益率
+    - "$close / Ref($close, 10) - 1"   # ret_10: 10日收益率
+    
+    # 中期动量（20-60天，行业轮动的关键周期）
+    - "$close / Ref($close, 20) - 1"   # ret_20: 20日收益率（核心）
+    - "$close / Ref($close, 60) - 1"   # ret_60: 60日收益率（核心）
+    
+    # ========== 2. 价格波动特征（风险指标）==========
+    
+    # 短期波动
+    - "Std($pct_change, 10)"           # std_ret_10: 10日波动
+    - "Std($close / Ref($close, 1) - 1, 20)"   # std_ret_20: 20日波动
+    
+    # 振幅
+    - "($high - $low) / $close"        # amplitude: 日内振幅
+    
+    # ========== 3. 量能特征（市场关注度）==========
+    
+    # 成交量变化
+    - "Log($vol + 1)"                  # log_vol: 对数成交量
+    - "$vol / Mean($vol, 20) - 1"      # vol_ma_ratio_20: 成交量相对20日均量
+    
+    # 成交额变化
+    - "Log($amount + 1)"               # log_amount: 对数成交额
+    - "$amount / Mean($amount, 20) - 1"  # amount_ma_ratio_20: 成交额相对20日均值
+    
+    # 价量相关性（核心）
+    - "Corr($pct_change, $vol / Ref($vol, 1) - 1, 20)"  # price_vol_corr_20: 20日价量相关性
+    
+    # ========== 4. 估值特征（相对吸引力）==========
+    
+    # 市盈率（相对估值）
+    - "$pe / Mean($pe, 20) - 1"        # pe_ma_ratio_20: PE相对20日均值（核心）
+    - "Ref($pe, 1) / $pe - 1"          # pe_chg: PE变化率
+    
+    # 市净率（相对估值）
+    - "$pb / Mean($pb, 20) - 1"        # pb_ma_ratio_20: PB相对20日均值（核心）
+    
+    # ========== 5. 市值特征（规模因子）==========
+    
+    # 流通市值
+    - "Log($float_mv + 1)"             # log_float_mv: 对数流通市值
+    - "$float_mv / Ref($float_mv, 20) - 1"  # float_mv_chg_20: 20日流通市值变化率
+    
+    # 换手率（流动性指标）
+    - "$amount / ($float_mv + 1e-12)"  # turnover_float: 流通市值换手率
+  
+  # ========== 标签配置 ==========
+  # 未来10天的收益率，用于排序预测
+  label: "Ref($close, -10) / $close - 1"
+  
+  # 标签转换配置（截面标准化，用于排序）
+  label_transform:
+    enabled: true
+    method: "rank"  # 使用排名而非百分位，更适合排序任务
+    groupby: "datetime"  # 按日期分组进行截面排名
+  
+  # 数据过滤配置
+  filter:
+    limit_up: false
+    limit_down: false
+  
+  # ========== 特征处理配置 ==========
+  # 特征标准化方式
+  normalization: "zscore"
+  
+  # 截面标准化配置（非常重要）
+  cross_sectional_normalization:
+    enabled: true              # 启用截面标准化
+    method: "rank"             # ⬆️ 改为 rank（对异常值更鲁棒）
+    groupby: "datetime"       # 按日期分组
+    clip: true                # 进行极值裁剪
+    clip_quantile: 0.05       # 裁剪分位数（上下各5%）
+  
+  # 时间序列归一化配置（在训练时按窗口归一化）
+  temporal_normalization:
+    enabled: true              # 启用时间序列归一化
+    clip: true                 # 进行极值裁剪
+    clip_range: 5.0            # 裁剪范围（±5倍标准差）
+
