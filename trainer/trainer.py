@@ -65,9 +65,16 @@ class RollingTrainer:
         data_cfg = load_yaml_config(self.data_cfg_path)["data"]
         start = pd.Timestamp(data_cfg["start_time"])
         end = pd.Timestamp(data_cfg["end_time"])
-        train_offset = pd.DateOffset(months=rolling["train_months"])
-        valid_offset = pd.DateOffset(months=rolling["valid_months"])
-        step = pd.DateOffset(months=rolling["step_months"])
+        # 支持按日训练：优先使用 train_days/valid_days/step_days，如果没有则回退到按月（兼容旧配置）
+        if "train_days" in rolling:
+            train_offset = pd.Timedelta(days=rolling["train_days"])
+            valid_offset = pd.Timedelta(days=rolling["valid_days"])
+            step = pd.Timedelta(days=rolling["step_days"])
+        else:
+            # 兼容旧配置：按月训练
+            train_offset = pd.DateOffset(months=rolling["train_months"])
+            valid_offset = pd.DateOffset(months=rolling["valid_months"])
+            step = pd.DateOffset(months=rolling["step_months"])
 
         # cursor 指向验证起点，前推 train_offset 即训练区间
         cursor = start + train_offset

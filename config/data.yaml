@@ -4,8 +4,8 @@ qlib:
 
 data:
   instruments: "csi300,csi101"
-  start_time: "2023-11-01"
-  end_time: "2025-12-31"
+  start_time: "2023-01-01"
+  end_time: "2026-01-31"
   freq: "day"
   
   # 缺失值清理策略：
@@ -134,7 +134,7 @@ data:
     # 成交量情绪
     - "$volume / Mean($volume, 20) - 1"  # 成交量相对20日均值的偏离度
     - "($close - Ref($close, 1)) * $volume"  # 价量配合度
-  label: "Ref($close, -20)/$close - 1"
+  label: "Ref($close, -5)/$close - 1"
   label_transform:
     enabled: true              # 启用标签转换
     method: "percentile"       # 转换方法：percentile（百分位）或 rank（排名）

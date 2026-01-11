@@ -163,14 +163,23 @@ def check_training_procedure():
     cfg = load_yaml_config(config_path)
     
     rolling = cfg.get("rolling", {})
-    train_months = rolling.get("train_months", 24)
-    valid_months = rolling.get("valid_months", 1)
-    step_months = rolling.get("step_months", 1)
-    
-    print(f"\n滚动窗口配置：")
-    print(f"  训练窗口: {train_months} 个月")
-    print(f"  验证窗口: {valid_months} 个月")
-    print(f"  步长: {step_months} 个月")
+    # 支持按日训练和按月训练两种配置
+    if "train_days" in rolling:
+        train_days = rolling.get("train_days", 720)
+        valid_days = rolling.get("valid_days", 30)
+        step_days = rolling.get("step_days", 1)
+        print(f"\n滚动窗口配置（按日训练）：")
+        print(f"  训练窗口: {train_days} 天")
+        print(f"  验证窗口: {valid_days} 天")
+        print(f"  步长: {step_days} 天")
+    else:
+        train_months = rolling.get("train_months", 24)
+        valid_months = rolling.get("valid_months", 1)
+        step_months = rolling.get("step_months", 1)
+        print(f"\n滚动窗口配置（按月训练）：")
+        print(f"  训练窗口: {train_months} 个月")
+        print(f"  验证窗口: {valid_months} 个月")
+        print(f"  步长: {step_months} 个月")
     
     print(f"\n训练流程检查：")
     print(f"  位置: trainer/trainer.py::RollingTrainer")

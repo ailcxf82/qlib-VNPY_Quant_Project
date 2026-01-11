@@ -21,14 +21,18 @@ class RankICDynamicWeighter:
         window: int = 60,
         half_life: int = 20,
         min_weight: float = 0.05,
-        max_weight: float = 0.7,
+        max_weight: float = 0.5,  # 降低 max_weight 从 0.7 到 0.5，防止单一模型权重过大
         clip_negative: bool = True,
+        use_softmax: bool = False,  # 是否使用 softmax 平滑 ICIR 差异
+        temperature: float = 1.0,  # softmax 温度参数（越大越平滑）
     ):
         self.window = window
         self.half_life = half_life
         self.min_weight = min_weight
         self.max_weight = max_weight
         self.clip_negative = clip_negative
+        self.use_softmax = use_softmax
+        self.temperature = temperature
 
     @staticmethod
     def compute_rank_ic(pred: pd.Series, label: pd.Series) -> float:
@@ -59,16 +63,43 @@ class RankICDynamicWeighter:
         scores = {name: self._ic_ir(series) for name, series in ic_histories.items()}
         if self.clip_negative:
             scores = {k: max(0.0, v) for k, v in scores.items()}
+        
         total = sum(scores.values())
         if total == 0:
             # 回退为等权
             eq = 1.0 / max(1, len(scores))
             return {k: eq for k in scores}
-        weights = {k: v / total for k, v in scores.items()}
+        
+        # 使用 softmax 平滑 ICIR 差异（可选）
+        if self.use_softmax:
+            # 将 ICIR 转换为 softmax 权重，temperature 越大，权重分布越均匀
+            score_array = np.array([scores[k] for k in scores.keys()])
+            # 使用温度缩放：exp(score / temperature)
+            exp_scores = np.exp(score_array / max(self.temperature, 0.1))
+            softmax_weights = exp_scores / exp_scores.sum()
+            weights = {k: w for k, w in zip(scores.keys(), softmax_weights)}
+            logger.debug("使用 Softmax 归一化，temperature=%.2f，原始 ICIR: %s", 
+                        self.temperature, scores)
+        else:
+            # 标准归一化
+            weights = {k: v / total for k, v in scores.items()}
+        
         # 施加 min/max 约束
         weights = {k: np.clip(w, self.min_weight, self.max_weight) for k, w in weights.items()}
+        
+        # 重新归一化（因为 clip 后和可能不为 1）
         total = sum(weights.values())
-        return {k: w / total for k, w in weights.items()}
+        if total == 0:
+            # 如果所有权重都被 clip 到 0，回退为等权
+            eq = 1.0 / max(1, len(weights))
+            return {k: eq for k in weights}
+        
+        final_weights = {k: w / total for k, w in weights.items()}
+        
+        # 记录权重分配日志（便于诊断）
+        logger.info("模型权重分配: %s", {k: f"{v:.4f}" for k, v in final_weights.items()})
+        
+        return final_weights
 
     def blend(self, preds: Dict[str, pd.Series], weights: Dict[str, float]) -> pd.Series:
         """依据权重融合预测结果。"""

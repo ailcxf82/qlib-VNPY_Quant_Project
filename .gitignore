@@ -73,3 +73,9 @@ backtest/msa/__pycache__/tushare_client.cpython-313.pyc
 predictor/__pycache__/predictor.cpython-311.pyc
 classify/__pycache__/__init__.cpython-311.pyc
 classify/__pycache__/pytorch_industry_gru.cpython-311.pyc
+data/trade_plans/MSA_2026.csv
+docs/MODEL_FILES_EXPLANATION.md
+docs/PREDICTION_NORMALIZATION_LOGIC.md
+docs/STACK_MODEL_EXPLANATION.md
+docs/WEIGHT_BALANCE_FIX.md
+docs/WHY_STACK_ONLY_USES_LGB.md

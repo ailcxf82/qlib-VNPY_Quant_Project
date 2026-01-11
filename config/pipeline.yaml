@@ -24,15 +24,20 @@ ensemble:
       config_key: "mlp_config"
 
 rolling:
-  train_months: 24
-  valid_months: 1
-  test_months: 1
-  step_months: 1
+  train_days: 720  # 训练窗口：720天（约24个月，按30天/月计算）
+  valid_days: 30   # 验证窗口：30天（约1个月）
+  test_days: 30    # 测试窗口：30天（约1个月）
+  step_days: 5     # 滚动步长：1天（按日训练）
   min_samples: 2000
 
 ic_logging:
-  window: 60
-  half_life: 20
+  window: 60  # IC 历史窗口大小
+  half_life: 20  # 半衰期（用于指数衰减权重）
+  min_weight: 0.05  # 最小权重（防止模型权重过低）
+  max_weight: 0.5  # 最大权重（防止单一模型权重过大，默认 0.5，原为 0.7）
+  clip_negative: true  # 是否裁剪负 ICIR
+  use_softmax: false  # 是否使用 softmax 平滑 ICIR 差异（可选，默认 false）
+  temperature: 1.0  # softmax 温度参数（越大权重分布越均匀，仅在 use_softmax=true 时生效）
 
 paths:
   model_dir: "data/models"

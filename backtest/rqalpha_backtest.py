@@ -16,9 +16,11 @@ try:
     from rqalpha import run_file
     from rqalpha.utils.config import parse_config
     RQALPHA_AVAILABLE = True
-except ImportError:
+    logging.info("✓ RQAlpha 框架已成功导入")
+except ImportError as e:
     RQALPHA_AVAILABLE = False
-    logging.warning("RQAlpha 未安装，请运行: pip install rqalpha")
+    logging.error("✗ RQAlpha 未安装或导入失败: %s", e)
+    logging.error("请运行: pip install rqalpha")
 
 # 添加项目根目录到路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -417,7 +419,9 @@ def run_rqalpha_backtest(
         raise ImportError("RQAlpha 未安装，请运行: pip install rqalpha")
     
     # 执行回测
-    logging.info("开始执行 RQAlpha 回测...")
+    logging.info("=" * 80)
+    logging.info("开始执行 RQAlpha 回测框架...")
+    logging.info("=" * 80)
     logging.info(f"策略文件: {strategy_path}")
     logging.info(f"预测文件: {temp_prediction_path}")
     logging.info(f"回测日期范围: {start_date} 至 {end_date}")

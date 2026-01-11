@@ -126,6 +126,18 @@ def main():
     cv["alloc_strategy1"] = args.alloc1
     cv["alloc_strategy2"] = args.alloc2
     cv["drawdown_stop"] = args.drawdown_stop
+    
+    # 调仓频率：从配置的 rebalance_interval 映射到子策略参数
+    # 如果配置中有 rebalance_interval，则应用到两个子策略（除非子策略单独指定）
+    rebalance_interval = cv.get("rebalance_interval")
+    if rebalance_interval is not None:
+        # 如果子策略没有单独指定，则使用全局配置
+        if "s1_rebalance_interval_days" not in cv:
+            cv["s1_rebalance_interval_days"] = int(rebalance_interval)
+        if "s2_rebalance_interval_days" not in cv:
+            cv["s2_rebalance_interval_days"] = int(rebalance_interval)
+        logging.info("调仓频率（来自配置 rebalance_interval）: %d 天", int(rebalance_interval))
+    
     # scheme C params (global; strategy will map to s1/s2 defaults unless overridden)
     cv["msa_selection_mode"] = args.msa_selection_mode
     cv["msa_preselect_topm"] = args.msa_preselect_topm
@@ -145,6 +157,13 @@ def main():
     try:
         # 这里把 prediction_path 传一个占位（必须传），真正使用的是 context_vars 里的 pred_csi101/pred_csi300
         # 注意：strategy_path 指向 MSA 策略脚本
+        logging.info("=" * 80)
+        logging.info("准备启动 RQAlpha 回测框架")
+        logging.info("临时配置文件: %s", tmp.name)
+        logging.info("策略脚本: %s", _resolve_path(args.strategy) or args.strategy)
+        logging.info("预测文件 (csi101): %s", pred_csi101)
+        logging.info("预测文件 (csi300): %s", pred_csi300)
+        logging.info("=" * 80)
         _run_single(
             rqalpha_config_path=tmp.name,
             prediction_path=pred_csi101,

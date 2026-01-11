@@ -32,8 +32,10 @@ class PredictorEngine:
             window=ic_cfg.get("window", 60),
             half_life=ic_cfg.get("half_life", 20),
             min_weight=ic_cfg.get("min_weight", 0.05),
-            max_weight=ic_cfg.get("max_weight", 0.7),
+            max_weight=ic_cfg.get("max_weight", 0.5),  # 默认降低到 0.5，防止单一模型权重过大
             clip_negative=ic_cfg.get("clip_negative", True),
+            use_softmax=ic_cfg.get("use_softmax", False),  # 可选：使用 softmax 平滑权重
+            temperature=ic_cfg.get("temperature", 1.0),  # softmax 温度参数
         )
         # 加载数据配置以检查 label_transform
         data_config_path = cfg.get("data_config", "config/data.yaml")
