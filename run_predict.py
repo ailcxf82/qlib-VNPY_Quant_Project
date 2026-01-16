@@ -53,6 +53,8 @@ def _load_ic_histories(log_path: str) -> Dict[str, pd.Series]:
         "mlp": pd.Series(df["ic_mlp"].values, index=df["valid_end"]),
         "stack": pd.Series(df["ic_stack"].values, index=df["valid_end"]),
     }
+    if "ic_gru" in df.columns:
+        histories["gru"] = pd.Series(df["ic_gru"].values, index=df["valid_end"])
     if "ic_qlib_ensemble" in df.columns:
         histories["qlib_ensemble"] = pd.Series(df["ic_qlib_ensemble"].values, index=df["valid_end"])
     else:

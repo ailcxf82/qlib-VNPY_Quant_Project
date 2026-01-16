@@ -19,7 +19,15 @@ def load_yaml_config(path: str) -> Dict[str, Any]:
         文件相对或绝对路径。
     """
     if not os.path.exists(path):
-        raise FileNotFoundError(f"配置文件不存在: {path}")
+        # 兼容：用户传入不带扩展名的路径（如 config/pipeline）
+        base, ext = os.path.splitext(path)
+        if ext == "":
+            for cand in (path + ".yaml", path + ".yml"):
+                if os.path.exists(cand):
+                    path = cand
+                    break
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"配置文件不存在: {path}")
     with open(path, "r", encoding="utf-8") as fp:
         return yaml.safe_load(fp)
 

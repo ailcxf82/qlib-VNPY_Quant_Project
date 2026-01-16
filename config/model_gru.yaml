@@ -1,0 +1,22 @@
+model:
+  # 序列长度：用过去 seq_len 天的因子序列预测当日标签（label 在 pipeline/data.yaml 定义）
+  seq_len: 60
+  hidden_size: 64
+  num_layers: 2
+  dropout: 0.2
+  lr: 0.0005
+  weight_decay: 0.0
+  batch_size: 1024
+  max_epochs: 20
+  # 工程能力
+  seed: 42
+  deterministic: true
+  amp: false
+  grad_clip_norm: 1.0
+  early_stopping_metric: "loss"   # "loss" 或 "rankic"
+  patience: 5
+  loss: "mse"          # 目前支持 mse / weighted_mse / asymmetric_mse（复用 utils.loss_functions）
+  loss_params: {}
+  predict_batch_size: 4096
+
+

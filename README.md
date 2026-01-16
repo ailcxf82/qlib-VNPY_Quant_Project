@@ -64,6 +64,64 @@ project/
 - `config/model_mlp.yaml`：MLP 网络结构、训练批量、学习率等。
 - `config/model_stack.yaml`：Stack MLP 结构、`alpha`（融合权重）、`encoding/hash_dim` 等叶子编码策略。
 - `config/pipeline.yaml`：滚动窗口长度、IC 动态加权窗口、模型/日志/预测/回测路径，以及组合约束参数；新增 `ensemble` 区块用于声明多模型名单、配置引用与 qlib 融合策略。
+
+## 4.1 启用 GRU（只改配置即可）
+
+本工程支持将 GRU 作为第三个基模型接入，并自动参与：
+- **序列数据集构建**：同一股票过去 T=60 个交易日的扁平特征堆叠为 `[T, D]`
+- **walk-forward folds 的 OOF 生成**（与其它基模型共享同一套 split）
+- **Meta-Stacking**：`X_meta = [pred_lgb, pred_mlp, pred_gru, ...]` 自动包含 GRU 列
+
+只需要在 `config/pipeline.yaml` 做两处配置：
+
+1) 在 `model_gru:` 中填写超参（T、hidden、layers、dropout、lr、batch_size、epochs、patience 等）
+
+2) 在 `base_models:` 中加入 `"gru"`：
+
+```yaml
+base_models: ["lgb", "mlp", "gru"]
+oof_stacking:
+  enabled: "auto"   # 推荐保持 auto：当 base_models 含 gru 时自动开启 OOF+MetaStacking
+```
+
+## 4.2 训练 / 推理 / 缓存（README 风格使用说明）
+
+### 训练（跑全流程）
+
+```bash
+python run_train.py --config config/pipeline.yaml
+```
+
+说明：
+- 会按 `rolling` 滚动窗口训练 LGB/MLP/（可选 GRU）
+- 若 `base_models` 包含 `gru` 且 `oof_stacking.enabled=auto/true`：
+  - 会自动按 time-series/walk-forward folds 训练各 fold，生成 OOF
+  - 会训练并保存二层 `MetaStacker`（Ridge/Linear）
+
+### 推理（加载已训练模型，在最新日期输出信号）
+
+```bash
+python run_predict.py --config config/pipeline.yaml --start 2025-01-01 --end 2025-01-31 --tag auto
+```
+
+说明：
+- `--tag auto` 会选择最新窗口的 tag（`YYYYMMDD`）
+- 若该 tag 下存在 `*_meta.pkl`（并启用了 oof_stacking），最终 `final` 会走同一个元模型输出；否则回退到原有动态加权 `final`
+
+### 缓存与复用（避免重复训练）
+
+- **OOF 缓存目录**：`data/oof/{tag}/`
+  - `{model_name}_{fold}.npy`
+  - `y_{fold}.npy`
+  - `index_{fold}.pkl`
+  - 由 `paths.oof_dir` 控制，且 `oof_stacking.use_cache=true` 时自动复用已有缓存
+
+- **模型权重目录**：`data/models/`
+  - LGB：`{tag}_lgb.txt` / `{tag}_lgb_meta.json`
+  - MLP：`{tag}_mlp.pt` / `{tag}_mlp_meta.json`
+  - GRU：`{tag}_gru.pt` / `{tag}_gru_meta.json`
+  - MetaStacker：`{tag}_meta.pkl` / `{tag}_meta_meta.json`
+
 - `config/rqalpha_config.yaml`：RQAlpha 回测配置，包含回测周期、初始资金、手续费（万分之3）、滑点（万分之1）、交易限制等参数。
 
 ## 5. 扩展建议

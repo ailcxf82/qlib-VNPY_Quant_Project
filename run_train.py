@@ -20,6 +20,11 @@ def parse_args():
         default="config/pipeline.yaml",
         help="pipeline 配置文件路径",
     )
+    parser.add_argument(
+        "--gru_only",
+        action="store_true",
+        help="仅训练 GRU：自动设置 base_models=['gru']，并关闭 stack 与 oof_stacking（不改动原配置文件）",
+    )
     return parser.parse_args()
 
 
@@ -33,6 +38,18 @@ def main():
     
     # 加载配置
     cfg = load_yaml_config(args.config)
+    if args.gru_only:
+        # 只训练 GRU：不依赖 lgb/stack
+        cfg["base_models"] = ["gru"]
+        cfg.setdefault("ensemble", {})
+        # 让模型列表从 base_models 自动推导
+        cfg["ensemble"]["models"] = []
+        # 单模型不需要融合器训练
+        cfg["ensemble"].setdefault("aggregator", "average")
+        cfg.setdefault("stack", {})
+        cfg["stack"]["enabled"] = False
+        cfg.setdefault("oof_stacking", {})
+        cfg["oof_stacking"]["enabled"] = False
     data_cfg = load_yaml_config(cfg["data_config"])
     
     # 解析股票池列表
@@ -91,9 +108,18 @@ def main():
             trainer.train()
             logger.info("股票池 %s 训练完成", pool_name)
         finally:
-            # 清理临时文件
-            os.unlink(temp_data_file.name)
-            os.unlink(temp_pipeline_file.name)
+            # 清理临时文件（安全删除，避免文件不存在时报错）
+            try:
+                if os.path.exists(temp_data_file.name):
+                    os.unlink(temp_data_file.name)
+            except Exception as e:
+                logger.debug(f"删除临时数据配置文件失败: {e}")
+            
+            try:
+                if os.path.exists(temp_pipeline_file.name):
+                    os.unlink(temp_pipeline_file.name)
+            except Exception as e:
+                logger.debug(f"删除临时pipeline配置文件失败: {e}")
 
 
 if __name__ == "__main__":

@@ -97,7 +97,7 @@ def convert_qlib_code_to_rqalpha(instrument) -> str:
         return code_str
 
 
-def prepare_prediction_file(prediction_path: str, output_path: str):
+def prepare_prediction_file(prediction_path: str, output_path: str, *, score_col: str = "final"):
     """
     预处理预测文件，将 Qlib 代码格式转换为 RQAlpha 格式。
     
@@ -108,6 +108,11 @@ def prepare_prediction_file(prediction_path: str, output_path: str):
     # 读取 CSV 时指定 instrument 列为字符串类型，保留前导零
     df = pd.read_csv(prediction_path, dtype={"instrument": str})
     df["datetime"] = pd.to_datetime(df["datetime"]).dt.normalize()
+    score_col = str(score_col or "final")
+    if score_col not in df.columns:
+        raise ValueError(
+            f"预测文件缺少列: {score_col}。可用列: {list(df.columns)[:20]}"
+        )
 
     # 如果预测文件的 datetime 已经被“对齐到下一交易日”（trade_date），则回测侧需要反向还原到 signal_date，
     # 否则在 RQAlpha 的 next_bar（T+1 成交）撮合下会变成隐性 T+2。
@@ -162,8 +167,9 @@ def prepare_prediction_file(prediction_path: str, output_path: str):
     # 转换代码格式
     df["rq_code"] = df["instrument"].apply(convert_qlib_code_to_rqalpha)
     
-    # 保存转换后的文件
-    df[["datetime", "rq_code", "final"]].to_csv(output_path, index=False)
+    # 保存转换后的文件（统一写入 final 列，便于策略端保持默认逻辑）
+    df_out = df[["datetime", "rq_code", score_col]].rename(columns={score_col: "final"})
+    df_out.to_csv(output_path, index=False)
     logging.info(f"预测文件已转换并保存到: {output_path}")
 
 
@@ -193,6 +199,8 @@ def run_rqalpha_backtest(
     strategy_path: Optional[str] = None,
     *,
     full_invested: bool = False,
+    score_col: str = "final",
+    output_dir: Optional[str] = None,
 ):
     """
     执行 RQAlpha 回测。
@@ -224,7 +232,7 @@ def run_rqalpha_backtest(
         os.path.dirname(prediction_path),
         f"rqalpha_{os.path.basename(prediction_path)}"
     )
-    prepare_prediction_file(prediction_path, temp_prediction_path)
+    prepare_prediction_file(prediction_path, temp_prediction_path, score_col=score_col)
     
     # 构建 RQAlpha 配置字典
     base_config = rqalpha_cfg.get("base", {})
@@ -236,7 +244,10 @@ def run_rqalpha_backtest(
     extra_config = rqalpha_cfg.get("extra", {})
 
     # 输出目录使用项目相对路径时，转换为绝对路径
-    output_dir = _resolve_path(output_config.get("output_dir", "data/backtest/rqalpha"), prefer_project_root=True)
+    if output_dir:
+        output_dir = _resolve_path(output_dir, prefer_project_root=True)
+    else:
+        output_dir = _resolve_path(output_config.get("output_dir", "data/backtest/rqalpha"), prefer_project_root=True)
     os.makedirs(output_dir, exist_ok=True)
 
     # 诊断：检查 RQAlpha 数据 bundle 是否覆盖到配置 end_date（很多“只跑到某天”的根因在这里）
@@ -399,6 +410,7 @@ def run_rqalpha_backtest(
         "max_industry_weight": risk_config.get("max_industry_weight", 0.2),
         "top_k": risk_config.get("top_k", 50),
         "full_invested": bool(full_invested),
+        "score_col": "final",  # 预测文件已统一输出 final
     }
     if industry_map:
         strategy_params["industry_map"] = industry_map

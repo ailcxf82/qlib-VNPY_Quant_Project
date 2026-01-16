@@ -1,7 +1,32 @@
 data_config: "config/data.yaml"
 lightgbm_config: "config/model_lgb.yaml"
 mlp_config: "config/model_mlp.yaml"
+gru_config: "config/model_gru.yaml"
 stack_config: "config/model_stack.yaml"
+
+# 只改配置即可启用基模型：
+# - 目前暂时停用 MLP、启用 GRU（仍保留 LGB，因为 Stack/Leaf 依赖 LGB 输出 leaf）
+base_models: ["lgb", "gru"]
+
+# GRU 超参段（优先使用这里；不需要新增另一份 split/数据集逻辑）
+model_gru:
+  seq_len: 60
+  hidden_size: 64
+  num_layers: 2
+  dropout: 0.2
+  lr: 0.0005
+  weight_decay: 0.0
+  batch_size: 1024
+  max_epochs: 20
+  seed: 42
+  deterministic: true
+  amp: false
+  grad_clip_norm: 1.0
+  early_stopping_metric: "loss"   # "loss" 或 "rankic"
+  patience: 5
+  loss: "mse"
+  loss_params: {}
+  predict_batch_size: 4096
 
 ensemble:
   # 聚合策略选项：
@@ -15,16 +40,11 @@ ensemble:
   aggregator_params:
     model_type: "ridge"  # "linear" 或 "ridge"
     alpha: 1.0  # Ridge 回归的正则化系数
-  models:
-    - name: "lgb"
-      type: "lightgbm"
-      config_key: "lightgbm_config"
-    - name: "mlp"
-      type: "mlp"
-      config_key: "mlp_config"
+  # 重要：这里留空，让系统从 base_models 自动派生模型清单（从而“只改配置即可”）
+  models: []
 
 rolling:
-  train_days: 720  # 训练窗口：720天（约24个月，按30天/月计算）
+  train_days: 240  # 训练窗口：720天（约24个月，按30天/月计算）
   valid_days: 30   # 验证窗口：30天（约1个月）
   test_days: 30    # 测试窗口：30天（约1个月）
   step_days: 5     # 滚动步长：1天（按日训练）
@@ -44,6 +64,21 @@ paths:
   log_dir: "data/logs"
   prediction_dir: "data/predictions"
   backtest_dir: "data/backtest"
+  oof_dir: "data/oof"
+  meta_dir: "data/meta"
+
+# 可选：OOF + Meta-Stacking（二层模型）。默认关闭，不影响现有训练/预测流程。
+oof_stacking:
+  enabled: "auto"   # auto: base_models 包含 gru 时自动开启 OOF+MetaStacking
+  use_cache: true
+  n_splits: 5
+  # 固定每折验证期长度（按“日期个数/交易日数”理解），为空则自动等分
+  valid_days_per_fold: 20
+  min_train_days: 120
+  gap_days: 0
+  meta_model:
+    model_type: "ridge"
+    alpha: 1.0
 
 portfolio:
   max_position: 0.3

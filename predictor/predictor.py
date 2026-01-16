@@ -11,9 +11,14 @@ from typing import Dict, Tuple
 import pandas as pd
 
 from models.ensemble_manager import EnsembleModelManager
+from models.meta_stacker import MetaStacker
 from models.stack_model import LeafStackModel
 from predictor.weight_dynamic import RankICDynamicWeighter
 from utils import load_yaml_config
+import json
+import numpy as np
+from utils.meta_ridge import predict_meta_ridge
+from utils.normalize import normalize_by_date
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +51,31 @@ class PredictorEngine:
         # 归一化参数（在 load_models 时加载）
         self._norm_mean = None
         self._norm_std = None
+        self._meta: MetaStacker | None = None
+        enabled = (cfg.get("oof_stacking") or {}).get("enabled", False)
+        if isinstance(enabled, str) and enabled.strip().lower() == "auto":
+            base = [str(x).strip().lower() for x in (cfg.get("base_models") or [])]
+            enabled = ("gru" in base)
+        self._use_meta_stacking: bool = bool(enabled)
+        self._meta_dir = cfg["paths"].get("meta_dir", "data/meta")
 
     def load_models(self, tag: str):
         model_dir = self.paths["model_dir"]
         logger.info("加载模型，标识: %s", tag)
         self.ensemble.load(model_dir, tag)
         self.stack.load(model_dir, tag)
+
+        # 可选：加载 MetaStacker（若启用）
+        self._meta = None
+        if self._use_meta_stacking:
+            try:
+                meta = MetaStacker((self.cfg.get("oof_stacking") or {}).get("meta_model", {}) or {})
+                meta.load(model_dir, tag)
+                self._meta = meta
+                logger.info("MetaStacker 已加载: %s", tag)
+            except FileNotFoundError:
+                logger.warning("启用了 oof_stacking 但未找到 meta 模型文件（%s），将回退到原 final 逻辑", tag)
+                self._meta = None
         
         # 加载归一化参数
         import json
@@ -124,7 +148,47 @@ class PredictorEngine:
         preds["stack"] = stack_pred
         if blend_pred is not None:
             preds["qlib_ensemble"] = blend_pred
-        # 根据历史 IC 计算动态权重，兼顾稳定性
+
+        # 1) 若配置 meta_model=ridge 且文件存在，则使用 Ridge 参数融合（方案A）
+        meta_cfg = (self.cfg.get("oof_stacking") or {}).get("meta_model") or {}
+        meta_type = str(meta_cfg.get("model_type", "")).lower()
+        ridge_path = os.path.join(self._meta_dir, f"{self.cfg['paths'].get('tag','')}_meta_ridge.json")
+        use_ridge = meta_type == "ridge" and os.path.exists(ridge_path)
+        if use_ridge:
+            try:
+                # 构造 DataFrame 以 (date, code) join
+                df = pd.DataFrame({"pred_lgb": base_preds.get("lgb"), "pred_gru": base_preds.get("gru")})
+                if not isinstance(df.index, pd.MultiIndex) or "datetime" not in df.index.names or "instrument" not in df.index.names:
+                    raise ValueError("Ridge meta 需要预测索引包含 datetime/instrument")
+                df = df.reset_index().rename(columns={"datetime": "date", "instrument": "code"})
+                df = normalize_by_date(
+                    df,
+                    cols=["pred_lgb", "pred_gru"],
+                    date_col="date",
+                    mode=meta_cfg.get("normalize_mode", "zscore"),
+                    eps=float(meta_cfg.get("normalize_eps", 1e-6)),
+                )
+                coef = np.array(json.load(open(ridge_path, "r", encoding="utf-8"))["coef"], dtype=float)
+                intercept = float(json.load(open(ridge_path, "r", encoding="utf-8"))["intercept"])
+                X = df[["pred_lgb", "pred_gru"]].values
+                df["final_score"] = X.dot(coef) + intercept
+                final_pred = df.set_index(["date", "code"])["final_score"]
+                # 对齐回原索引
+                final_pred.index = final_pred.index.set_names(["datetime", "instrument"])
+                final_pred = final_pred.reindex(base_preds["lgb"].index)
+                weights = {}
+            except Exception as e:
+                logger.error("Ridge meta 预测失败，回退到动态加权: %s", e, exc_info=True)
+                weights = self.weighter.get_weights(ic_histories)
+                final_pred = self.weighter.blend(preds, weights)
+        elif self._meta is not None:
+            # 2) 若 meta stacking 启用且已加载：final 走同一元模型
+            X_meta = pd.DataFrame({k: v for k, v in base_preds.items()})
+            meta_pred = self._meta.predict(X_meta)
+            final_pred = meta_pred.rename("final")
+            weights = {}
+        else:
+            # 3) 否则沿用原 IC 动态加权 final
         weights = self.weighter.get_weights(ic_histories)
         final_pred = self.weighter.blend(preds, weights)
         

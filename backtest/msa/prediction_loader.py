@@ -20,6 +20,10 @@ class PredictionBook:
     def get(self, dt: pd.Timestamp) -> Dict[str, float]:
         return self.by_date.get(pd.Timestamp(dt).normalize(), {})
 
+    # 兼容旧接口：rqalpha_chan_strategy 使用 get_predictions
+    def get_predictions(self, dt: pd.Timestamp) -> Dict[str, float]:
+        return self.get(dt)
+
 
 def _calendar(start: pd.Timestamp, end: pd.Timestamp) -> pd.DatetimeIndex:
     start = pd.Timestamp(start).normalize()

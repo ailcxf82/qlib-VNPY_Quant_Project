@@ -372,7 +372,40 @@ class QlibFeaturePipeline:
                         df[feature_cols] = df[feature_cols].ffill()
                     remaining_nan = df[feature_cols].isnull().sum().sum()
                     if remaining_nan > 0:
-                        logger.warning("填充后仍有 %d 个 NaN，使用 0 填充", remaining_nan)
+                        # 记录“被 0 填充”的特征清单，便于数据优化
+                        try:
+                            nan_by_col = df[feature_cols].isnull().sum()
+                            nan_by_col = nan_by_col[nan_by_col > 0]
+                            if len(nan_by_col) > 0:
+                                total = len(df)
+                                nan_ratio = (nan_by_col / max(1, total)).astype(float)
+                                ts = df.index.get_level_values("datetime")
+                                window_start = pd.to_datetime(ts.min()).strftime("%Y-%m-%d")
+                                window_end = pd.to_datetime(ts.max()).strftime("%Y-%m-%d")
+                                report = pd.DataFrame(
+                                    {
+                                        "feature": nan_by_col.index,
+                                        "nan_count": nan_by_col.values,
+                                        "total": total,
+                                        "nan_ratio": nan_ratio.values,
+                                        "window_start": window_start,
+                                        "window_end": window_end,
+                                        "source": "train_relaxed_fill0",
+                                    }
+                                ).sort_values("nan_ratio", ascending=False)
+                                report_dir = os.path.join("data", "logs")
+                                os.makedirs(report_dir, exist_ok=True)
+                                report_path = os.path.join(report_dir, "feature_nan_filled_report.csv")
+                                header = not os.path.exists(report_path)
+                                report.to_csv(report_path, mode="a", index=False, header=header)
+                                logger.warning(
+                                    "填充后仍有 %d 个 NaN，已记录到 %s（Top10特征如下）:\n%s",
+                                    remaining_nan,
+                                    report_path,
+                                    report.head(10).to_string(index=False),
+                                )
+                        except Exception as e:
+                            logger.warning("记录 NaN 填充特征失败：%s", e)
                         df[feature_cols] = df[feature_cols].fillna(0)
                 return df
 

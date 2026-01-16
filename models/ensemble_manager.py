@@ -106,6 +106,7 @@ class EnsembleModelManager:
         self.pipeline_cfg = pipeline_cfg
         self.ensemble_cfg = ensemble_cfg or {}
         self.models = OrderedDict()
+        self.specs: List[Dict] = []
         self._build_models()
         aggregator_strategy = (self.ensemble_cfg or {}).get("aggregator", "average")
         aggregator_params = (self.ensemble_cfg or {}).get("aggregator_params", {})
@@ -113,7 +114,8 @@ class EnsembleModelManager:
         if aggregator_strategy and aggregator_strategy != "disabled":
             self.aggregator = EnsembleAggregator(aggregator_strategy, aggregator_params)
 
-    def _resolve_config_path(self, spec: Dict) -> str:
+    def _resolve_config(self, spec: Dict):
+        # 1) spec 内直接给 config（允许 str path 或 dict）
         if "config" in spec:
             return spec["config"]
         config_key = spec.get("config_key")
@@ -127,15 +129,47 @@ class EnsembleModelManager:
             {"name": "mlp", "type": "mlp", "config_key": "mlp_config"},
         ]
 
+    def _specs_from_base_models(self) -> List[Dict]:
+        """
+        支持“只改配置即可启用模型”的声明方式：
+          base_models: ["lgb", "mlp", "gru"]
+        其中：
+        - lgb/mlp 默认沿用现有 config_key（保持原逻辑）
+        - gru 优先读取 pipeline_cfg.model_gru（dict），否则回退到 gru_config 文件路径
+        """
+        base = self.pipeline_cfg.get("base_models")
+        if not base:
+            return []
+        specs: List[Dict] = []
+        for name in base:
+            n = str(name).strip().lower()
+            if n in {"lgb", "lightgbm"}:
+                specs.append({"name": "lgb", "type": "lightgbm", "config_key": "lightgbm_config"})
+            elif n == "mlp":
+                specs.append({"name": "mlp", "type": "mlp", "config_key": "mlp_config"})
+            elif n == "gru":
+                if "model_gru" in self.pipeline_cfg and isinstance(self.pipeline_cfg["model_gru"], dict):
+                    specs.append({"name": "gru", "type": "gru", "config": {"model": self.pipeline_cfg["model_gru"]}})
+                elif "gru_config" in self.pipeline_cfg:
+                    specs.append({"name": "gru", "type": "gru", "config_key": "gru_config"})
+                else:
+                    raise ValueError("base_models 包含 gru，但未提供 model_gru(dict) 或 gru_config(path)")
+            else:
+                raise ValueError(f"未知 base_models 项: {name}")
+        return specs
+
     def _build_models(self):
         specs = (self.ensemble_cfg or {}).get("models")
         if not specs:
+            specs = self._specs_from_base_models()
+        if not specs:
             specs = self._default_specs()
+        self.specs = specs
         for spec in specs:
             name = spec["name"]
             model_type = spec["type"]
-            cfg_path = self._resolve_config_path(spec)
-            self.models[name] = create_model(model_type, cfg_path)
+            cfg = self._resolve_config(spec)
+            self.models[name] = create_model(model_type, cfg)
 
     def fit(
         self,
@@ -143,6 +177,8 @@ class EnsembleModelManager:
         train_label: pd.Series,
         valid_feat: Optional[pd.DataFrame] = None,
         valid_label: Optional[pd.Series] = None,
+        *,
+        history_feat: Optional[pd.DataFrame] = None,
     ):
         # 先训练所有基础模型
         for model in self.models.values():
@@ -152,19 +188,35 @@ class EnsembleModelManager:
         if self.aggregator is not None and hasattr(self.aggregator, "fit"):
             if valid_feat is not None and valid_label is not None and len(valid_feat) > 0 and len(valid_label) > 0:
                 # 获取验证集预测（模型已训练完成）
-                valid_blend, valid_preds, _ = self.predict(valid_feat)
+                # 对序列模型（如 GRU）需要提供历史特征，避免验证集前期因为缺历史而预测为空
+                history = history_feat if history_feat is not None else train_feat
+                valid_blend, valid_preds, _ = self.predict(valid_feat, history_feat=history)
                 if valid_preds:
                     self.aggregator.fit(valid_preds, valid_label)
 
-    def predict(self, feat: pd.DataFrame) -> Tuple[Optional[pd.Series], Dict[str, pd.Series], Dict[str, object]]:
+    def predict(
+        self,
+        feat: pd.DataFrame,
+        *,
+        history_feat: Optional[pd.DataFrame] = None,
+    ) -> Tuple[Optional[pd.Series], Dict[str, pd.Series], Dict[str, object]]:
         preds: Dict[str, pd.Series] = {}
         aux: Dict[str, object] = {}
         for name, model in self.models.items():
-            output = model.predict(feat)
+            # 尽量向序列模型传递历史特征；对不支持的模型自动回退
+            if history_feat is not None:
+                try:
+                    output = model.predict(feat, history_feat=history_feat)
+                except TypeError:
+                    output = model.predict(feat)
+            else:
+                output = model.predict(feat)
+
             if isinstance(output, tuple):
                 preds[name], aux[name] = output
             else:
                 preds[name] = output
+
         blended = None
         if self.aggregator is not None:
             blended = self.aggregator.aggregate(preds)
