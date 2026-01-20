@@ -138,6 +138,19 @@ class GRURegressor:
         seq_len = int(self.config.get("seq_len", 60))
         self._input_dim = int(train_feat.shape[1])
         self._feature_names = list(train_feat.columns)
+        # 训练前打印 GRU 实际使用的特征列（便于确认按模型特征集合生效）
+        try:
+            limit = int(self.config.get("log_feature_names_limit", 200))
+        except Exception:
+            limit = 200
+        if self._feature_names:
+            preview = self._feature_names[:limit]
+            logger.info(
+                "GRU 训练特征列数=%d，示例=%s%s",
+                len(self._feature_names),
+                preview,
+                "" if len(self._feature_names) <= limit else " ...",
+            )
         # 若窗口太短（尤其考虑 label_future_days 的 gap 后），GRU 无法构造满窗序列。
         # 这里不抛异常，避免中断整个训练流程；改为“跳过该窗口的 GRU 训练”，并在日志里给出清晰提示。
         try:

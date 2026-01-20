@@ -45,8 +45,17 @@ _QLIB_INITIALIZED = False
 class QlibFeaturePipeline:
     """特征管线核心类。"""
 
-    def __init__(self, config_path: str):
-        self.config = load_yaml_config(config_path)
+    def __init__(self, config_path: str | Dict[str, Any]):
+        """
+        参数:
+            config_path:
+                - str: YAML 配置文件路径（原行为）
+                - dict: 已加载/已修改后的配置字典（用于动态调整 start_time/end_time 等）
+        """
+        if isinstance(config_path, dict):
+            self.config = config_path
+        else:
+            self.config = load_yaml_config(str(config_path))
         self._init_qlib()
         self.feature_cfg = self.config["data"]
         self.features_df: pd.DataFrame | None = None
@@ -210,7 +219,29 @@ class QlibFeaturePipeline:
                   用于支持在训练样本截止后继续生成未来日期的预测信号。
         """
         feats = self.feature_cfg.get("features", []).copy()  # 使用 copy 避免修改原配置
+
+        # 可选：按 feature_sets + active_feature_sets 追加特征（用于“按模型分组特征”）
+        feature_sets = self.feature_cfg.get("feature_sets", {}) or {}
+        active_sets = self.feature_cfg.get("active_feature_sets", []) or []
+        if feature_sets and active_sets:
+            for set_name in active_sets:
+                if set_name not in feature_sets:
+                    logger.warning("active_feature_sets 中的 %s 不存在于 feature_sets，已忽略", set_name)
+                    continue
+                feats.extend(feature_sets[set_name] or [])
+            logger.info("已追加 feature_sets(%s)，当前特征总数: %d", active_sets, len(feats))
         
+        # 去重（保留顺序）
+        if feats:
+            seen = set()
+            dedup = []
+            for f in feats:
+                if f in seen:
+                    continue
+                seen.add(f)
+                dedup.append(f)
+            feats = dedup
+
         # 检查是否启用 158 因子
         use_alpha158 = self.feature_cfg.get("use_alpha158", False)
         if use_alpha158:

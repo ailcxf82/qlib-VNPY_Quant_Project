@@ -8,25 +8,17 @@ stack_config: "config/model_stack.yaml"
 # - 目前暂时停用 MLP、启用 GRU（仍保留 LGB，因为 Stack/Leaf 依赖 LGB 输出 leaf）
 base_models: ["lgb", "gru"]
 
-# GRU 超参段（优先使用这里；不需要新增另一份 split/数据集逻辑）
-model_gru:
-  seq_len: 60
-  hidden_size: 64
-  num_layers: 2
-  dropout: 0.2
-  lr: 0.0005
-  weight_decay: 0.0
-  batch_size: 1024
-  max_epochs: 20
-  seed: 42
-  deterministic: true
-  amp: false
-  grad_clip_norm: 1.0
-  early_stopping_metric: "loss"   # "loss" 或 "rankic"
-  patience: 5
-  loss: "mse"
-  loss_params: {}
-  predict_batch_size: 4096
+# 可选：按模型指定特征集合（来自 data.yaml 的 feature_sets）
+# 例如：gru 使用 OHLCV，lgb 使用基本面/融资
+model_features:
+  gru: "gru_ohlcv"
+  lgb: "lgb_fundamental"
+
+# model_features: {}
+
+# GRU 超参：若此处为 dict，会优先覆盖 gru_config；
+# 现在设为 null，表示使用 config/model_gru.yaml
+model_gru: null
 
 ensemble:
   # 聚合策略选项：
@@ -44,7 +36,26 @@ ensemble:
   models: []
 
 rolling:
-  train_days: 240  # 训练窗口：720天（约24个月，按30天/月计算）
+  # 窗口生成模式：
+  # - classic（默认/兼容旧逻辑）：data.start_time 视作“训练起点”，valid_start = start_time + train_days
+  # - aligned（多模型对齐推荐）：data.start_time 视作“验证起点锚点”，train_end = valid_start - 1，
+  #   并自动把取数 start_time 向前扩展到 (anchor_start - max_train_days)，确保历史足够
+  window_mode: "aligned"
+
+  # 特征归一化策略：
+  # - per_model（方案B，推荐）：每个模型用自己的训练窗口拟合 mean/std，再应用到该模型的 train/valid/predict
+  #   优点：修改某个模型（如 lgb）的训练窗口不会影响其它模型（如 gru）的输入分布与 IC
+  # - global（旧逻辑）：所有模型共用同一套窗口归一化（会产生模型间耦合）
+  # - none：不做归一化（一般不推荐）
+  feature_normalization: "per_model"
+
+  # 全局训练窗口（当未配置 model_train_days 时，所有模型共用该值）
+  train_days: 120
+  # 可选：按模型分别设置训练窗口（单位：交易日个数；按“datetime 去重计数”裁剪）
+  # 配置后会自动启用 window_mode=aligned，让 lgb/gru 在同一 valid 窗口上对齐
+  model_train_days:
+    lgb: 720
+    gru: 240
   valid_days: 30   # 验证窗口：30天（约1个月）
   test_days: 30    # 测试窗口：30天（约1个月）
   step_days: 5     # 滚动步长：1天（按日训练）

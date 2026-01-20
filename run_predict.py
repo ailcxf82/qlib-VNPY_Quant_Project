@@ -24,13 +24,13 @@ def parse_args():
     parser.add_argument(
         "--start",
         type=str,
-        default=os.environ.get("RUN_PRED_START", "2025-02-01"),
+        default=os.environ.get("RUN_PRED_START", "2023-08-01"),
         help="预测起始日期，默认 2023-10-01，可通过环境变量 RUN_PRED_START 覆盖",
     )
     parser.add_argument(
         "--end",
         type=str,
-        default=os.environ.get("RUN_PRED_END", "2026-01-05"),
+        default=os.environ.get("RUN_PRED_END", "2023-12-31"),
         help="预测结束日期，默认 2025-10-01，可通过环境变量 RUN_PRED_END 覆盖",
     )
     parser.add_argument(
@@ -185,6 +185,18 @@ def main():
                     logger.warning("股票池 %s：get_slice 返回空特征（可能该范围无数据或清理后为空）", pool_name)
             except Exception as e:
                 logger.debug("打印预测特征日期范围失败(可忽略): %s", e)
+
+            # 关键：若特征为空，直接跳过该股票池，避免生成“只有表头/空内容”的预测文件覆盖旧结果
+            if features is None or len(features) == 0:
+                logger.error(
+                    "股票池 %s：预测区间 [%s, %s] 无可用特征数据，已跳过写入预测文件。"
+                    "请将 --start/--end（或环境变量 RUN_PRED_START/RUN_PRED_END）调整到 qlib 实际数据范围内，"
+                    "或更新 qlib 数据后再预测。",
+                    pool_name,
+                    args.start,
+                    args.end,
+                )
+                continue
             
             # 预测
             predictor = PredictorEngine(temp_pipeline_file.name)

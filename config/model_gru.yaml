@@ -2,20 +2,20 @@ model:
   # 序列长度：用过去 seq_len 天的因子序列预测当日标签（label 在 pipeline/data.yaml 定义）
   seq_len: 60
   hidden_size: 64
-  num_layers: 2
-  dropout: 0.2
-  lr: 0.0005
-  weight_decay: 0.0
-  batch_size: 1024
-  max_epochs: 20
+  num_layers: 1   #之前是2
+  dropout: 0.1          # 单层时这个可能基本无效，但保留不伤
+  lr: 0.001       #之前是0.0005
+  weight_decay: 0.0001       #之前0.0
+  batch_size: 512    #之前1024
+  max_epochs: 60      #20
   # 工程能力
   seed: 42
-  deterministic: true
-  amp: false
+  deterministic: true   #定稿后可考虑 false 提速。
+  amp: true       #如果你在 GPU 上训练且数值稳定，建议开
   grad_clip_norm: 1.0
-  early_stopping_metric: "loss"   # "loss" 或 "rankic"
-  patience: 5
-  loss: "mse"          # 目前支持 mse / weighted_mse / asymmetric_mse（复用 utils.loss_functions）
+  early_stopping_metric: "rankic"   # "loss" 或 "rankic"
+  patience: 8     #5
+  loss: "weighted_mse"          # 目前支持 mse / weighted_mse / asymmetric_mse（复用 utils.loss_functions）
   loss_params: {}
   predict_batch_size: 4096
 

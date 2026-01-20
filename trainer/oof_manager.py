@@ -9,13 +9,18 @@ from __future__ import annotations
 
 import os
 import pickle
+import logging
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import json
 
 from models.model_registry import create_model
+from utils import load_yaml_config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -136,7 +141,82 @@ class OOFManager:
         if not isinstance(train_feat.index, pd.MultiIndex) or "datetime" not in train_feat.index.names:
             raise ValueError("OOF 需要 train_feat 为 MultiIndex 且包含 datetime level")
 
+        # 解析按模型特征集合
+        raw_model_features = pipeline_cfg.get("model_features", {}) or {}
+        model_features = {str(k).strip().lower(): v for k, v in raw_model_features.items()}
+        feature_sets: Dict[str, List[str]] = {}
+        data_cfg_path = pipeline_cfg.get("data_config")
+        if isinstance(data_cfg_path, str):
+            try:
+                data_cfg = load_yaml_config(data_cfg_path)
+                feature_sets = data_cfg.get("data", {}).get("feature_sets", {}) or {}
+            except Exception:
+                feature_sets = {}
+
+        feature_log_done: set[str] = set()
+
+        def _resolve_feature_cols(model_name: str, all_cols: List[str]) -> Optional[List[str]]:
+            if not model_features:
+                return None
+            spec = model_features.get(model_name)
+            if spec is None:
+                raise ValueError(
+                    f"OOF: model_features 已配置但未包含模型 {model_name}。"
+                    "请在 pipeline.yaml 的 model_features 中为该模型指定特征集合。"
+                )
+            if isinstance(spec, str):
+                key = spec.strip()
+                if key in {"*", "all", "ALL"}:
+                    return None
+                if key in feature_sets:
+                    cols = list(feature_sets[key] or [])
+                else:
+                    raise ValueError(f"OOF: model_features[{model_name}]={key} 未在 data.feature_sets 中定义")
+            elif isinstance(spec, list):
+                cols = list(spec)
+            else:
+                raise ValueError(f"OOF: model_features[{model_name}] 仅支持 str 或 list")
+            if not cols:
+                return None
+            missing = [c for c in cols if c not in all_cols]
+            if missing:
+                raise ValueError(f"OOF: 模型 {model_name} 特征缺失: {missing[:10]}")
+            if model_name not in feature_log_done:
+                logger.info(
+                    "OOF: 模型 %s 使用特征集合=%s，列数=%d（示例: %s）",
+                    model_name,
+                    spec,
+                    len(cols),
+                    cols[:8],
+                )
+                feature_log_done.add(model_name)
+            return cols
+
+        def _select_features(model_name: str, df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+            if df is None or df.empty:
+                return df
+            cols = _resolve_feature_cols(model_name, list(df.columns))
+            if not cols:
+                return df
+            return df.loc[:, cols]
+
         tag_dir = self._tag_dir(tag)
+        # 缓存版本：避免“配置/归一化逻辑变了但 index 没变”导致语义错用旧 .npy
+        cache_info_path = os.path.join(tag_dir, "cache_info.json")
+        cache_version = "v2_per_model_norm"
+        if use_cache and os.path.exists(cache_info_path):
+            try:
+                info = json.load(open(cache_info_path, "r", encoding="utf-8"))
+                if info.get("version") != cache_version:
+                    logger.warning("OOF cache 版本变化：将忽略旧缓存并重算（%s -> %s）", info.get("version"), cache_version)
+                    use_cache = False
+            except Exception:
+                use_cache = False
+        if not use_cache:
+            try:
+                json.dump({"version": cache_version}, open(cache_info_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+            except Exception:
+                pass
         folds = splitter.split(train_feat.index.get_level_values("datetime"))
         if not folds:
             raise RuntimeError("无法生成 folds：训练数据日期过少或 min_train_days 设置过大")
@@ -159,10 +239,31 @@ class OOFManager:
             y_valid = train_label.reindex(valid_index)
             y_parts.append(y_valid)
 
-            if use_cache and os.path.exists(idx_fold_path) and os.path.exists(y_fold_path):
-                # index/y 缓存存在就复用；模型预测各自单独判断
-                pass
-            else:
+            # 缓存校验：OOF 缓存必须与“本次 fold 的 valid_index”严格一致，否则长度会错配
+            # 典型触发场景：修改了数据时间范围、rolling 配置、特征缺失清理策略、模型训练窗口等，导致 valid_index 变化，
+            # 但 tag 相同、目录相同，旧的 .npy 预测仍在。
+            cached_index = None
+            if use_cache and os.path.exists(idx_fold_path):
+                try:
+                    with open(idx_fold_path, "rb") as fp:
+                        cached_index = pickle.load(fp)
+                    if not isinstance(cached_index, pd.MultiIndex):
+                        cached_index = None
+                except Exception:
+                    cached_index = None
+
+            index_ok = (cached_index is not None) and (len(cached_index) == len(valid_index)) and cached_index.equals(valid_index)
+            if use_cache and index_ok and os.path.exists(y_fold_path):
+                # y 缓存也要校验长度
+                try:
+                    y_arr = np.load(y_fold_path)
+                    if len(y_arr) != len(valid_index):
+                        index_ok = False
+                except Exception:
+                    index_ok = False
+
+            if not (use_cache and index_ok):
+                # index/y 缓存无效：重写 index/y，后续模型预测缓存也将按长度校验决定是否重算
                 with open(idx_fold_path, "wb") as fp:
                     pickle.dump(valid_index, fp)
                 np.save(y_fold_path, y_valid.values.astype(np.float32), allow_pickle=False)
@@ -174,12 +275,31 @@ class OOFManager:
             fold_valid_feat = train_feat.loc[valid_mask]
 
             for spec in model_specs:
-                mname = spec["name"]
+                mname = str(spec["name"]).strip().lower()
                 out_path = os.path.join(tag_dir, f"{mname}_{fold.fold}.npy")
                 if use_cache and os.path.exists(out_path):
-                    pred_arr = np.load(out_path)
-                    per_model_parts[mname].append(pd.Series(pred_arr, index=valid_index, name=mname))
-                    continue
+                    try:
+                        pred_arr = np.load(out_path)
+                        if len(pred_arr) != len(valid_index):
+                            logger.warning(
+                                "OOF cache 长度不匹配，已自动失效并重算: tag=%s fold=%s model=%s pred_len=%d index_len=%d",
+                                tag,
+                                fold.fold,
+                                mname,
+                                len(pred_arr),
+                                len(valid_index),
+                            )
+                        else:
+                            per_model_parts[mname].append(pd.Series(pred_arr, index=valid_index, name=mname))
+                            continue
+                    except Exception as e:
+                        logger.warning(
+                            "OOF cache 读取失败，已自动失效并重算: tag=%s fold=%s model=%s err=%s",
+                            tag,
+                            fold.fold,
+                            mname,
+                            e,
+                        )
 
                 # 每 fold 单独实例化模型，避免 state 污染
                 cfg = spec.get("config")
@@ -192,13 +312,30 @@ class OOFManager:
                     raise ValueError(f"OOF: 模型 {mname} 缺少 config/config_key")
 
                 model = create_model(spec["type"], cfg)
+                # 按模型选择特征列
+                fold_train_feat_sel = _select_features(mname, fold_train_feat)
+                fold_valid_feat_sel = _select_features(mname, fold_valid_feat)
+                # ===== per-model normalization（每 fold 单独拟合；与主训练一致）=====
+                mean = fold_train_feat_sel.mean()
+                std = fold_train_feat_sel.std().replace(0, 1)
+                # 对齐列：缺失列用 mean 填充（归一化后为 0）
+                def _apply_norm(df: pd.DataFrame) -> pd.DataFrame:
+                    expected = list(mean.index)
+                    aligned = pd.DataFrame(index=df.index, columns=expected, dtype=float)
+                    for c in expected:
+                        aligned[c] = df[c] if c in df.columns else float(mean[c])
+                    z = (aligned - mean) / std
+                    z = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+                    return z.clip(-5, 5)
+                fold_train_feat_sel = _apply_norm(fold_train_feat_sel)
+                fold_valid_feat_sel = _apply_norm(fold_valid_feat_sel)
                 # 注意：OOF 仅基于训练折训练；valid 折仅用于预测
-                model.fit(fold_train_feat, fold_train_lbl, None, None)
+                model.fit(fold_train_feat_sel, fold_train_lbl, None, None)
                 # 对序列模型（如 GRU）传入历史特征，避免 valid 前期缺历史导致 OOF 为空
                 try:
-                    pred_out = model.predict(fold_valid_feat, history_feat=fold_train_feat)
+                    pred_out = model.predict(fold_valid_feat_sel, history_feat=fold_train_feat_sel)
                 except TypeError:
-                    pred_out = model.predict(fold_valid_feat)
+                    pred_out = model.predict(fold_valid_feat_sel)
                 if isinstance(pred_out, tuple):
                     pred_series = pred_out[0]
                 else:

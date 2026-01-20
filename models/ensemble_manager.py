@@ -5,13 +5,18 @@ Qlib 多模型协同封装：负责统一训练/预测接口，并通过 qlib �
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple
+import logging
+from typing import Dict, List, Optional, Tuple, Any
 
+import numpy as np
 import pandas as pd
 from qlib.model.ens.ensemble import AverageEnsemble
 
 from models.model_registry import create_model
+from utils import load_yaml_config
 from models.weighted_ensemble import ICIRWeightedAverageAdapter, MetaLearnerAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class _QlibAverageAdapter:
@@ -107,12 +112,115 @@ class EnsembleModelManager:
         self.ensemble_cfg = ensemble_cfg or {}
         self.models = OrderedDict()
         self.specs: List[Dict] = []
+        self._feature_sets: Dict[str, List[str]] = {}
+        raw_model_features = self.pipeline_cfg.get("model_features", {}) or {}
+        # 统一小写 key，避免大小写不一致导致未命中
+        self._model_features: Dict[str, object] = {
+            str(k).strip().lower(): v for k, v in raw_model_features.items()
+        }
+        self._feature_log_done: set[str] = set()
+        # 归一化参数（预测阶段需要与训练一致）
+        # - per_model: {model_name: {"mean": Series, "std": Series}}
+        # - global: 兼容旧逻辑（单套 mean/std，按模型列子集使用）
+        self._norm_per_model: Dict[str, Dict[str, pd.Series]] = {}
+        self._norm_global: Optional[Dict[str, pd.Series]] = None
+        # 加载 data.yaml 中的 feature_sets（若存在）
+        data_cfg_path = self.pipeline_cfg.get("data_config")
+        if isinstance(data_cfg_path, str):
+            try:
+                data_cfg = load_yaml_config(data_cfg_path)
+                self._feature_sets = data_cfg.get("data", {}).get("feature_sets", {}) or {}
+            except Exception:
+                self._feature_sets = {}
         self._build_models()
         aggregator_strategy = (self.ensemble_cfg or {}).get("aggregator", "average")
         aggregator_params = (self.ensemble_cfg or {}).get("aggregator_params", {})
         self.aggregator: Optional[EnsembleAggregator] = None
         if aggregator_strategy and aggregator_strategy != "disabled":
             self.aggregator = EnsembleAggregator(aggregator_strategy, aggregator_params)
+
+    # =========================
+    # Normalization helpers
+    # =========================
+    @staticmethod
+    def _fit_norm(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+        mean = df.mean()
+        std = df.std().replace(0, 1)
+        return mean, std
+
+    @staticmethod
+    def _align_to_mean(df: pd.DataFrame, mean: pd.Series) -> pd.DataFrame:
+        """
+        将 df 对齐到 mean 的列顺序：
+        - 缺失列用 mean 填充（归一化后为 0）
+        - 多余列忽略
+        """
+        expected_cols = list(mean.index)
+        aligned = pd.DataFrame(index=df.index, columns=expected_cols, dtype=float)
+        for c in expected_cols:
+            if c in df.columns:
+                aligned[c] = df[c]
+            else:
+                aligned[c] = float(mean[c]) if c in mean.index else 0.0
+        return aligned
+
+    @staticmethod
+    def _apply_norm(df: pd.DataFrame, mean: pd.Series, std: pd.Series) -> pd.DataFrame:
+        aligned = EnsembleModelManager._align_to_mean(df, mean)
+        std2 = std.reindex(mean.index).replace(0, 1)
+        out = (aligned - mean) / std2
+        out = out.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        return out.clip(-5, 5)
+
+    def set_norm_meta(self, norm_meta: Dict[str, Any]):
+        """
+        供预测阶段注入训练时保存的归一化参数（兼容旧格式与 per-model 格式）。
+
+        支持两种 schema：
+        1) 旧格式：{"feature_mean": {...}, "feature_std": {...}}
+        2) 新格式：{"models": {"lgb": {"mean": {...}, "std": {...}}, ...}}
+        """
+        self._norm_per_model = {}
+        self._norm_global = None
+        if not isinstance(norm_meta, dict):
+            return
+        if "models" in norm_meta and isinstance(norm_meta["models"], dict):
+            for name, ms in norm_meta["models"].items():
+                if not isinstance(ms, dict):
+                    continue
+                mean = ms.get("mean")
+                std = ms.get("std")
+                if isinstance(mean, dict) and isinstance(std, dict):
+                    self._norm_per_model[str(name).strip().lower()] = {
+                        "mean": pd.Series(mean),
+                        "std": pd.Series(std),
+                    }
+            return
+        if "feature_mean" in norm_meta and "feature_std" in norm_meta:
+            try:
+                self._norm_global = {
+                    "mean": pd.Series(norm_meta["feature_mean"]),
+                    "std": pd.Series(norm_meta["feature_std"]),
+                }
+            except Exception:
+                self._norm_global = None
+
+    def get_norm_meta(self) -> Dict[str, Any]:
+        """训练阶段导出归一化参数，供 RollingTrainer 落盘。"""
+        if self._norm_per_model:
+            return {
+                "mode": "per_model",
+                "models": {
+                    k: {"mean": v["mean"].to_dict(), "std": v["std"].to_dict()} for k, v in self._norm_per_model.items()
+                },
+            }
+        if self._norm_global is not None:
+            return {
+                "mode": "global",
+                "feature_mean": self._norm_global["mean"].to_dict(),
+                "feature_std": self._norm_global["std"].to_dict(),
+            }
+        return {"mode": "none"}
 
     def _resolve_config(self, spec: Dict):
         # 1) spec 内直接给 config（允许 str path 或 dict）
@@ -171,6 +279,66 @@ class EnsembleModelManager:
             cfg = self._resolve_config(spec)
             self.models[name] = create_model(model_type, cfg)
 
+    def _resolve_feature_cols(self, model_name: str, all_cols: List[str]) -> Optional[List[str]]:
+        """解析每个模型需要的特征列。"""
+        if not self._model_features:
+            return None
+        model_key = str(model_name).strip().lower()
+        spec = self._model_features.get(model_key)
+        if spec is None:
+            raise ValueError(
+                f"model_features 已配置，但未包含模型 {model_name}。"
+                "请在 pipeline.yaml 的 model_features 中为该模型指定特征集合。"
+            )
+        # str：引用 data.yaml 的 feature_sets
+        if isinstance(spec, str):
+            key = spec.strip()
+            if key in {"*", "all", "ALL"}:
+                return None
+            if key in self._feature_sets:
+                cols = list(self._feature_sets[key] or [])
+            else:
+                raise ValueError(f"model_features[{model_name}]={key} 未在 data.feature_sets 中定义")
+        # list：直接给列名/表达式
+        elif isinstance(spec, list):
+            cols = list(spec)
+        else:
+            raise ValueError(f"model_features[{model_name}] 仅支持 str 或 list")
+        if not cols:
+            return None
+        missing = [c for c in cols if c not in all_cols]
+        if missing:
+            raise ValueError(f"模型 {model_name} 特征缺失: {missing[:10]}")
+        if model_name not in self._feature_log_done:
+            logger.info(
+                "模型 %s 使用特征集合=%s，列数=%d（示例: %s）",
+                model_name,
+                spec,
+                len(cols),
+                cols[:8],
+            )
+            self._feature_log_done.add(model_name)
+        return cols
+
+    def _select_features(self, model_name: str, df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        if df is None or df.empty:
+            return df
+        cols = self._resolve_feature_cols(model_name, list(df.columns))
+        if not cols:
+            return df
+        selected = df.loc[:, cols]
+        # 仅首次打印，避免日志过多
+        log_key = f"{model_name}__select"
+        if log_key not in self._feature_log_done:
+            logger.info(
+                "模型 %s 特征选择: 总列数=%d -> 选择列数=%d",
+                model_name,
+                len(df.columns),
+                len(selected.columns),
+            )
+            self._feature_log_done.add(log_key)
+        return selected
+
     def fit(
         self,
         train_feat: pd.DataFrame,
@@ -180,9 +348,78 @@ class EnsembleModelManager:
         *,
         history_feat: Optional[pd.DataFrame] = None,
     ):
+        def _tail_by_trading_days(df: pd.DataFrame, n_days: int) -> pd.DataFrame:
+            """
+            取最近 n 个“交易日”的数据（按 MultiIndex 的 datetime 去重计数，而非按日历天）。
+            df 为空则原样返回。
+            """
+            if df is None or df.empty or n_days <= 0:
+                return df
+            idx = df.index
+            if not isinstance(idx, pd.MultiIndex) or "datetime" not in idx.names:
+                return df
+            dts = pd.to_datetime(idx.get_level_values("datetime")).normalize()
+            unique_days = pd.Index(sorted(pd.unique(dts)))
+            if len(unique_days) <= n_days:
+                return df
+            cutoff = unique_days[-n_days]
+            return df.loc[dts >= cutoff]
+
+        # 读取“按模型训练窗口天数”配置（可选）
+        rolling = self.pipeline_cfg.get("rolling", {}) or {}
+        raw_days_map = rolling.get("model_train_days") or rolling.get("train_days_by_model") or {}
+        days_map: Dict[str, int] = {}
+        if isinstance(raw_days_map, dict):
+            for k, v in raw_days_map.items():
+                try:
+                    days_map[str(k).strip().lower()] = int(v)
+                except Exception:
+                    continue
+
+        # 归一化模式：
+        # - global: 使用统一 mean/std（来自 RollingTrainer 或 PredictorEngine 注入的 norm_meta）
+        # - per_model: 每个模型单独拟合 mean/std（训练阶段默认）
+        norm_mode = str(rolling.get("feature_normalization", rolling.get("normalization_mode", "per_model"))).strip().lower()
+        if norm_mode not in {"per_model", "global", "none"}:
+            norm_mode = "per_model"
+        # 训练阶段：若显式要求 global 且尚未注入 global norm，则退回 per_model
+        if norm_mode == "global" and self._norm_global is None and not self._norm_per_model:
+            norm_mode = "per_model"
+        # 训练阶段：per_model 每次 fit 都重算（按窗口），避免跨窗口复用
+        if norm_mode == "per_model":
+            self._norm_per_model = {}
+
         # 先训练所有基础模型
-        for model in self.models.values():
-            model.fit(train_feat, train_label, valid_feat, valid_label)
+        for name, model in self.models.items():
+            # 1) 按模型裁剪训练集：保持验证窗口对齐，但允许不同模型使用不同长度的训练历史
+            n_days = days_map.get(str(name).strip().lower())
+            tr_raw = _tail_by_trading_days(train_feat, n_days) if n_days else train_feat
+            tr_lbl = train_label.reindex(tr_raw.index) if tr_raw is not None else train_label
+
+            # 2) 再做按模型特征集合选择（feature_sets / model_features）
+            tr = self._select_features(name, tr_raw)
+            va = self._select_features(name, valid_feat) if valid_feat is not None else None
+
+            # 3) 归一化（按模型/按窗口）
+            if norm_mode == "per_model":
+                mean, std = self._fit_norm(tr)
+                self._norm_per_model[str(name).strip().lower()] = {"mean": mean, "std": std}
+                tr = self._apply_norm(tr, mean, std)
+                if va is not None:
+                    va = self._apply_norm(va, mean, std)
+            elif norm_mode == "global" and self._norm_global is not None:
+                gmean, gstd = self._norm_global["mean"], self._norm_global["std"]
+                # 仅对子集列应用 global norm
+                mean = gmean.reindex(tr.columns)
+                std = gstd.reindex(tr.columns)
+                tr = self._apply_norm(tr, mean, std)
+                if va is not None:
+                    mean2 = gmean.reindex(va.columns)
+                    std2 = gstd.reindex(va.columns)
+                    va = self._apply_norm(va, mean2, std2)
+
+            # 4) 训练
+            model.fit(tr, tr_lbl, va, valid_label)
         
         # 如果聚合器需要训练（如 weighted_average 或 meta_learner），在验证集上训练
         if self.aggregator is not None and hasattr(self.aggregator, "fit"):
@@ -202,15 +439,41 @@ class EnsembleModelManager:
     ) -> Tuple[Optional[pd.Series], Dict[str, pd.Series], Dict[str, object]]:
         preds: Dict[str, pd.Series] = {}
         aux: Dict[str, object] = {}
+        rolling = self.pipeline_cfg.get("rolling", {}) or {}
+        norm_mode = str(rolling.get("feature_normalization", rolling.get("normalization_mode", "per_model"))).strip().lower()
+        if norm_mode not in {"per_model", "global", "none"}:
+            norm_mode = "per_model"
         for name, model in self.models.items():
+            feat_view = self._select_features(name, feat)
+            history_view = self._select_features(name, history_feat) if history_feat is not None else None
+
+            # 预测阶段归一化：优先 per_model（训练时保存），否则 global（旧格式）
+            mkey = str(name).strip().lower()
+            if norm_mode != "none":
+                if mkey in self._norm_per_model:
+                    mean = self._norm_per_model[mkey]["mean"]
+                    std = self._norm_per_model[mkey]["std"]
+                    feat_view = self._apply_norm(feat_view, mean, std)
+                    if history_view is not None:
+                        history_view = self._apply_norm(history_view, mean, std)
+                elif self._norm_global is not None:
+                    gmean, gstd = self._norm_global["mean"], self._norm_global["std"]
+                    mean = gmean.reindex(feat_view.columns)
+                    std = gstd.reindex(feat_view.columns)
+                    feat_view = self._apply_norm(feat_view, mean, std)
+                    if history_view is not None:
+                        mean2 = gmean.reindex(history_view.columns)
+                        std2 = gstd.reindex(history_view.columns)
+                        history_view = self._apply_norm(history_view, mean2, std2)
+
             # 尽量向序列模型传递历史特征；对不支持的模型自动回退
-            if history_feat is not None:
+            if history_view is not None:
                 try:
-                    output = model.predict(feat, history_feat=history_feat)
+                    output = model.predict(feat_view, history_feat=history_view)
                 except TypeError:
-                    output = model.predict(feat)
+                    output = model.predict(feat_view)
             else:
-                output = model.predict(feat)
+                output = model.predict(feat_view)
 
             if isinstance(output, tuple):
                 preds[name], aux[name] = output

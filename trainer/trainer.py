@@ -44,8 +44,65 @@ class RollingTrainer:
         self.cfg = load_yaml_config(pipeline_config)
         self.paths = self.cfg["paths"]
         self.data_cfg_path = self.cfg["data_config"]
-        self.pipeline = QlibFeaturePipeline(self.data_cfg_path)
+
+        # 预加载 data.yaml（后续窗口生成/标签解析/动态时间窗口都会用到）
+        self.data_cfg = load_yaml_config(self.data_cfg_path)
+        self.data_section = self.data_cfg.get("data", {}) or {}
+        # aligned 模式下：data.start_time 作为“验证起点锚点”，但取数 start_time 需要更早（包含训练历史）
+        self.anchor_start_time = self.data_section.get("start_time")
+
+        # ===== 动态训练窗口对齐（按模型 train_days，但窗口的 valid_start 对齐）=====
+        # 需求：不同模型（lgb/gru）可能使用不同 train_days，但验证窗口必须从同一个日期开始，
+        # 否则各模型产出的 tag（valid_end）会错位，无法做 ensemble/stack/OOF 对齐。
+        rolling = self.cfg.get("rolling", {}) or {}
+        model_train_days = rolling.get("model_train_days") or rolling.get("train_days_by_model") or {}
+        if isinstance(model_train_days, dict) and model_train_days:
+            # 若配置了按模型天数，默认启用 aligned 窗口模式（以 data.start_time 作为 valid_start 锚点）
+            rolling.setdefault("window_mode", "aligned")
+            self.cfg["rolling"] = rolling
+
+        window_mode = str(rolling.get("window_mode", "classic")).strip().lower()
+        if window_mode == "aligned":
+            if not self.anchor_start_time:
+                raise ValueError("aligned 窗口模式需要 data.start_time 作为验证起点锚点")
+
+            # 训练窗口长度取：rolling.train_days 与 model_train_days 的最大值
+            max_days = int(rolling.get("train_days", 0) or 0)
+            if isinstance(model_train_days, dict):
+                for _, v in model_train_days.items():
+                    try:
+                        max_days = max(max_days, int(v))
+                    except Exception:
+                        continue
+            if max_days <= 0:
+                raise ValueError(
+                    "aligned 窗口模式需要 rolling.train_days 或 rolling.model_train_days 提供正整数训练天数"
+                )
+
+            # 为保证最长训练窗口可用，把 D.features 的 start_time 向前扩展 max_days
+            fetch_start = (pd.Timestamp(self.anchor_start_time) - pd.Timedelta(days=max_days)).strftime("%Y-%m-%d")
+            if str(fetch_start) != str(self.data_section.get("start_time")):
+                logger.info(
+                    "aligned 窗口模式：将 data.start_time 从 %s 向前扩展为 %s（保证最长训练窗口可用）",
+                    self.data_section.get("start_time"),
+                    fetch_start,
+                )
+                self.data_section["start_time"] = fetch_start
+                self.data_cfg["data"] = self.data_section
+
+        # 用（可能被扩展过的）data_cfg 初始化特征管线
+        self.pipeline = QlibFeaturePipeline(self.data_cfg)
         self.ensemble = EnsembleModelManager(self.cfg, self.cfg.get("ensemble"))
+        # 诊断：打印特征集合配置，便于核对模型是否按集合取特征
+        try:
+            feature_sets = self.data_cfg.get("data", {}).get("feature_sets", {}) or {}
+            active_sets = self.data_cfg.get("data", {}).get("active_feature_sets", []) or []
+            model_features = self.cfg.get("model_features", {}) or {}
+            logger.info("配置检查: active_feature_sets=%s", active_sets)
+            logger.info("配置检查: feature_sets_keys=%s", list(feature_sets.keys()))
+            logger.info("配置检查: model_features=%s", model_features)
+        except Exception as e:
+            logger.warning("配置检查失败（可忽略）: %s", e)
         stack_cfg = (self.cfg.get("stack") or {})
         self.stack_enabled = bool(stack_cfg.get("enabled", True))
         if self.stack_enabled:
@@ -63,8 +120,7 @@ class RollingTrainer:
             logger.info("已关闭 LeafStackModel（stack.enabled=false）：本次训练仅训练/评估基础模型，不训练 stack。")
         
         # 解析标签表达式，获取需要的未来天数
-        data_cfg = load_yaml_config(self.data_cfg_path)["data"]
-        label_expr = data_cfg.get("label", "Ref($close, -5)/$close - 1")
+        label_expr = self.data_section.get("label", "Ref($close, -5)/$close - 1")
         import re
         self.label_future_days = 0
         if "Ref($close, -" in label_expr:
@@ -79,12 +135,23 @@ class RollingTrainer:
 
     def _generate_windows(self) -> Iterable[Window]:
         rolling = self.cfg["rolling"]
-        data_cfg = load_yaml_config(self.data_cfg_path)["data"]
+        data_cfg = self.data_section
         start = pd.Timestamp(data_cfg["start_time"])
         end = pd.Timestamp(data_cfg["end_time"])
+        window_mode = str(rolling.get("window_mode", "classic")).strip().lower()
+
+        # 训练窗口长度取：rolling.train_days 与 model_train_days 的最大值（用于窗口生成 train_start）
+        model_train_days = rolling.get("model_train_days") or rolling.get("train_days_by_model") or {}
+        max_train_days = int(rolling.get("train_days", 0) or 0)
+        if isinstance(model_train_days, dict):
+            for _, v in model_train_days.items():
+                try:
+                    max_train_days = max(max_train_days, int(v))
+                except Exception:
+                    continue
         # 支持按日训练：优先使用 train_days/valid_days/step_days，如果没有则回退到按月（兼容旧配置）
         if "train_days" in rolling:
-            train_offset = pd.Timedelta(days=rolling["train_days"])
+            train_offset = pd.Timedelta(days=max_train_days)
             valid_offset = pd.Timedelta(days=rolling["valid_days"])
             step = pd.Timedelta(days=rolling["step_days"])
         else:
@@ -93,8 +160,15 @@ class RollingTrainer:
             valid_offset = pd.DateOffset(months=rolling["valid_months"])
             step = pd.DateOffset(months=rolling["step_months"])
 
-        # cursor 指向验证起点，前推 train_offset 即训练区间
-        cursor = start + train_offset
+        # classic：start_time 是训练起点（原逻辑）
+        # aligned：start_time 是验证起点锚点（新逻辑，用于对齐多模型）
+        if window_mode == "aligned":
+            # 注意：start 可能已被向前扩展用于取数；aligned 的窗口锚点必须使用原始 start_time
+            cursor = pd.Timestamp(self.anchor_start_time)
+        else:
+            # cursor 指向验证起点，前推 train_offset 即训练区间
+            cursor = start + train_offset
+
         while cursor + valid_offset <= end:
             train_start = cursor - train_offset
             train_end = cursor - pd.Timedelta(days=1)
@@ -266,19 +340,9 @@ class RollingTrainer:
             else:
                 logger.info("窗口 %d: 训练样本 %d，验证样本 %d", idx, len(train_feat), len(valid_feat))
 
-            # 修复：对每个训练窗口单独计算归一化参数，避免数据泄露
-            logger.info("窗口 %d: 计算训练窗口归一化参数（仅使用训练集数据）", idx)
-            train_feat_norm, norm_mean, norm_std = self.pipeline.normalize_features(train_feat)
-            
-            # 验证集使用训练集的归一化参数（不能使用验证集数据计算归一化参数）
-            if has_valid:
-                valid_feat_norm = (valid_feat - norm_mean) / norm_std
-                valid_feat_norm = valid_feat_norm.clip(-5, 5)
-            else:
-                valid_feat_norm = None
-            
             # 构造 GRU 等序列模型的历史特征（补齐 label_future_days 造成的间隙）
-            history_feat_norm = train_feat_norm
+            # 注意：特征归一化在 EnsembleModelManager 内按模型各自处理（方案B），这里保持 raw 特征。
+            history_feat_raw = train_feat
             if has_valid and self.label_future_days > 0:
                 try:
                     train_end_actual = train_feat.index.get_level_values("datetime").max()
@@ -288,36 +352,34 @@ class RollingTrainer:
                     if gap_start <= gap_end:
                         gap_feat = self._slice_features_only(features, gap_start, gap_end)
                         if len(gap_feat) > 0:
-                            gap_feat_norm = (gap_feat - norm_mean) / norm_std
-                            gap_feat_norm = gap_feat_norm.clip(-5, 5)
-                            history_feat_norm = pd.concat([train_feat_norm, gap_feat_norm], axis=0).sort_index()
+                            history_feat_raw = pd.concat([train_feat, gap_feat], axis=0).sort_index()
                             logger.info(
                                 "为序列模型补齐历史间隙: %s ~ %s (rows=%d)",
                                 gap_start.strftime("%Y-%m-%d"),
                                 gap_end.strftime("%Y-%m-%d"),
-                                len(gap_feat_norm),
+                                len(gap_feat),
                             )
                 except Exception as e:
                     logger.warning("构造序列历史特征失败（忽略继续）：%s", e)
 
-            # 统一训练多模型（使用归一化后的特征）
+            # 统一训练多模型（归一化在 EnsembleModelManager 内部按模型进行）
             self.ensemble.fit(
-                train_feat_norm,
+                train_feat,
                 train_lbl,
-                valid_feat_norm,
+                valid_feat if has_valid else None,
                 valid_lbl,
-                history_feat=history_feat_norm,
+                history_feat=history_feat_raw,
             )
 
-            train_blend, train_preds, train_aux = self.ensemble.predict(train_feat_norm)
+            train_blend, train_preds, train_aux = self.ensemble.predict(train_feat, history_feat=history_feat_raw)
             lgb_train_pred = train_preds.get("lgb")
             lgb_train_leaf = train_aux.get("lgb")
             valid_blend = valid_preds = valid_aux = None
             if has_valid:
                 # 对序列模型（如 GRU）需要提供训练历史 + 间隙补齐，避免验证集前期缺历史导致预测为空
                 valid_blend, valid_preds, valid_aux = self.ensemble.predict(
-                    valid_feat_norm,
-                    history_feat=history_feat_norm,
+                    valid_feat,
+                    history_feat=history_feat_raw,
                 )
 
             valid_pred = valid_leaf = None
@@ -378,11 +440,27 @@ class RollingTrainer:
                         # 重命名
                         oof_detail = oof_detail.rename(columns={"datetime": "date", "instrument": "code"})
                         # 仅保留当前基模型列 + y + fold
-                        keep_cols = ["date", "code", "fold", "y"] + [spec["name"] for spec in model_specs]
+                        # 统一约定：基模型预测列名使用 pred_{model_name}（与 utils/meta_ridge.py 一致）
+                        model_names = [str(spec["name"]).strip().lower() for spec in model_specs]
+                        rename_map = {name: f"pred_{name}" for name in model_names}
+                        oof_detail = oof_detail.rename(columns=rename_map)
+                        keep_cols = ["date", "code", "fold", "y"] + [f"pred_{name}" for name in model_names]
                         missing_cols = [c for c in keep_cols if c not in oof_detail.columns]
                         if missing_cols:
                             raise ValueError(f"meta_oof 缺少列: {missing_cols}")
                         oof_detail = oof_detail[keep_cols]
+                        # Ridge 不接受 NaN：在落盘前就过滤掉含 NaN 的行（常见：GRU 序列不足导致 pred_gru 为 NaN）
+                        pred_keep = [c for c in oof_detail.columns if c.startswith("pred_")]
+                        before = len(oof_detail)
+                        oof_detail = oof_detail.dropna(subset=(pred_keep + ["y"]))
+                        after = len(oof_detail)
+                        if after < before:
+                            logger.warning(
+                                "meta_oof 落盘前过滤 NaN: %d -> %d (dropped=%d). 可能原因：GRU 序列不足/预测为空或标签缺失。",
+                                before,
+                                after,
+                                before - after,
+                            )
                         oof_detail.to_parquet(meta_oof_path, index=False)
                         logger.info("meta_oof 已保存: %s (rows=%d)", meta_oof_path, len(oof_detail))
                     else:
@@ -470,16 +548,17 @@ class RollingTrainer:
             if self.stack_enabled and self.stack is not None:
                 self.stack.save(self.paths["model_dir"], tag)
             
-            # 保存归一化参数（用于预测时使用）
+            # 保存归一化参数（用于预测时使用；支持 per-model 与旧 global 格式）
             import json
             norm_meta_path = os.path.join(self.paths["model_dir"], f"{tag}_norm_meta.json")
-            norm_meta = {
-                "feature_mean": norm_mean.to_dict(),
-                "feature_std": norm_std.to_dict(),
-                "train_start": window.train_start,
-                "train_end": window.train_end,
-                "valid_end": window.valid_end,
-            }
+            norm_meta = self.ensemble.get_norm_meta()
+            norm_meta.update(
+                {
+                    "train_start": window.train_start,
+                    "train_end": window.train_end,
+                    "valid_end": window.valid_end,
+                }
+            )
             with open(norm_meta_path, "w", encoding="utf-8") as fp:
                 json.dump(norm_meta, fp, ensure_ascii=False, indent=2, default=str)
             logger.info("归一化参数已保存: %s", norm_meta_path)

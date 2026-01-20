@@ -68,6 +68,13 @@ class LightGBMModelWrapper:
         valid_feat: Optional[pd.DataFrame] = None,
         valid_label: Optional[pd.Series] = None,
     ):
+        # 记录并打印训练时使用的特征列（便于排查“按模型分配特征集合”是否生效）
+        feat_cols = list(train_feat.columns)
+        logger.info("LGB 训练特征列数=%d，示例=%s", len(feat_cols), feat_cols[:30])
+        # 列数不大时，直接打印完整列表；避免过长时刷屏
+        if len(feat_cols) <= 60:
+            logger.info("LGB 训练特征完整列表=%s", feat_cols)
+
         # 通过 PandasDataset 向 qlib 声明训练/验证时间切片
         segments = {
             "train": (
@@ -97,11 +104,21 @@ class LightGBMModelWrapper:
         logger.info("开始训练 LightGBM，训练样本: %d", len(train_feat))
         self.model.fit(dataset=dataset)
         self.booster = self.model.model
-        self.feature_names = list(train_feat.columns)
+        self.feature_names = feat_cols
 
     def predict(self, feat: pd.DataFrame) -> Tuple[pd.Series, np.ndarray]:
         if self.booster is None:
             raise RuntimeError("模型尚未训练")
+
+        # 空输入短路：LightGBM 在 nrow==0 时会在内部触发 ZeroDivisionError
+        if feat is None or len(feat) == 0:
+            try:
+                n_trees = int(self.booster.num_trees())
+            except Exception:
+                n_trees = 0
+            empty_pred = pd.Series([], index=getattr(feat, "index", None), dtype=float, name="lgb_pred")
+            empty_leaf = np.empty((0, n_trees), dtype=np.int32)
+            return empty_pred, empty_leaf
         
         # 确保特征列与训练时一致
         if self.feature_names is None:
@@ -112,35 +129,22 @@ class LightGBMModelWrapper:
                 logger.warning("无法获取模型的特征名，使用输入特征列（可能导致特征不匹配）")
                 self.feature_names = list(feat.columns)
         
-        # 对齐特征列：确保顺序和数量与训练时一致
-        aligned_feat = pd.DataFrame(index=feat.index, columns=self.feature_names, dtype=float)
-        
-        # 填充存在的特征
-        for col in self.feature_names:
-            if col in feat.columns:
-                aligned_feat[col] = feat[col]
-            else:
-                # 缺失的特征用0填充（已归一化，0表示均值）
-                aligned_feat[col] = 0.0
-                logger.debug("特征 '%s' 在预测数据中不存在，使用0填充", col)
-        
-        # 检查是否有未使用的特征
-        unused_cols = set(feat.columns) - set(self.feature_names)
-        if unused_cols:
-            logger.warning("预测数据中有 %d 个特征未在训练时使用，将被忽略: %s", 
-                         len(unused_cols), list(unused_cols)[:10])
-        
-        # 确保列顺序与训练时一致
-        aligned_feat = aligned_feat[self.feature_names]
-        
-        # 检查特征数量
-        expected_num_features = len(self.feature_names)
-        actual_num_features = len(aligned_feat.columns)
-        if expected_num_features != actual_num_features:
-            raise ValueError(
-                f"特征数量不匹配：期望 {expected_num_features}，实际 {actual_num_features}。"
-                f"期望特征: {self.feature_names[:10]}..."
+        # 强制按训练时的 feature_names 对齐：多余特征忽略，缺失特征补 0
+        missing_cols = [c for c in self.feature_names if c not in feat.columns]
+        if missing_cols:
+            logger.warning(
+                "预测数据缺失 %d 个训练特征，将用 0 填充（示例: %s）",
+                len(missing_cols),
+                missing_cols[:10],
             )
+        unused_cols = [c for c in feat.columns if c not in set(self.feature_names)]
+        if unused_cols:
+            logger.warning(
+                "预测数据包含 %d 个未参与训练的特征，将被忽略（示例: %s）",
+                len(unused_cols),
+                unused_cols[:10],
+            )
+        aligned_feat = feat.reindex(columns=self.feature_names).fillna(0.0)
         
         values = aligned_feat.values
         preds = self.booster.predict(values)

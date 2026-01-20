@@ -49,8 +49,7 @@ class PredictorEngine:
         else:
             self.data_cfg = data_config_path
         # 归一化参数（在 load_models 时加载）
-        self._norm_mean = None
-        self._norm_std = None
+        self._norm_meta = None
         self._meta: MetaStacker | None = None
         enabled = (cfg.get("oof_stacking") or {}).get("enabled", False)
         if isinstance(enabled, str) and enabled.strip().lower() == "auto":
@@ -78,19 +77,22 @@ class PredictorEngine:
                 self._meta = None
         
         # 加载归一化参数
-        import json
         norm_meta_path = os.path.join(model_dir, f"{tag}_norm_meta.json")
         if os.path.exists(norm_meta_path):
             with open(norm_meta_path, "r", encoding="utf-8") as fp:
                 norm_meta = json.load(fp)
-            self._norm_mean = pd.Series(norm_meta["feature_mean"])
-            self._norm_std = pd.Series(norm_meta["feature_std"])
-            logger.info("归一化参数已加载: 训练窗口 [%s, %s]", 
-                       norm_meta.get("train_start"), norm_meta.get("train_end"))
+            self._norm_meta = norm_meta
+            # 归一化由 EnsembleModelManager 负责（支持 per-model 与旧 global）
+            self.ensemble.set_norm_meta(norm_meta)
+            logger.info(
+                "归一化参数已加载: mode=%s, 训练窗口 [%s, %s]",
+                norm_meta.get("mode", "unknown"),
+                norm_meta.get("train_start"),
+                norm_meta.get("train_end"),
+            )
         else:
             logger.warning("未找到归一化参数文件: %s，将使用特征本身的统计量（不推荐）", norm_meta_path)
-            self._norm_mean = None
-            self._norm_std = None
+            self._norm_meta = None
 
     def predict(
         self,
@@ -98,45 +100,14 @@ class PredictorEngine:
         ic_histories: Dict[str, pd.Series],
     ) -> Tuple[pd.Series, Dict[str, pd.Series], Dict[str, float]]:
         """返回融合预测、各模型预测以及权重。"""
-        # 修复：使用训练时的归一化参数对特征进行归一化
-        if self._norm_mean is not None and self._norm_std is not None:
-            logger.info("使用训练时的归一化参数对特征进行归一化")
-            
-            # 获取训练时的所有特征列（从归一化参数中）
-            expected_cols = list(self._norm_mean.index)
-            actual_cols = list(features.columns)
-            
-            # 创建对齐后的特征 DataFrame，确保列顺序和数量与训练时一致
-            aligned_features = pd.DataFrame(index=features.index, columns=expected_cols, dtype=float)
-            
-            # 填充存在的特征
-            for col in expected_cols:
-                if col in features.columns:
-                    aligned_features[col] = features[col]
-                else:
-                    # 缺失的特征用0填充（归一化后0表示均值）
-                    aligned_features[col] = 0.0
-                    logger.debug("特征 '%s' 在预测数据中不存在，使用0填充", col)
-            
-            # 检查是否有未使用的特征
-            unused_cols = set(actual_cols) - set(expected_cols)
-            if unused_cols:
-                logger.warning("预测数据中有 %d 个特征未在训练时使用，将被忽略: %s", 
-                             len(unused_cols), list(unused_cols)[:10])
-            
-            # 对特征进行归一化
-            features_norm = (aligned_features - self._norm_mean) / self._norm_std
-            features_norm = features_norm.clip(-5, 5)
-            
-            # 确保列顺序与训练时一致
-            features_norm = features_norm[expected_cols]
-            features = features_norm
-            
-            logger.info("特征对齐完成：期望 %d 个特征，实际输入 %d 个特征，对齐后 %d 个特征", 
-                       len(expected_cols), len(actual_cols), len(features.columns))
-        else:
-            logger.warning("未加载归一化参数，使用原始特征（可能导致预测不准确）")
-        
+        # 空特征短路：常见于某日期股票池为空、或因缺因子/清洗过滤导致切片无样本
+        if features is None or len(features) == 0:
+            logger.warning("predict 输入特征为空，将返回空预测结果（跳过模型推理与加权）")
+            empty_idx = getattr(features, "index", pd.MultiIndex.from_arrays([[], []], names=["datetime", "instrument"]))
+            empty_final = pd.Series([], index=empty_idx, dtype=float, name="final")
+            return empty_final, {}, {}
+
+        # 归一化由 EnsembleModelManager 内部处理（按模型 per-model 或兼容旧 global）
         blend_pred, base_preds, aux = self.ensemble.predict(features)
         lgb_pred = base_preds.get("lgb")
         lgb_leaf = aux.get("lgb")
@@ -189,8 +160,8 @@ class PredictorEngine:
             weights = {}
         else:
             # 3) 否则沿用原 IC 动态加权 final
-        weights = self.weighter.get_weights(ic_histories)
-        final_pred = self.weighter.blend(preds, weights)
+            weights = self.weighter.get_weights(ic_histories)
+            final_pred = self.weighter.blend(preds, weights)
         
         # 如果训练时使用了 Rank 转换，对预测值也进行截面排名转换
         label_transform = self.data_cfg.get("data", {}).get("label_transform", {})
@@ -252,6 +223,10 @@ class PredictorEngine:
               超过该范围的样本会被丢弃。
             """
             if not isinstance(df.index, pd.MultiIndex) or "datetime" not in df.index.names:
+                return df
+
+            # 空数据短路：避免对空索引求 min/max
+            if len(df) == 0:
                 return df
 
             orig_max_dt = pd.Timestamp(df.index.get_level_values("datetime").max()).normalize()

@@ -342,27 +342,17 @@ def main():
                         valid_feat = None
                         valid_lbl = None
                     
-                    # 计算归一化参数
-                    logger.info("计算训练窗口归一化参数（仅使用训练集数据）")
-                    train_feat_norm, norm_mean, norm_std = trainer.pipeline.normalize_features(train_feat)
-                    
-                    if has_valid:
-                        valid_feat_norm = (valid_feat - norm_mean) / norm_std
-                        valid_feat_norm = valid_feat_norm.clip(-5, 5)
-                    else:
-                        valid_feat_norm = None
-                    
-                    # 训练集成模型
+                    # 归一化在 EnsembleModelManager 内部按模型各自处理（方案B），这里保持 raw 特征
                     trainer.ensemble.fit(
-                        train_feat_norm,
+                        train_feat,
                         train_lbl,
-                        valid_feat_norm,
+                        valid_feat if has_valid else None,
                         valid_lbl,
-                        history_feat=train_feat_norm,
+                        history_feat=train_feat,
                     )
                     
                     # 获取 LightGBM 预测和叶子索引（用于 stack 模型）
-                    train_blend, train_preds, train_aux = trainer.ensemble.predict(train_feat_norm)
+                    train_blend, train_preds, train_aux = trainer.ensemble.predict(train_feat, history_feat=train_feat)
                     lgb_train_pred = train_preds.get("lgb")
                     lgb_train_leaf = train_aux.get("lgb")
                     if lgb_train_pred is None or lgb_train_leaf is None:
@@ -370,7 +360,7 @@ def main():
                     
                     valid_pred = valid_leaf = None
                     if has_valid:
-                        valid_blend, valid_preds, valid_aux = trainer.ensemble.predict(valid_feat_norm)
+                        valid_blend, valid_preds, valid_aux = trainer.ensemble.predict(valid_feat, history_feat=train_feat)
                         if valid_preds is not None:
                             valid_pred = valid_preds.get("lgb")
                         if valid_aux is not None:
@@ -390,14 +380,15 @@ def main():
                     # 保存归一化参数
                     import json
                     norm_meta_path = os.path.join(trainer.paths["model_dir"], f"{model_tag}_norm_meta.json")
-                    norm_meta = {
-                        "feature_mean": norm_mean.to_dict(),
-                        "feature_std": norm_std.to_dict(),
-                        "train_start": window.train_start,
-                        "train_end": window.train_end,
-                        "valid_start": window.valid_start,
-                        "valid_end": window.valid_end,
-                    }
+                    norm_meta = trainer.ensemble.get_norm_meta()
+                    norm_meta.update(
+                        {
+                            "train_start": window.train_start,
+                            "train_end": window.train_end,
+                            "valid_start": window.valid_start,
+                            "valid_end": window.valid_end,
+                        }
+                    )
                     with open(norm_meta_path, "w", encoding="utf-8") as fp:
                         json.dump(norm_meta, fp, ensure_ascii=False, indent=2, default=str)
                     logger.info("归一化参数已保存: %s", norm_meta_path)
