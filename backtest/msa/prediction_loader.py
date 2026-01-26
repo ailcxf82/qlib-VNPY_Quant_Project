@@ -101,10 +101,25 @@ def load_prediction_csv(path: str, *, score_col: str = "final", dates_are: str =
             - "trade_date": 强制将 datetime 视为 trade_date（不做反向还原）
     """
     df = pd.read_csv(path, dtype={"instrument": str, "rq_code": str})
+    # 兼容：部分 CSV 列名可能带尾部空格/不可见字符（常见于某些导出工具）
+    try:
+        df.columns = [str(c).strip() for c in df.columns]
+    except Exception:
+        pass
+
+    # 兼容：常见别名（尽量无侵入）
     if "datetime" not in df.columns:
-        raise ValueError(f"预测文件缺少 datetime 列: {path}")
+        for alt in ("date", "dt", "trade_date", "signal_date"):
+            if alt in df.columns:
+                df = df.rename(columns={alt: "datetime"})
+                break
+
+    if "datetime" not in df.columns:
+        raise ValueError(f"预测文件缺少 datetime 列: {path}（当前列={list(df.columns)[:20]}）")
+
+    score_col = str(score_col).strip()
     if score_col not in df.columns:
-        raise ValueError(f"预测文件缺少 {score_col} 列: {path}")
+        raise ValueError(f"预测文件缺少 {score_col} 列: {path}（当前列={list(df.columns)[:20]}）")
 
     df["datetime"] = pd.to_datetime(df["datetime"]).dt.normalize()
     # 若预测文件 datetime 为 trade_date（已 shift），可反向还原为 signal_date，避免回测侧变成隐性 T+2

@@ -150,7 +150,13 @@ class OOFManager:
             try:
                 data_cfg = load_yaml_config(data_cfg_path)
                 feature_sets = data_cfg.get("data", {}).get("feature_sets", {}) or {}
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "OOF: 读取 data_config 失败，将忽略 data.feature_sets（data_config=%s, cwd=%s, err=%s）",
+                    data_cfg_path,
+                    os.getcwd(),
+                    e,
+                )
                 feature_sets = {}
 
         feature_log_done: set[str] = set()
@@ -171,7 +177,16 @@ class OOFManager:
                 if key in feature_sets:
                     cols = list(feature_sets[key] or [])
                 else:
-                    raise ValueError(f"OOF: model_features[{model_name}]={key} 未在 data.feature_sets 中定义")
+                    avail = []
+                    try:
+                        if isinstance(feature_sets, dict):
+                            avail = sorted([str(k) for k in feature_sets.keys()])[:30]
+                    except Exception:
+                        avail = []
+                    raise ValueError(
+                        f"OOF: model_features[{model_name}]={key} 未在 data.feature_sets 中定义"
+                        + (f"（可用 keys 示例: {avail}）" if avail else "")
+                    )
             elif isinstance(spec, list):
                 cols = list(spec)
             else:

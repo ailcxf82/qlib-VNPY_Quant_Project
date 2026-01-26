@@ -3,10 +3,10 @@ qlib:
   region: "cn"
 
 data:
-  instruments: "csi300"
+  instruments: "csi300,csi101"
   # instruments: "all"
-  start_time: "2023-08-01"
-  end_time: "2023-12-31"
+  start_time: "2025-12-23"
+  end_time: "2026-01-23"
   freq: "day"
   
   # 缺失值清理策略：

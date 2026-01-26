@@ -425,7 +425,7 @@ class RollingTrainer:
                         tag=tag_tmp,
                         model_specs=model_specs,
                         pipeline_cfg=self.cfg,
-                        train_feat=train_feat_norm,
+                        train_feat=train_feat,
                         train_label=train_lbl,
                         splitter=splitter,
                         use_cache=bool(oof_cfg.get("use_cache", True)),

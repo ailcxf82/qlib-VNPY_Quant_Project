@@ -130,7 +130,13 @@ class EnsembleModelManager:
             try:
                 data_cfg = load_yaml_config(data_cfg_path)
                 self._feature_sets = data_cfg.get("data", {}).get("feature_sets", {}) or {}
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "读取 data_config 失败，将忽略 data.feature_sets（data_config=%s, cwd=%s, err=%s）",
+                    data_cfg_path,
+                    os.getcwd(),
+                    e,
+                )
                 self._feature_sets = {}
         self._build_models()
         aggregator_strategy = (self.ensemble_cfg or {}).get("aggregator", "average")
@@ -298,7 +304,16 @@ class EnsembleModelManager:
             if key in self._feature_sets:
                 cols = list(self._feature_sets[key] or [])
             else:
-                raise ValueError(f"model_features[{model_name}]={key} 未在 data.feature_sets 中定义")
+                avail = []
+                try:
+                    if isinstance(self._feature_sets, dict):
+                        avail = sorted([str(k) for k in self._feature_sets.keys()])[:30]
+                except Exception:
+                    avail = []
+                raise ValueError(
+                    f"model_features[{model_name}]={key} 未在 data.feature_sets 中定义"
+                    + (f"（可用 keys 示例: {avail}）" if avail else "")
+                )
         # list：直接给列名/表达式
         elif isinstance(spec, list):
             cols = list(spec)

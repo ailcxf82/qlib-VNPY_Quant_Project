@@ -12,7 +12,6 @@ import pandas as pd
 
 from models.ensemble_manager import EnsembleModelManager
 from models.meta_stacker import MetaStacker
-from models.stack_model import LeafStackModel
 from predictor.weight_dynamic import RankICDynamicWeighter
 from utils import load_yaml_config
 import json
@@ -31,7 +30,19 @@ class PredictorEngine:
         self.cfg = cfg
         self.paths = cfg["paths"]
         self.ensemble = EnsembleModelManager(cfg, cfg.get("ensemble"))
-        self.stack = LeafStackModel(cfg["stack_config"])
+        # stack（LeafStackModel）可选：其内部依赖 torch/MLP，用于学习 LGB leaf 的残差
+        stack_cfg = (cfg.get("stack") or {})
+        self.stack_enabled: bool = bool(stack_cfg.get("enabled", True))
+        self.stack = None
+        if self.stack_enabled:
+            try:
+                from models.stack_model import LeafStackModel  # 延迟导入：避免无 torch 时阻断纯树模型预测
+            except ModuleNotFoundError as e:
+                raise ModuleNotFoundError(
+                    "启用 stack 需要 torch（LeafStackModel 依赖 MLP/torch）。"
+                    "若你只使用基础模型，请在 pipeline.yaml 中设置 stack.enabled=false。"
+                ) from e
+            self.stack = LeafStackModel(cfg["stack_config"])
         ic_cfg = cfg.get("ic_logging", {})
         self.weighter = RankICDynamicWeighter(
             window=ic_cfg.get("window", 60),
@@ -62,7 +73,8 @@ class PredictorEngine:
         model_dir = self.paths["model_dir"]
         logger.info("加载模型，标识: %s", tag)
         self.ensemble.load(model_dir, tag)
-        self.stack.load(model_dir, tag)
+        if self.stack_enabled and self.stack is not None:
+            self.stack.load(model_dir, tag)
 
         # 可选：加载 MetaStacker（若启用）
         self._meta = None
@@ -109,14 +121,17 @@ class PredictorEngine:
 
         # 归一化由 EnsembleModelManager 内部处理（按模型 per-model 或兼容旧 global）
         blend_pred, base_preds, aux = self.ensemble.predict(features)
-        lgb_pred = base_preds.get("lgb")
-        lgb_leaf = aux.get("lgb")
-        if lgb_pred is None or lgb_leaf is None:
-            raise RuntimeError("需要 LightGBM 预测以驱动 Stack 模型，请检查 ensemble 配置")
-        residual_pred = self.stack.predict_residual(lgb_leaf, features.index)
-        stack_pred = self.stack.fuse(lgb_pred, residual_pred)
         preds = dict(base_preds)
-        preds["stack"] = stack_pred
+        if self.stack_enabled:
+            lgb_pred = base_preds.get("lgb")
+            lgb_leaf = aux.get("lgb")
+            if lgb_pred is None or lgb_leaf is None:
+                raise RuntimeError("启用 stack 需要 LightGBM 输出 leaf，请检查 base_models/ensemble.models 是否包含 lgb")
+            if self.stack is None:
+                raise RuntimeError("stack_enabled=True 但 stack 未初始化")
+            residual_pred = self.stack.predict_residual(lgb_leaf, features.index)
+            stack_pred = self.stack.fuse(lgb_pred, residual_pred)
+            preds["stack"] = stack_pred
         if blend_pred is not None:
             preds["qlib_ensemble"] = blend_pred
 

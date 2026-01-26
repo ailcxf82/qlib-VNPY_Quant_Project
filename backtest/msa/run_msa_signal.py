@@ -16,7 +16,7 @@ MSA 多策略“次日交易建议”脚本（不跑回测，只生成交易清�
 如果要更严格（每行业最多1只）
   python backtest/msa/run_msa_signal.py --industry-cap 1
 保持默认就行（每行业最多2只）：
-  python backtest/msa/run_msa_signal.py
+  python backtest/msa/run_msa_signal.py --pred-csi300 data/predictions/pred_csi300.csv
 """
 
 from __future__ import annotations
@@ -57,6 +57,86 @@ def _rqalpha_to_qlib(rq_code: str) -> str:
     if s.endswith(".XSHG"):
         return "SH" + s.split(".", 1)[0]
     return s
+
+
+def _format_strategy_result(
+    *,
+    title: str,
+    sub: Optional["SubStrategyConfig"],
+    picks: List[str],
+    signals: Dict[str, float],
+    sub_weights: Dict[str, float],
+    vols: Dict[str, Dict[str, Optional[float]]],
+    merged_weights: Optional[Dict[str, float]] = None,
+) -> str:
+    """
+    以多行文本形式打印策略结果，便于在日志中快速核对。
+    - title: 输出标题
+    - merged_weights: 若提供，则额外打印合并后的总权重
+    """
+    lines: List[str] = []
+    lines.append(f"[{title}]")
+    if sub is None:
+        lines.append("sub=None（该子策略未启用）")
+        return "\n".join(lines)
+
+    def _fmt_num(v: Any, *, ndigits: int) -> str:
+        """None/异常 -> 空字符串；否则按指定位数格式化。"""
+        if v is None:
+            return ""
+        try:
+            return f"{float(v):.{int(ndigits)}f}"
+        except Exception:
+            return ""
+
+    def _fmt_score(v: Any) -> str:
+        # 分数尽量打印出来；失败则用 nan
+        if v is None:
+            return "nan"
+        try:
+            return f"{float(v):.6f}"
+        except Exception:
+            return "nan"
+    lines.append(
+        f"sub={sub.name}, allocation={float(sub.allocation):.4f}, topk_pred={int(sub.topk_pred)}, target_holdings={int(sub.target_holdings)}, picks={len(picks)}"
+    )
+    if not picks:
+        lines.append("picks=空（可能被过滤/当天无信号/行业cap过严）")
+        return "\n".join(lines)
+    # 表头
+    if merged_weights is None:
+        lines.append("rk\trq_code\tts_code\tscore\tsub_w\tvol20\tvol60\tvol120")
+    else:
+        lines.append("rk\trq_code\tts_code\tscore\tsub_w\ttotal_w\tvol20\tvol60\tvol120")
+    for i, code in enumerate(picks, start=1):
+        ts_code = rqalpha_to_tushare(code)
+        score = signals.get(code, None)
+        try:
+            sw = float(sub_weights.get(code, 0.0))
+        except Exception:
+            sw = 0.0
+        if merged_weights is not None:
+            try:
+                tw = float(merged_weights.get(code, 0.0))
+            except Exception:
+                tw = 0.0
+        else:
+            tw = None
+        vv = vols.get(code, {}) if isinstance(vols, dict) else {}
+        v20 = vv.get("vol20")
+        v60 = vv.get("vol60")
+        v120 = vv.get("vol120")
+        if merged_weights is None:
+            lines.append(
+                f"{i}\t{code}\t{ts_code}\t{_fmt_score(score)}\t{sw:.6f}\t"
+                f"{_fmt_num(v20, ndigits=4)}\t{_fmt_num(v60, ndigits=4)}\t{_fmt_num(v120, ndigits=4)}"
+            )
+        else:
+            lines.append(
+                f"{i}\t{code}\t{ts_code}\t{_fmt_score(score)}\t{sw:.6f}\t{float(tw or 0.0):.6f}\t"
+                f"{_fmt_num(v20, ndigits=4)}\t{_fmt_num(v60, ndigits=4)}\t{_fmt_num(v120, ndigits=4)}"
+            )
+    return "\n".join(lines)
 
 
 @dataclass
@@ -966,6 +1046,12 @@ def parse_args():
     p.add_argument("--pred-csi101", type=str, default=None, help="CSI101 预测文件（默认自动找 data/predictions 最新）")
     p.add_argument("--pred-csi300", type=str, default=None, help="CSI300 预测文件（默认自动找 data/predictions 最新）")
     p.add_argument(
+        "--allow-missing-csi101",
+        action="store_true",
+        help="允许缺失 CSI101 预测文件：仅运行 CSI300 子策略（alloc1 将被置为 0 并自动归一化）。"
+             "当你显式传了 --pred-csi300 且未传 --pred-csi101 时，本脚本也会默认不再自动寻找/加载 csi101。",
+    )
+    p.add_argument(
         "--allow-missing-csi300",
         action="store_true",
         help="允许缺失 CSI300 预测文件：仅运行 CSI101 子策略（alloc2 将被置为 0 并自动归一化）",
@@ -997,11 +1083,11 @@ def parse_args():
     # s1
     # 为了确保“同行业cap + 各类过滤”后仍能凑够持仓数，默认把 topk 放大、目标持仓提升到10
     p.add_argument("--s1-topk", type=int, default=100)
-    p.add_argument("--s1-hold", type=int, default=10)
+    p.add_argument("--s1-hold", type=int, default=5)
     p.add_argument("--s1-min-list-days", type=int, default=360)
     # s2
     p.add_argument("--s2-topk", type=int, default=100)
-    p.add_argument("--s2-hold", type=int, default=10)
+    p.add_argument("--s2-hold", type=int, default=5)
     p.add_argument("--s2-min-list-days", type=int, default=360)
     p.add_argument("--s2-pb-min", type=float, default=0.0)
     p.add_argument("--s2-pb-max", type=float, default=1.0)
@@ -1041,19 +1127,41 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
     os.chdir(_PROJECT_ROOT)
 
-    pred_csi101 = _resolve_path(args.pred_csi101) or _find_latest_prediction("csi101")
+    # 兼容“只跑 CSI300”：当用户显式传入 --pred-csi300 且未传 --pred-csi101 时，
+    # 不再自动寻找/加载 csi101，避免误用历史文件。
+    auto_csi300_only = (args.pred_csi300 is not None) and (args.pred_csi101 is None) and (not bool(args.allow_missing_csi101))
+
+    pred_csi101 = _resolve_path(args.pred_csi101)
     pred_csi300 = _resolve_path(args.pred_csi300)
+
+    if pred_csi101 and (not os.path.exists(pred_csi101)):
+        raise FileNotFoundError(f"csi101 预测文件不存在: {pred_csi101}")
+    if pred_csi300 and (not os.path.exists(pred_csi300)):
+        raise FileNotFoundError(f"csi300 预测文件不存在: {pred_csi300}")
+
+    if pred_csi101 is None and not auto_csi300_only:
+        # 默认行为：仍会尝试自动找到 csi101（与历史逻辑一致）
+        try:
+            pred_csi101 = _find_latest_prediction("csi101")
+        except Exception:
+            pred_csi101 = None
     if not pred_csi300:
         try:
             pred_csi300 = _find_latest_prediction("csi300")
         except Exception:
             pred_csi300 = None
 
-    if not os.path.exists(pred_csi101):
-        raise FileNotFoundError(f"csi101 预测文件不存在: {pred_csi101}")
-    if pred_csi300 and not os.path.exists(pred_csi300):
-        pred_csi300 = None
-
+    if pred_csi101 is None and pred_csi300 is None:
+        raise FileNotFoundError(
+            "csi101/csi300 预测文件均不存在/未找到。请先生成预测文件并传入 --pred-csi101/--pred-csi300，"
+            "或把文件放到 data/predictions 下供脚本自动发现。"
+        )
+    if pred_csi101 is None and (not auto_csi300_only) and (not bool(args.allow_missing_csi101)) and (pred_csi300 is None):
+        # 两者都缺时已经 raise；这里只保留对“只跑 csi101”场景的对称提示（更清晰）
+        raise FileNotFoundError(
+            "csi101 预测文件不存在/未找到。请先生成 csi101 预测文件并传入 --pred-csi101，"
+            "或添加 --allow-missing-csi101 仅运行 csi300 子策略。"
+        )
     if pred_csi300 is None and not args.allow_missing_csi300:
         raise FileNotFoundError(
             "csi300 预测文件不存在/未找到。请先生成 csi300 预测文件并传入 --pred-csi300，"
@@ -1064,24 +1172,30 @@ def main():
     pred_dates_are = str(args.pred_dates_are).strip().lower()
     if pred_dates_are == "auto":
         # 两份文件只要有一个明确标注为 trade_date，我们就按 trade_date 处理
-        p1 = _infer_pred_dates_are(pred_csi101, default="signal_date")
-        p2 = _infer_pred_dates_are(pred_csi300, default="signal_date")
-        pred_dates_are = "trade_date" if ("trade_date" in {p1, p2}) else "signal_date"
+        flags = set()
+        if pred_csi101:
+            flags.add(_infer_pred_dates_are(pred_csi101, default="signal_date"))
+        if pred_csi300:
+            flags.add(_infer_pred_dates_are(pred_csi300, default="signal_date"))
+        pred_dates_are = "trade_date" if ("trade_date" in flags) else "signal_date"
 
-    book101 = load_prediction_csv(pred_csi101, dates_are=pred_dates_are)
+    book101 = load_prediction_csv(pred_csi101, dates_are=pred_dates_are) if pred_csi101 else None
     book300 = load_prediction_csv(pred_csi300, dates_are=pred_dates_are) if pred_csi300 else None
 
     # 选用共同可用的最大日期（“最后一条预测”），避免某一份缺日期
-    dates101 = sorted(book101.by_date.keys())
-    if not dates101:
-        raise ValueError("csi101 预测文件中没有任何日期数据，无法生成交易清单")
+    max_common = None
+    if book101 is not None:
+        dates101 = sorted(book101.by_date.keys())
+        if not dates101:
+            raise ValueError("csi101 预测文件中没有任何日期数据，无法生成交易清单")
+        max_common = dates101[-1]
     if book300 is not None:
         dates300 = sorted(book300.by_date.keys())
         if not dates300:
             raise ValueError("csi300 预测文件中没有任何日期数据，无法生成交易清单")
-        max_common = min(dates101[-1], dates300[-1])
-    else:
-        max_common = dates101[-1]
+        max_common = dates300[-1] if max_common is None else min(max_common, dates300[-1])
+    if max_common is None:
+        raise ValueError("预测文件中没有任何日期数据，无法生成交易清单")
 
     if args.asof:
         asof = pd.Timestamp(args.asof).normalize()
@@ -1101,38 +1215,47 @@ def main():
         pred_dt = signal_date
 
     logger.info("MSA 信号生成日(signal_date)=%s，交易建议日(trade_date)=%s，pred_dates_are=%s", signal_date.date(), trade_date.date(), pred_dates_are)
-    logger.info("预测文件：csi101=%s；csi300=%s", pred_csi101, pred_csi300 or "(missing)")
+    logger.info("预测文件：csi101=%s；csi300=%s", pred_csi101 or "(missing)", pred_csi300 or "(missing)")
+    if auto_csi300_only and pred_csi101 is None:
+        logger.info("已检测到仅运行 CSI300（你显式传入 --pred-csi300 且未传 --pred-csi101）。")
 
     # 子策略配置（与 rqalpha_msa_strategy 默认一致）
-    if book300 is None:
+    use101 = book101 is not None
+    use300 = book300 is not None
+    if use101 and use300:
+        alloc1, alloc2 = _merge_allocations(args.alloc1, args.alloc2)
+    elif use101:
         alloc1, alloc2 = _merge_allocations(args.alloc1, 0.0)
     else:
-        alloc1, alloc2 = _merge_allocations(args.alloc1, args.alloc2)
-    s1 = SubStrategyConfig(
-        name="small_cap_csi101",
-        allocation=alloc1,
-        pred_path=pred_csi101,
-        topk_pred=int(args.s1_topk),
-        target_holdings=int(args.s1_hold),
-        filter_cfg=FilterConfig(
-            exclude_kcb_bj=True,
-            exclude_st=True,
-            min_list_days=int(args.s1_min_list_days),
-            pb_min=None,
-            pb_max=None,
-            exclude_recent_limitup_days=0,
-        ),
-        selection_mode=str(args.msa_selection_mode),
-        preselect_topm=int(args.msa_preselect_topm),
-        vol_window=int(args.msa_vol_window),
-        vol_max=args.msa_vol_max,
-        vol_eps=float(args.msa_vol_eps),
-        max_vol20=args.s1_max_vol20,
-        max_vol60=args.s1_max_vol60,
-        max_vol120=args.s1_max_vol120,
-    )
+        alloc1, alloc2 = _merge_allocations(0.0, args.alloc2)
+
+    s1 = None
+    if use101 and pred_csi101 is not None:
+        s1 = SubStrategyConfig(
+            name="small_cap_csi101",
+            allocation=alloc1,
+            pred_path=pred_csi101,
+            topk_pred=int(args.s1_topk),
+            target_holdings=int(args.s1_hold),
+            filter_cfg=FilterConfig(
+                exclude_kcb_bj=True,
+                exclude_st=True,
+                min_list_days=int(args.s1_min_list_days),
+                pb_min=None,
+                pb_max=None,
+                exclude_recent_limitup_days=0,
+            ),
+            selection_mode=str(args.msa_selection_mode),
+            preselect_topm=int(args.msa_preselect_topm),
+            vol_window=int(args.msa_vol_window),
+            vol_max=args.msa_vol_max,
+            vol_eps=float(args.msa_vol_eps),
+            max_vol20=args.s1_max_vol20,
+            max_vol60=args.s1_max_vol60,
+            max_vol120=args.s1_max_vol120,
+        )
     s2 = None
-    if book300 is not None:
+    if use300 and pred_csi300 is not None:
         s2 = SubStrategyConfig(
             name="value_csi300",
             allocation=alloc2,
@@ -1180,18 +1303,14 @@ def main():
     else:
         need_any_vol = (
             str(args.msa_selection_mode).strip().lower() in {"scheme_c", "c", "vol"}
-            or s1.max_vol20 is not None
-            or s1.max_vol60 is not None
-            or s1.max_vol120 is not None
+            or (s1 and (s1.max_vol20 is not None or s1.max_vol60 is not None or s1.max_vol120 is not None))
             or (s2 and (s2.max_vol20 is not None or s2.max_vol60 is not None or s2.max_vol120 is not None))
         )
         if need_any_vol:
             logger.warning("未找到 RQAlpha bundle 的 stocks.h5（%s），将跳过历史波动率过滤", bundle_path_for_vol)
     need_any_vol = (
         str(args.msa_selection_mode).strip().lower() in {"scheme_c", "c", "vol"}
-        or s1.max_vol20 is not None
-        or s1.max_vol60 is not None
-        or s1.max_vol120 is not None
+        or (s1 and (s1.max_vol20 is not None or s1.max_vol60 is not None or s1.max_vol120 is not None))
         or (s2 and (s2.max_vol20 is not None or s2.max_vol60 is not None or s2.max_vol120 is not None))
     )
     if vol_price_fetcher is None and need_any_vol and str(args.vol_source).strip().lower() == "bundle":
@@ -1200,19 +1319,21 @@ def main():
             bundle_path_for_vol,
         )
 
-    picks1, sig1, vols1, w1 = _select_for_substrategy(
-        s1,
-        pred_dt,
-        signal_date,
-        book101,
-        ts_client,
-        bundle_path=bundle_path_for_vol,
-        price_fetcher=vol_price_fetcher,
-        vol_drop_if_missing=bool(args.vol_drop_if_missing),
-        vol_source=str(args.vol_source),
-        industry_cap=int(args.industry_cap),
-        industry_level=str(args.industry_level),
-    )
+    picks1, sig1, vols1, w1 = [], {}, {}, {}
+    if s1 is not None and book101 is not None:
+        picks1, sig1, vols1, w1 = _select_for_substrategy(
+            s1,
+            pred_dt,
+            signal_date,
+            book101,
+            ts_client,
+            bundle_path=bundle_path_for_vol,
+            price_fetcher=vol_price_fetcher,
+            vol_drop_if_missing=bool(args.vol_drop_if_missing),
+            vol_source=str(args.vol_source),
+            industry_cap=int(args.industry_cap),
+            industry_level=str(args.industry_level),
+        )
     picks2, sig2, vols2, w2 = [], {}, {}, {}
     if s2 is not None and book300 is not None:
         picks2, sig2, vols2, w2 = _select_for_substrategy(
@@ -1248,6 +1369,37 @@ def main():
     if vol_price_fetcher is not None:
         vol_price_fetcher.close()
 
+    # 打印每个子策略的选股结果（便于核对：代码/分数/子权重/波动率）
+    try:
+        if s1 is not None:
+            logger.info(
+                "\n%s",
+                _format_strategy_result(
+                    title="SubStrategy#1 result",
+                    sub=s1,
+                    picks=picks1,
+                    signals=sig1,
+                    sub_weights=w1,
+                    vols=vols1,
+                    merged_weights=None,
+                ),
+            )
+        if s2 is not None:
+            logger.info(
+                "\n%s",
+                _format_strategy_result(
+                    title="SubStrategy#2 result",
+                    sub=s2,
+                    picks=picks2,
+                    signals=sig2,
+                    sub_weights=w2,
+                    vols=vols2,
+                    merged_weights=None,
+                ),
+            )
+    except Exception as e:
+        logger.warning("打印子策略结果失败（忽略继续）：%s", e)
+
     if not picks1 and not picks2:
         raise RuntimeError("两子策略均未选出股票（可能全部被过滤/当天无信号）")
 
@@ -1263,6 +1415,43 @@ def main():
     total_w = sum(max(0.0, v) for v in merged.values())
     if total_w > 0:
         merged = {k: v / total_w for k, v in merged.items()}
+
+    # 打印合并后的最终目标持仓（含 total_w）
+    try:
+        merged_sorted = sorted(merged.items(), key=lambda x: float(x[1]), reverse=True)
+        lines = ["[Merged result]", f"holdings={len(merged_sorted)}", "rk\trq_code\tts_code\ttotal_w"]
+        for i, (code, w) in enumerate(merged_sorted, start=1):
+            lines.append(f"{i}\t{code}\t{rqalpha_to_tushare(code)}\t{float(w):.6f}")
+        logger.info("\n%s", "\n".join(lines))
+        # 同时把 total_w 回填到每个子策略表中（便于看组合层效果）
+        if s1 is not None:
+            logger.info(
+                "\n%s",
+                _format_strategy_result(
+                    title="SubStrategy#1 result (with merged weights)",
+                    sub=s1,
+                    picks=picks1,
+                    signals=sig1,
+                    sub_weights=w1,
+                    vols=vols1,
+                    merged_weights=merged,
+                ),
+            )
+        if s2 is not None:
+            logger.info(
+                "\n%s",
+                _format_strategy_result(
+                    title="SubStrategy#2 result (with merged weights)",
+                    sub=s2,
+                    picks=picks2,
+                    signals=sig2,
+                    sub_weights=w2,
+                    vols=vols2,
+                    merged_weights=merged,
+                ),
+            )
+    except Exception as e:
+        logger.warning("打印合并结果失败（忽略继续）：%s", e)
 
     # ===== 年度持仓台账：每次调仓追加/更新，并记录调仓盈亏 =====
     out_dir = _resolve_path(args.output_dir) or os.path.join(_PROJECT_ROOT, "data", "trade_plans")
@@ -1398,7 +1587,8 @@ def main():
                 }
             )
 
-    _add_rows(s1, picks1, sig1, w1)
+    if s1 is not None:
+        _add_rows(s1, picks1, sig1, w1)
     if s2 is not None:
         _add_rows(s2, picks2, sig2, w2)
 
