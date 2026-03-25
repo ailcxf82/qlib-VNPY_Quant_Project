@@ -1,0 +1,93 @@
+strategy:
+  id: "multi_factor"
+  name: "多因子选股策略"
+  category: "选股策略"
+  version: "1.0.0"
+  enabled: true
+  
+  description: |
+    基于多个因子综合评分进行选股的策略。
+    支持价值因子、动量因子、质量因子、技术因子等多种因子组合。
+  
+  parameters:
+    value_weight:
+      type: "float"
+      min: 0.0
+      max: 1.0
+      default: 0.3
+      description: "价值因子权重"
+    
+    momentum_weight:
+      type: "float"
+      min: 0.0
+      max: 1.0
+      default: 0.3
+      description: "动量因子权重"
+    
+    quality_weight:
+      type: "float"
+      min: 0.0
+      max: 1.0
+      default: 0.2
+      description: "质量因子权重"
+    
+    technical_weight:
+      type: "float"
+      min: 0.0
+      max: 1.0
+      default: 0.2
+      description: "技术因子权重"
+    
+    top_k:
+      type: "int"
+      min: 5
+      max: 50
+      default: 10
+      description: "选股数量"
+    
+    min_score:
+      type: "float"
+      min: 0.3
+      max: 0.7
+      default: 0.5
+      description: "最低评分阈值"
+    
+    holding_days:
+      type: "int"
+      min: 1
+      max: 20
+      default: 5
+      description: "持仓天数"
+    
+    stop_loss:
+      type: "float"
+      min: -0.15
+      max: -0.03
+      default: -0.08
+      description: "止损比例"
+    
+    take_profit:
+      type: "float"
+      min: 0.05
+      max: 0.30
+      default: 0.15
+      description: "止盈比例"
+  
+  optimization:
+    objective: "sharpe_ratio"
+    method: "bayesian"
+    n_trials: 100
+    timeout: 3600
+    
+    constraints:
+      max_drawdown: 0.20
+      min_trades: 50
+      min_win_rate: 0.45
+      min_sharpe: 1.0
+  
+  backtest:
+    lookback_years: 3
+    initial_capital: 1000000
+    commission_rate: 0.0003
+    stamp_duty: 0.001
+    slippage: 0.001

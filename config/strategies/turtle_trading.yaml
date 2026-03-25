@@ -1,0 +1,87 @@
+strategy:
+  id: "turtle_trading"
+  name: "海龟交易策略"
+  category: "趋势策略"
+  version: "1.0.0"
+  enabled: true
+  
+  description: |
+    基于经典海龟交易法则的趋势跟踪策略。
+    核心逻辑：突破N日高点买入，跌破N日低点卖出。
+    支持ATR仓位管理和金字塔加仓。
+  
+  parameters:
+    entry_breakout:
+      type: "int"
+      min: 10
+      max: 60
+      default: 20
+      description: "入场突破周期"
+    
+    exit_breakout:
+      type: "int"
+      min: 5
+      max: 30
+      default: 10
+      description: "离场突破周期"
+    
+    atr_period:
+      type: "int"
+      min: 10
+      max: 30
+      default: 20
+      description: "ATR计算周期"
+    
+    risk_per_trade:
+      type: "float"
+      min: 0.005
+      max: 0.03
+      default: 0.01
+      description: "单笔风险比例"
+    
+    max_units:
+      type: "int"
+      min: 1
+      max: 6
+      default: 4
+      description: "最大加仓次数"
+    
+    max_positions:
+      type: "int"
+      min: 5
+      max: 20
+      default: 10
+      description: "最大持仓数量"
+    
+    pyramid_atr_multiple:
+      type: "float"
+      min: 0.25
+      max: 1.0
+      default: 0.5
+      description: "加仓ATR倍数"
+    
+    stop_atr_multiple:
+      type: "float"
+      min: 1.0
+      max: 3.0
+      default: 2.0
+      description: "止损ATR倍数"
+  
+  optimization:
+    objective: "sharpe_ratio"
+    method: "bayesian"
+    n_trials: 100
+    timeout: 3600
+    
+    constraints:
+      max_drawdown: 0.25
+      min_trades: 30
+      min_win_rate: 0.35
+      min_sharpe: 0.8
+  
+  backtest:
+    lookback_years: 3
+    initial_capital: 1000000
+    commission_rate: 0.0003
+    stamp_duty: 0.001
+    slippage: 0.001

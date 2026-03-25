@@ -24,13 +24,13 @@ def parse_args():
     parser.add_argument(
         "--start",
         type=str,
-        default=os.environ.get("RUN_PRED_START", "2025-12-01"),
+        default=os.environ.get("RUN_PRED_START", "2025-06-01"),
         help="预测起始日期，默认 2024-10-01，可通过环境变量 RUN_PRED_START 覆盖",
     )
     parser.add_argument(
         "--end",
         type=str,
-        default=os.environ.get("RUN_PRED_END", "2026-01-23"),
+        default=os.environ.get("RUN_PRED_END", "2026-03-23"),
         help="预测结束日期，默认 2026-01-23，可通过环境变量 RUN_PRED_END 覆盖",
     )
     parser.add_argument(
@@ -122,12 +122,23 @@ def main():
         logger.info("开始预测股票池: %s", pool_name)
         logger.info("=" * 80)
         
+        # 根据股票池选择对应的配置文件
+        pool_config_path = f"config/pipeline_{pool_name}.yaml"
+        if os.path.exists(pool_config_path):
+            logger.info("使用股票池专用配置: %s", pool_config_path)
+            pool_cfg = load_yaml_config(pool_config_path)
+            pool_data_cfg = load_yaml_config(pool_cfg["data_config"])
+        else:
+            logger.info("使用默认配置: %s", args.config)
+            pool_cfg = cfg
+            pool_data_cfg = data_cfg
+        
         # 创建临时配置文件
         import tempfile
         import yaml
         
         # 创建临时数据配置文件
-        temp_data_config = data_cfg.copy()
+        temp_data_config = pool_data_cfg.copy()
         temp_data_config["data"]["instruments"] = pool_name
         
         temp_data_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
@@ -135,12 +146,28 @@ def main():
         temp_data_file.close()
         
         # 创建临时pipeline配置文件
-        temp_pipeline_config = copy.deepcopy(cfg)
+        temp_pipeline_config = copy.deepcopy(pool_cfg)
         temp_pipeline_config["data_config"] = temp_data_file.name
         
-        # 使用循环开始前保存的原始基础路径，拼接股票池特定的路径
-        temp_pipeline_config["paths"]["model_dir"] = os.path.join(base_model_dir, f"{pool_name}_models")
-        temp_pipeline_config["paths"]["log_dir"] = os.path.join(base_log_dir, f"{pool_name}_logs")
+        # 使用股票池专用配置中的路径，或使用默认路径拼接股票池名称
+        pool_base_model_dir = pool_cfg.get("paths", {}).get("model_dir", base_model_dir)
+        pool_base_log_dir = pool_cfg.get("paths", {}).get("log_dir", base_log_dir)
+        
+        if not os.path.isabs(pool_base_model_dir):
+            pool_base_model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), pool_base_model_dir)
+        if not os.path.isabs(pool_base_log_dir):
+            pool_base_log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), pool_base_log_dir)
+        
+        # 如果路径不包含股票池名称，自动拼接
+        if not pool_base_model_dir.endswith(f"{pool_name}_models"):
+            temp_pipeline_config["paths"]["model_dir"] = os.path.join(pool_base_model_dir, f"{pool_name}_models")
+        else:
+            temp_pipeline_config["paths"]["model_dir"] = pool_base_model_dir
+            
+        if not pool_base_log_dir.endswith(f"{pool_name}_logs"):
+            temp_pipeline_config["paths"]["log_dir"] = os.path.join(pool_base_log_dir, f"{pool_name}_logs")
+        else:
+            temp_pipeline_config["paths"]["log_dir"] = pool_base_log_dir
         # 预测文件夹保持统一，但文件名会包含股票池信息
         
         temp_pipeline_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
@@ -171,13 +198,42 @@ def main():
             pipeline = QlibFeaturePipeline(temp_data_file.name)
             # 预测模式：只构建特征，不依赖 label，避免因为 label 的未来窗口/缺失导致预测日期被截断
             pipeline.build(include_label=False)
-            features, _ = pipeline.get_slice(args.start, args.end)
+            
+            # 获取GRU序列长度（需要额外历史数据）
+            gru_seq_len = 60  # 默认值
+            gru_cfg_path = pool_cfg.get("gru_config") or pool_cfg.get("model_gru_config")
+            if gru_cfg_path and os.path.exists(gru_cfg_path):
+                try:
+                    gru_cfg = load_yaml_config(gru_cfg_path)
+                    gru_seq_len = gru_cfg.get("model", {}).get("seq_len", 60)
+                except Exception:
+                    pass
+            
+            # 计算历史特征起始日期（需要额外seq_len天用于GRU序列构造）
+            start_ts = pd.Timestamp(args.start)
+            history_start = (start_ts - pd.Timedelta(days=gru_seq_len * 3)).strftime("%Y-%m-%d")  # 预留足够缓冲
+            
+            # 获取特征（包含历史数据）
+            features, _ = pipeline.get_slice(history_start, args.end)
+            
+            # 分离历史特征和预测特征
+            all_dt = features.index.get_level_values("datetime")
+            history_mask = all_dt < args.start
+            pred_mask = (all_dt >= args.start) & (all_dt <= args.end)
+            
+            history_feat = features[history_mask] if history_mask.any() else None
+            pred_features = features[pred_mask] if pred_mask.any() else features
+            
             # 诊断：实际返回的特征日期范围（决定预测文件起点）
             try:
-                if len(features) > 0 and isinstance(features.index, pd.MultiIndex) and "datetime" in features.index.names:
-                    dt = features.index.get_level_values("datetime")
+                if len(pred_features) > 0 and isinstance(pred_features.index, pd.MultiIndex) and "datetime" in pred_features.index.names:
+                    dt = pred_features.index.get_level_values("datetime")
                     logger.info("股票池 %s 实际用于预测的特征日期范围: %s 到 %s（样本=%d）",
-                                pool_name, dt.min(), dt.max(), len(features))
+                                pool_name, dt.min(), dt.max(), len(pred_features))
+                    if history_feat is not None and len(history_feat) > 0:
+                        hist_dt = history_feat.index.get_level_values("datetime")
+                        logger.info("股票池 %s 历史特征范围: %s 到 %s（样本=%d，用于GRU序列）",
+                                    pool_name, hist_dt.min(), hist_dt.max(), len(history_feat))
                     if pd.Timestamp(args.start) < dt.min():
                         logger.warning("股票池 %s：请求 start=%s 早于可用特征起点=%s，因此预测文件会从 %s 开始",
                                        pool_name, args.start, dt.min(), dt.min())
@@ -186,8 +242,8 @@ def main():
             except Exception as e:
                 logger.debug("打印预测特征日期范围失败(可忽略): %s", e)
 
-            # 关键：若特征为空，直接跳过该股票池，避免生成“只有表头/空内容”的预测文件覆盖旧结果
-            if features is None or len(features) == 0:
+            # 关键：若特征为空，直接跳过该股票池，避免生成"只有表头/空内容"的预测文件覆盖旧结果
+            if pred_features is None or len(pred_features) == 0:
                 logger.error(
                     "股票池 %s：预测区间 [%s, %s] 无可用特征数据，已跳过写入预测文件。"
                     "请将 --start/--end（或环境变量 RUN_PRED_START/RUN_PRED_END）调整到 qlib 实际数据范围内，"
@@ -207,7 +263,7 @@ def main():
                 logger.error("请检查模型文件是否存在: %s", model_dir)
                 continue
             
-            final_pred, preds, weights = predictor.predict(features, ic_histories)
+            final_pred, preds, weights = predictor.predict(pred_features, ic_histories, history_feat=history_feat)
             
             # 保存预测结果，文件名包含股票池信息
             # 新规则：预测文件名固定为 pred_{pool}.csv（不携带日期），便于传输/覆盖更新更稳定

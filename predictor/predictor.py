@@ -110,8 +110,15 @@ class PredictorEngine:
         self,
         features: pd.DataFrame,
         ic_histories: Dict[str, pd.Series],
+        history_feat: pd.DataFrame = None,
     ) -> Tuple[pd.Series, Dict[str, pd.Series], Dict[str, float]]:
-        """返回融合预测、各模型预测以及权重。"""
+        """返回融合预测、各模型预测以及权重。
+        
+        参数:
+            features: 预测特征（目标日期范围）
+            ic_histories: 各模型的IC历史，用于动态加权
+            history_feat: 历史特征（用于GRU等序列模型构造序列）
+        """
         # 空特征短路：常见于某日期股票池为空、或因缺因子/清洗过滤导致切片无样本
         if features is None or len(features) == 0:
             logger.warning("predict 输入特征为空，将返回空预测结果（跳过模型推理与加权）")
@@ -120,7 +127,8 @@ class PredictorEngine:
             return empty_final, {}, {}
 
         # 归一化由 EnsembleModelManager 内部处理（按模型 per-model 或兼容旧 global）
-        blend_pred, base_preds, aux = self.ensemble.predict(features)
+        # 传递 history_feat 给 GRU 等序列模型
+        blend_pred, base_preds, aux = self.ensemble.predict(features, history_feat=history_feat)
         preds = dict(base_preds)
         if self.stack_enabled:
             lgb_pred = base_preds.get("lgb")
@@ -137,6 +145,8 @@ class PredictorEngine:
 
         # 1) 若配置 meta_model=ridge 且文件存在，则使用 Ridge 参数融合（方案A）
         meta_cfg = (self.cfg.get("oof_stacking") or {}).get("meta_model") or {}
+        if isinstance(meta_cfg, str):
+            meta_cfg = {"model_type": meta_cfg}
         meta_type = str(meta_cfg.get("model_type", "")).lower()
         ridge_path = os.path.join(self._meta_dir, f"{self.cfg['paths'].get('tag','')}_meta_ridge.json")
         use_ridge = meta_type == "ridge" and os.path.exists(ridge_path)
@@ -322,12 +332,15 @@ class PredictorEngine:
                 df = df.reorder_levels([1, 0]).sort_index()
 
         # 关键：信号日期对齐到下一个交易日（可通过环境变量关闭）
-        shift_flag = str(os.environ.get("SHIFT_PRED_TO_NEXT_DAY", "1")).strip().lower()
+        # 修复：由于特征已经使用 T-1 日数据（Ref($xxx, 1)），预测文件的日期应该直接使用 signal_date
+        # 不再偏移到下一个交易日，避免数据泄露
+        shift_flag = str(os.environ.get("SHIFT_PRED_TO_NEXT_DAY", "0")).strip().lower()
         # 写入元信息，供回测端判断是否需要反向对齐（避免回测侧出现隐性 T+2）
         df["_meta_shifted_next_day"] = 0
         if shift_flag not in {"0", "false", "no"}:
             df = _shift_to_next_trading_day(df)
             df["_meta_shifted_next_day"] = 1
+            logger.warning("预测日期已偏移到下一个交易日，这可能导致数据泄露！建议设置 SHIFT_PRED_TO_NEXT_DAY=0")
 
         # MultiIndex 直接写入 csv，便于后续回测按日期/证券读取
         df.to_csv(out_path, index_label=["datetime", "instrument"])

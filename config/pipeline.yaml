@@ -4,22 +4,27 @@ mlp_config: "config/model_mlp.yaml"
 gru_config: "config/model_gru.yaml"
 stack_config: "config/model_stack.yaml"
 
-# 只改配置即可启用基模型：
-# - 目前暂时停用 MLP、启用 GRU（仍保留 LGB，因为 Stack/Leaf 依赖 LGB 输出 leaf）
+# ==================== 基模型配置 ====================
+# 启用的基模型列表
+# - "lgb"：LightGBM，擅长处理结构化特征（基本面、融资数据）
+# - "gru"：GRU神经网络，擅长处理时序特征（OHLCV数据）
+# - "mlp"：多层感知机（当前已停用）
+# - 注意：Stack/Leaf依赖LGB输出leaf特征，所以LGB必须保留
 base_models: ["lgb", "gru"]
 
-# 可选：按模型指定特征集合（来自 data.yaml 的 feature_sets）
-# 例如：gru 使用 OHLCV，lgb 使用基本面/融资
+# ==================== 模型特征集配置 ====================
+# 为每个模型指定特征集合（来自 data.yaml 的 feature_sets）
+# - gru: 使用 gru_ohlcv（OHLCV价格量数据，适合时序建模）
+# - lgb: 使用 lgb_fundamental（基本面、融资数据，适合树模型）
 model_features:
   gru: "gru_ohlcv"
   lgb: "lgb_fundamental"
-
-# model_features: {}
 
 # GRU 超参：若此处为 dict，会优先覆盖 gru_config；
 # 现在设为 null，表示使用 config/model_gru.yaml
 model_gru: null
 
+# ==================== 集成策略配置 ====================
 ensemble:
   # 聚合策略选项：
   # - "average": 简单平均（Qlib 标准化后平均）
@@ -28,48 +33,89 @@ ensemble:
   # - "meta_learner_linear": Meta-Learner（线性回归）
   # - "meta_learner_ridge": Meta-Learner（Ridge 回归，alpha=1.0）
   aggregator: "weighted_average"
+  
   # Meta-Learner 参数（仅当 aggregator="meta_learner" 时使用）
   aggregator_params:
-    model_type: "ridge"  # "linear" 或 "ridge"
-    alpha: 1.0  # Ridge 回归的正则化系数
-  # 重要：这里留空，让系统从 base_models 自动派生模型清单（从而“只改配置即可”）
+    model_type: "ridge"
+    alpha: 1.0
+  
+  # 重要：这里留空，让系统从 base_models 自动派生模型清单
   models: []
 
+# ==================== 滚动窗口训练配置 ====================
 rolling:
-  # 窗口生成模式：
-  # - classic（默认/兼容旧逻辑）：data.start_time 视作“训练起点”，valid_start = start_time + train_days
-  # - aligned（多模型对齐推荐）：data.start_time 视作“验证起点锚点”，train_end = valid_start - 1，
-  #   并自动把取数 start_time 向前扩展到 (anchor_start - max_train_days)，确保历史足够
+  # 窗口模式
+  # - "aligned"：对齐模式，所有模型使用相同的时间窗口
   window_mode: "aligned"
-
-  # 特征归一化策略：
-  # - per_model（方案B，推荐）：每个模型用自己的训练窗口拟合 mean/std，再应用到该模型的 train/valid/predict
-  #   优点：修改某个模型（如 lgb）的训练窗口不会影响其它模型（如 gru）的输入分布与 IC
-  # - global（旧逻辑）：所有模型共用同一套窗口归一化（会产生模型间耦合）
-  # - none：不做归一化（一般不推荐）
+  
+  # 特征归一化方式
+  # - "per_model"：每个模型独立归一化（推荐，适应不同特征集）
+  # - "global"：全局归一化
   feature_normalization: "per_model"
-
-  # 全局训练窗口（当未配置 model_train_days 时，所有模型共用该值）
+  
+  # 默认训练天数：基础训练窗口长度
+  # - 较大值(180-360)：更多历史数据，模型更稳定
+  # - 较小值(60-120)：更适应市场变化，但可能不稳定
+  # - 当前值120：约6个月交易日，平衡稳定性和适应性
   train_days: 120
-  # 可选：按模型分别设置训练窗口（单位：交易日个数；按“datetime 去重计数”裁剪）
-  # 配置后会自动启用 window_mode=aligned，让 lgb/gru 在同一 valid 窗口上对齐
+  
+  # 各模型独立训练天数（覆盖train_days）
   model_train_days:
-    lgb: 720
+    # LGB训练天数：约2年交易日
+    # - LGB需要更多数据学习基本面因子模式
+    lgb: 480
+    # GRU训练天数：约1年交易日
+    # - GRU对时序敏感，过长历史可能引入噪声
     gru: 240
-  valid_days: 30   # 验证窗口：30天（约1个月）
-  test_days: 30    # 测试窗口：30天（约1个月）
-  step_days: 5     # 滚动步长：1天（按日训练）
-  min_samples: 2000
+  
+  # 验证集天数：用于早停和模型选择
+  # - 较大值(30-60)：更可靠的验证指标
+  # - 较小值(10-20)：更多数据用于训练
+  # - 当前值30：约1.5个月，平衡验证可靠性和训练数据量
+  valid_days: 30
+  
+  # 测试集天数：用于最终评估
+  # - 当前值30：与验证集一致
+  test_days: 30
+  
+  # 滚动步长：窗口每次移动的天数
+  # - 较小值(5-10)：更频繁更新，但计算量大
+  # - 较大值(20-30)：更新频率低，计算效率高
+  # - 当前值10：每2周更新一次模型
+  step_days: 10
+  
+  # 最小样本数：训练所需的最小样本数
+  # - 防止样本不足导致模型不稳定
+  min_samples: 1500
 
+# ==================== IC日志与权重配置 ====================
 ic_logging:
-  window: 60  # IC 历史窗口大小
-  half_life: 20  # 半衰期（用于指数衰减权重）
-  min_weight: 0.05  # 最小权重（防止模型权重过低）
-  max_weight: 0.5  # 最大权重（防止单一模型权重过大，默认 0.5，原为 0.7）
-  clip_negative: true  # 是否裁剪负 ICIR
-  use_softmax: false  # 是否使用 softmax 平滑 ICIR 差异（可选，默认 false）
-  temperature: 1.0  # softmax 温度参数（越大权重分布越均匀，仅在 use_softmax=true 时生效）
+  # IC历史窗口大小：用于计算ICIR
+  window: 60
+  
+  # 半衰期：指数衰减权重的半衰期
+  # - 较小值(10-15)：更重视近期IC表现
+  # - 较大值(30-40)：IC表现更平滑
+  half_life: 20
+  
+  # 最小权重：防止单个模型权重过低
+  min_weight: 0.05
+  
+  # 最大权重：防止单个模型权重过大
+  # - 较小值(0.3-0.5)：权重更均衡
+  # - 较大值(0.6-0.8)：允许优势模型主导
+  max_weight: 0.5
+  
+  # 是否裁剪负ICIR：负ICIR模型权重设为min_weight
+  clip_negative: true
+  
+  # 是否使用softmax平滑ICIR差异
+  use_softmax: false
+  
+  # softmax温度参数：越大权重分布越均匀
+  temperature: 1.0
 
+# ==================== 路径配置 ====================
 paths:
   model_dir: "data/models"
   log_dir: "data/logs"
@@ -78,22 +124,43 @@ paths:
   oof_dir: "data/oof"
   meta_dir: "data/meta"
 
-# 可选：OOF + Meta-Stacking（二层模型）。默认关闭，不影响现有训练/预测流程。
+# ==================== OOF Stacking配置 ====================
+# OOF + Meta-Stacking（二层模型），默认关闭
 oof_stacking:
-  enabled: "auto"   # auto: base_models 包含 gru 时自动开启 OOF+MetaStacking
+  # 启用模式
+  # - "auto"：base_models 包含 gru 时自动开启
+  # - "true"：强制开启
+  # - "false"：强制关闭
+  enabled: "auto"
   use_cache: true
+  
+  # K折交叉验证折数
   n_splits: 5
-  # 固定每折验证期长度（按“日期个数/交易日数”理解），为空则自动等分
+  
+  # 每折验证期长度（天数）
   valid_days_per_fold: 20
+  
+  # 最小训练天数
   min_train_days: 120
+  
+  # 训练集和验证集之间的间隔天数（防止数据泄露）
   gap_days: 0
+  
+  # 元模型配置
   meta_model:
     model_type: "ridge"
     alpha: 1.0
 
+# ==================== 组合配置 ====================
 portfolio:
+  # 单只股票最大仓位比例
   max_position: 0.3
+  
+  # 单只股票最大权重
   max_stock_weight: 0.05
+  
+  # 单个行业最大权重
   max_industry_weight: 0.2
+  
+  # 持仓股票数量
   top_k: 50
-

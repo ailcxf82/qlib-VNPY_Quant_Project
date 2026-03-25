@@ -56,6 +56,18 @@ def qlib_to_rqalpha(instrument: str) -> str:
     return s
 
 
+def rqalpha_to_pure_code(rq_code: str) -> str:
+    """
+    从RQAlpha格式提取纯股票代码
+    600000.XSHG -> 600000
+    000001.XSHE -> 000001
+    """
+    rq_code = (rq_code or "").strip()
+    if "." in rq_code:
+        return rq_code.split(".", 1)[0]
+    return rq_code
+
+
 def is_kcb_or_bj(ts_code: str) -> bool:
     """
     过滤科创/北交等：

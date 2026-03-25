@@ -1,0 +1,348 @@
+monitor:
+  name: "日线监听系统 v1"
+  version: "1.0.0"
+
+scheduler:
+  enabled: true
+  schedule_time: "15:05"
+  timezone: "Asia/Shanghai"
+  retry_times: 3
+  retry_interval: 300
+
+prediction:
+  config_path: "config/pipeline.yaml"
+  pools:
+    - name: "csi101"
+      enabled: true
+    - name: "csi300"
+      enabled: true
+
+strategies:
+  csi101:
+    name: "小市值策略"
+    enabled: true
+    description: "基于预测分数排名，过滤后选股"
+    rules:
+      buy:
+        - type: "top_k"
+          k: 20
+          description: "选择预测分数前20名"
+        - type: "exclude_board"
+          boards: ["科创板", "北交所"]
+          description: "排除科创板和北交所股票"
+        - type: "exclude_st"
+          description: "排除ST股票"
+        - type: "min_list_days"
+          days: 60
+          description: "上市至少60天"
+        - type: "final_top_k"
+          k: 6
+          description: "最终选择前6只"
+      sell:
+        - type: "holding_days"
+          max_days: 5
+          description: "持仓超过5天卖出"
+        - type: "stop_loss"
+          threshold: -0.08
+          description: "亏损超过8%止损"
+        - type: "take_profit"
+          threshold: 0.15
+          description: "盈利超过15%止盈"
+    position_size: 0.15
+
+  csi300:
+    name: "低估值策略"
+    enabled: true
+    description: "基于预测分数和估值指标选股"
+    rules:
+      buy:
+        - type: "top_k"
+          k: 20
+          description: "选择预测分数前20名"
+        - type: "pb_range"
+          min: 0
+          max: 1
+          description: "PB在0-1之间"
+        - type: "exclude_recent_limit_up"
+          days: 5
+          description: "排除近5日涨停股"
+        - type: "final_top_k"
+          k: 4
+          description: "最终选择前4只"
+      sell:
+        - type: "holding_days"
+          max_days: 5
+          description: "持仓超过5天卖出"
+        - type: "stop_loss"
+          threshold: -0.08
+          description: "亏损超过8%止损"
+    position_size: 0.20
+
+position:
+  initial_capital: 1000000
+  max_stocks: 10
+  commission_rate: 0.0003
+  stamp_duty: 0.001
+  slippage: 0.001
+  min_trade_amount: 1000
+
+sentiment:
+  enabled: true
+  sources:
+    - name: "sina_finance"
+      enabled: true
+      url: "https://finance.sina.com.cn/stock/"
+      type: "web_scraper"
+    - name: "eastmoney"
+      enabled: true
+      url: "https://www.eastmoney.com/"
+      type: "web_scraper"
+    - name: "tushare_news"
+      enabled: true
+      type: "api"
+  keywords:
+    - "大盘"
+    - "A股"
+    - "沪指"
+    - "深成指"
+    - "创业板"
+    - "北向资金"
+    - "南向资金"
+    - "央行"
+    - "美联储"
+    - "利率"
+    - "政策"
+  max_news: 50
+  cache_hours: 4
+
+llm:
+  enabled: true
+  provider: "deepseek"
+  model: "deepseek-chat"
+  api_key: "${DEEPSEEK_API_KEY}"
+  base_url: "https://api.deepseek.com/v1"
+  max_tokens: 2000
+  temperature: 0.3
+  cache_hours: 4
+  analysis_types:
+    - name: "market_overview"
+      enabled: true
+      description: "大盘走势分析"
+    - name: "sentiment_summary"
+      enabled: true
+      description: "舆情情绪总结"
+    - name: "trading_advice"
+      enabled: true
+      description: "交易建议"
+
+notification:
+  wechat:
+    enabled: true
+    webhook_url: "${WECHAT_WEBHOOK_URL}"
+    message_types:
+      - "daily_signal"
+      - "position_change"
+      - "pnl_summary"
+      - "market_analysis"
+    quiet_hours:
+      start: "22:00"
+      end: "08:00"
+
+dashboard:
+  enabled: true
+  port: 5000
+  host: "0.0.0.0"
+  debug: false
+
+paths:
+  data_dir: "data/monitor"
+  position_file: "data/monitor/position.json"
+  trade_log_file: "data/monitor/trades.csv"
+  signal_log_file: "data/monitor/signals.csv"
+  sentiment_cache_file: "data/monitor/sentiment_cache.json"
+  llm_cache_file: "data/monitor/llm_cache.json"
+
+logging:
+  level: "INFO"
+  file: "data/monitor/monitor.log"
+  max_size: 10485760
+  backup_count: 5
+
+scoring:
+  enabled: true
+  weights:
+    model_prediction: 0.40
+    sentiment: 0.25
+    strategy: 0.20
+    technical: 0.15
+  thresholds:
+    buy_score: 0.65
+    sell_score: 0.35
+  description: "多维度评分权重配置"
+
+technical_analysis:
+  enabled: true
+  indicators:
+    ma_periods: [5, 10, 20, 60]
+    rsi_period: 14
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+  support_resistance:
+    lookback_days: 60
+    tolerance: 0.02
+  breakdown_threshold: -0.03
+  breakout_threshold: 0.03
+
+extreme_detection:
+  enabled: true
+  sentiment_thresholds:
+    extreme_positive: 0.80
+    extreme_negative: 0.20
+  technical_confirmation:
+    required: true
+    breakdown_confirm_days: 2
+  auto_sell:
+    enabled: true
+    min_holding_days: 1
+  notification:
+    enabled: true
+    priority: "high"
+
+sentiment_schedule:
+  enabled: true
+  times:
+    - "09:15"
+    - "10:30"
+    - "13:30"
+    - "14:45"
+  stock_specific: true
+  track_positions: true
+  extreme_alert: true
+
+stock_pool:
+  enabled: true
+  auto_generate: true
+  max_pool_size: 50
+  min_score: 0.50
+  refresh_times:
+    - "09:00"
+    - "15:05"
+
+market_regime:
+  enabled: true
+  lookback_days: 60
+  index_code: "000001.SH"
+  bull_threshold: 0.60
+  bear_threshold: 0.40
+  high_vol_threshold: 0.25
+  low_vol_threshold: 0.12
+  description: "市场环境判断配置"
+
+strategy_management:
+  enabled: true
+  strategies:
+    value:
+      name: "价值策略"
+      enabled: true
+      weight_range: [0.15, 0.40]
+      min_score: 0.50
+    momentum:
+      name: "动量策略"
+      enabled: true
+      weight_range: [0.10, 0.40]
+      min_score: 0.60
+    mean_reversion:
+      name: "均值回归策略"
+      enabled: true
+      weight_range: [0.15, 0.35]
+      min_score: 0.55
+    quality:
+      name: "质量策略"
+      enabled: true
+      weight_range: [0.20, 0.40]
+      min_score: 0.50
+  description: "多策略组合管理配置"
+
+risk_control:
+  enabled: true
+  stop_loss: -0.08
+  take_profit: 0.15
+  max_position_size: 0.15
+  max_single_loss: 0.02
+  max_drawdown: 0.10
+  max_concentration: 0.30
+  trailing_stop_enabled: true
+  trailing_stop_trigger: 0.05
+  trailing_stop_distance: 0.03
+  time_stop_enabled: true
+  max_holding_days: 10
+  description: "止损优先风控体系配置"
+
+decision_support:
+  enabled: true
+  min_confidence: 0.50
+  max_signals: 10
+  auto_execute_threshold: 0.85
+  require_manual_approval: true
+  notification_priority: "high"
+  description: "信号辅助决策系统配置"
+
+backtest:
+  enabled: true
+  initial_capital: 1000000
+  commission_rate: 0.0003
+  slippage: 0.001
+  default_period_days: 252
+  description: "回测验证配置"
+
+sentiment:
+  enabled: true
+  max_news: 50
+  cache_hours: 4
+  data_sources:
+    - "tushare"
+    - "eastmoney"
+    - "sina"
+  keywords:
+    - "业绩"
+    - "盈利"
+    - "亏损"
+    - "增持"
+    - "减持"
+  extreme_thresholds:
+    positive: 0.80
+    negative: 0.20
+  description: "舆情分析配置（多数据源）"
+
+akshare:
+  enabled: true
+  cache_hours: 4
+  description: "Akshare数据源配置"
+
+backtest_engine:
+  default_config:
+    initial_capital: 1000000
+    commission_rate: 0.0003
+    stamp_duty: 0.001
+    slippage: 0.001
+    max_position_size: 0.15
+    max_stocks: 10
+  strategies:
+    momentum:
+      name: "动量策略"
+      lookback_period: 20
+      top_k: 10
+      min_momentum: 0.05
+      stop_loss: -0.08
+      take_profit: 0.15
+      max_holding_days: 10
+      position_size: 0.10
+    mean_reversion:
+      name: "均值回归策略"
+      lookback_period: 20
+      oversold_threshold: -0.15
+      overbought_threshold: 0.15
+      top_k: 10
+      position_size: 0.10
+  description: "回测引擎配置"

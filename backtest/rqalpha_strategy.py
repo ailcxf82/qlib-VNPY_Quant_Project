@@ -194,17 +194,79 @@ def init(context):
             return strategy_params.get(key, default)
         return getattr(strategy_params, key, default)
     
-    if strategy_params:
-        prediction_file = _sp_get("prediction_file")
-    else:
-        # 兼容直接传递的方式
-        prediction_file = getattr(context.config, "prediction_file", None)
+    # 获取预测文件路径
+    prediction_file = _sp_get("prediction_file") or getattr(context.config, "prediction_file", None)
     
-    if not prediction_file or not os.path.exists(prediction_file):
+    if not prediction_file:
+        raise ValueError("预测文件路径未配置，请通过 prediction_file 参数指定")
+    
+    if not os.path.exists(prediction_file):
         raise FileNotFoundError(f"预测文件不存在: {prediction_file}")
     
     # 加载预测信号
     df = pd.read_csv(prediction_file)
+    
+    # ==================== 关键：检测并修复日期偏移问题 ====================
+    # 如果预测文件包含 _meta_shifted_next_day=1，说明日期已经偏移到 trade_date
+    # 但 RQAlpha 使用 next_bar 模式，会导致实际使用 T+2 数据（严重数据泄露）
+    # 需要将 trade_date 反向还原为 signal_date
+    shifted_flag = False
+    if "_meta_shifted_next_day" in df.columns:
+        try:
+            shifted_flag = int(pd.to_numeric(df["_meta_shifted_next_day"], errors="coerce").fillna(0).max()) == 1
+        except Exception:
+            shifted_flag = False
+    
+    if shifted_flag:
+        # 使用 print 确保输出可见（logger 可能被过滤）
+        print("=" * 60)
+        print("⚠️ 检测到预测文件已偏移到 trade_date (_meta_shifted_next_day=1)")
+        print("⚠️ RQAlpha 使用 next_bar 模式，会导致 T+2 数据泄露！")
+        print("⚠️ 正在将日期反向还原为 signal_date...")
+        print("=" * 60)
+        if logger:
+            logger.warning("=" * 60)
+            logger.warning("⚠️ 检测到预测文件已偏移到 trade_date (_meta_shifted_next_day=1)")
+            logger.warning("⚠️ RQAlpha 使用 next_bar 模式，会导致 T+2 数据泄露！")
+            logger.warning("⚠️ 正在将日期反向还原为 signal_date...")
+            logger.warning("=" * 60)
+        
+        # 获取唯一日期并构建交易日历
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        unique_dts = pd.Index(df["datetime"].unique()).sort_values()
+        
+        # 构建交易日历
+        cal = None
+        try:
+            from qlib.data import D
+            min_dt = pd.Timestamp(unique_dts.min()).normalize()
+            max_dt = pd.Timestamp(unique_dts.max()).normalize()
+            cal = D.calendar(start_time=min_dt - pd.Timedelta(days=60), end_time=max_dt + pd.Timedelta(days=5), freq="day")
+            cal = pd.to_datetime(list(cal)).normalize()
+            cal = pd.Index(cal).sort_values().unique()
+        except Exception:
+            cal = pd.bdate_range(start=unique_dts.min() - pd.Timedelta(days=60), 
+                                end=unique_dts.max() + pd.Timedelta(days=5)).normalize()
+        
+        # 映射：trade_date -> signal_date（前一交易日）
+        import bisect
+        cal_list = list(cal)
+        mapping_prev = {}
+        for d in unique_dts:
+            i = bisect.bisect_left(cal_list, pd.Timestamp(d))
+            if i <= 0:
+                mapping_prev[pd.Timestamp(d)] = None
+            else:
+                mapping_prev[pd.Timestamp(d)] = pd.Timestamp(cal_list[i - 1])
+        
+        # 反向还原日期
+        before_count = len(df)
+        df["datetime"] = df["datetime"].map(lambda x: mapping_prev.get(pd.Timestamp(x), None))
+        df = df.dropna(subset=["datetime"])
+        after_count = len(df)
+        
+        if logger:
+            logger.info(f"日期反向还原完成: {before_count} -> {after_count} 行（丢弃 {before_count - after_count} 行）")
     
     # 检查文件格式：可能是原始格式（datetime, instrument, final）或已转换格式（datetime, rq_code, final）
     if "rq_code" in df.columns:
@@ -281,13 +343,49 @@ def init(context):
     context.last_rebalance_date = None
     
     # 从配置中读取调仓频率
-    rebalance_interval = _sp_get("rebalance_interval", 1)
+    rebalance_interval = _sp_get("rebalance_interval", 5)
     if rebalance_interval is None or rebalance_interval < 1:
-        rebalance_interval = 1
+        rebalance_interval = 5
     context.rebalance_interval = int(rebalance_interval)
+    
+    # ==================== 新增：卖出优化配置 ====================
+    # 卖出阈值：当前预测值低于买入预测值的比例时才卖出
+    # 例如：sell_threshold=0.8 表示当前预测值 < 买入预测值 * 0.8 时才卖出
+    context.sell_threshold = float(_sp_get("sell_threshold", 0.5))
+    
+    # 最小持仓天数：避免频繁交易
+    context.min_holding_days = int(_sp_get("min_holding_days", 5))
+    
+    # 是否启用智能卖出（基于预测值下降）
+    context.smart_sell_enabled = bool(_sp_get("smart_sell_enabled", True))
+    
+    # ========== CSI101 专用优化参数 ==========
+    # 预测值下降阈值：从高点下降超过此比例才考虑卖出
+    context.prediction_decline_threshold = float(_sp_get("prediction_decline_threshold", 0.2))
+    
+    # 高预测值保护：预测值高于此阈值时不主动卖出
+    context.high_prediction_protection = float(_sp_get("high_prediction_protection", 0.6))
+    
+    # 止盈止损参数
+    context.take_profit_ratio = float(_sp_get("take_profit_ratio", 0.3))
+    context.stop_loss_ratio = float(_sp_get("stop_loss_ratio", -0.15))
+    
+    # 波动率调整参数
+    context.volatility_adjusted_sell = bool(_sp_get("volatility_adjusted_sell", False))
+    context.volatility_window = int(_sp_get("volatility_window", 20))
+    context.high_volatility_threshold_multiplier = float(_sp_get("high_volatility_threshold_multiplier", 0.7))
+    
+    # 记录每只股票的买入信息：{股票代码: {"date": 买入日期, "pred": 买入预测值, "weight": 权重, "high_pred": 最高预测值}}
+    context.buy_info = {}
+    
+    # 记录回测结束标记
+    context.backtest_ended = False
     
     if logger:
         logger.info(f"调仓频率设置为: 每 {context.rebalance_interval} 天调仓一次")
+        logger.info(f"卖出优化: 阈值={context.sell_threshold}, 最小持仓天数={context.min_holding_days}, 智能卖出={context.smart_sell_enabled}")
+        logger.info(f"CSI101优化: 预测下降阈值={context.prediction_decline_threshold}, 高预测保护={context.high_prediction_protection}")
+        logger.info(f"止盈止损: 止盈={context.take_profit_ratio}, 止损={context.stop_loss_ratio}")
     
     # 保存初始资金用于计算净值
     try:
@@ -370,8 +468,166 @@ def before_trading(context):
         getattr(context, "industry_map", None),
     )
     
+    # ==================== 智能卖出优化（CSI101增强版）====================
+    # 如果启用智能卖出，检查当前持仓是否应该保留
+    smart_sell_enabled = getattr(context, "smart_sell_enabled", True)
+    sell_threshold = getattr(context, "sell_threshold", 0.5)
+    min_holding_days = getattr(context, "min_holding_days", 5)
+    buy_info = getattr(context, "buy_info", {})
+    
+    # CSI101 专用参数
+    prediction_decline_threshold = getattr(context, "prediction_decline_threshold", 0.2)
+    high_prediction_protection = getattr(context, "high_prediction_protection", 0.6)
+    take_profit_ratio = getattr(context, "take_profit_ratio", 0.3)
+    stop_loss_ratio = getattr(context, "stop_loss_ratio", -0.15)
+    volatility_adjusted_sell = getattr(context, "volatility_adjusted_sell", False)
+    
+    # 获取当前持仓信息
+    current_positions = set()
+    position_weights = {}
+    position_pnl = {}
+    try:
+        positions = get_positions()
+        total_value = getattr(context.portfolio, "total_value", 0.0)
+        for pos in positions:
+            if hasattr(pos, "order_book_id") and getattr(pos, "quantity", 0) > 0:
+                code = pos.order_book_id
+                current_positions.add(code)
+                market_value = getattr(pos, "market_value", 0)
+                if total_value > 0:
+                    position_weights[code] = market_value / total_value
+                # 计算盈亏比例
+                avg_price = getattr(pos, "avg_price", 0)
+                last_price = getattr(pos, "last_price", 0)
+                if avg_price > 0 and last_price > 0:
+                    position_pnl[code] = (last_price - avg_price) / avg_price
+    except Exception:
+        pass
+    
+    if smart_sell_enabled and current_positions:
+        # 检查每只持仓股票是否应该保留
+        stocks_to_keep = set()
+        stocks_to_sell = set()
+        
+        for code in current_positions:
+            current_pred = signals.get(code, 0.0)
+            
+            # 如果股票在目标组合中，保留
+            if code in target_weights:
+                stocks_to_keep.add(code)
+                # 更新最高预测值
+                if code in buy_info:
+                    if "high_pred" not in buy_info[code]:
+                        buy_info[code]["high_pred"] = buy_info[code].get("pred", current_pred)
+                    buy_info[code]["high_pred"] = max(buy_info[code]["high_pred"], current_pred)
+                continue
+            
+            # 检查买入信息
+            if code in buy_info:
+                buy_pred = buy_info[code].get("pred", 1.0)
+                buy_date = buy_info[code].get("date")
+                high_pred = buy_info[code].get("high_pred", buy_pred)
+                holding_days = (current_date - buy_date).days if buy_date else 0
+                pnl_ratio = position_pnl.get(code, 0.0)
+                
+                # 更新最高预测值
+                if "high_pred" not in buy_info[code]:
+                    buy_info[code]["high_pred"] = buy_pred
+                buy_info[code]["high_pred"] = max(buy_info[code]["high_pred"], current_pred)
+                high_pred = buy_info[code]["high_pred"]
+                
+                # 判断是否应该卖出
+                should_sell = False
+                sell_reason = ""
+                
+                # ========== CSI101 优化：高预测值保护 ==========
+                # 如果当前预测值仍然很高，不卖出
+                if current_pred >= high_prediction_protection:
+                    stocks_to_keep.add(code)
+                    if code in position_weights:
+                        target_weights[code] = position_weights[code]
+                    if logger:
+                        logger.debug(f"高预测保护: {code} - 当前预测值={current_pred:.4f} >= {high_prediction_protection}")
+                    continue
+                
+                # ========== CSI101 优化：预测值下降阈值 ==========
+                # 计算预测值从高点的下降幅度
+                pred_decline = (high_pred - current_pred) / high_pred if high_pred > 0 else 0
+                
+                # ========== 止损检查 ==========
+                if pnl_ratio <= stop_loss_ratio:
+                    should_sell = True
+                    sell_reason = f"触发止损 (盈亏={pnl_ratio*100:.2f}% <= {stop_loss_ratio*100:.2f}%)"
+                
+                # ========== 止盈检查 ==========
+                elif pnl_ratio >= take_profit_ratio:
+                    # 如果盈利达到止盈线，且预测值下降，则卖出
+                    if pred_decline >= prediction_decline_threshold:
+                        should_sell = True
+                        sell_reason = f"止盈且预测下降 (盈亏={pnl_ratio*100:.2f}%, 预测下降={pred_decline*100:.2f}%)"
+                    else:
+                        # 盈利但预测值仍高，继续持有
+                        stocks_to_keep.add(code)
+                        if code in position_weights:
+                            target_weights[code] = position_weights[code]
+                        continue
+                
+                # ========== 预测值下降检查 ==========
+                elif pred_decline >= prediction_decline_threshold and current_pred < buy_pred * sell_threshold:
+                    should_sell = True
+                    sell_reason = f"预测值大幅下降 (从{high_pred:.4f}降至{current_pred:.4f}, 下降{pred_decline*100:.2f}%)"
+                
+                # ========== 原有逻辑：预测值低于阈值 ==========
+                elif current_pred < buy_pred * sell_threshold:
+                    # CSI101 优化：只有持仓天数足够长才卖出
+                    if holding_days >= min_holding_days:
+                        should_sell = True
+                        sell_reason = f"预测值下降且持仓足够 ({current_pred:.4f} < {buy_pred:.4f} * {sell_threshold}, 持仓{holding_days}天)"
+                    else:
+                        # 持仓时间不够，继续观察
+                        stocks_to_keep.add(code)
+                        if code in position_weights:
+                            target_weights[code] = position_weights[code]
+                        if logger:
+                            logger.debug(f"持仓不足{min_holding_days}天，继续观察: {code}")
+                        continue
+                
+                # ========== 原有逻辑：持仓天数足够且预测值低 ==========
+                elif holding_days >= min_holding_days and current_pred < 0.4:
+                    should_sell = True
+                    sell_reason = f"持仓{holding_days}天且预测值很低 ({current_pred:.4f})"
+                
+                if should_sell:
+                    stocks_to_sell.add(code)
+                    if logger:
+                        logger.info(f"智能卖出: {code} - {sell_reason}")
+                else:
+                    # 保留持仓，维持原有权重
+                    stocks_to_keep.add(code)
+                    if code in position_weights:
+                        target_weights[code] = position_weights[code]
+                    if logger:
+                        logger.debug(f"保留持仓: {code} - 当前预测值={current_pred:.4f}, 买入预测值={buy_pred:.4f}, 高点预测值={high_pred:.4f}, 持仓天数={holding_days}, 盈亏={pnl_ratio*100:.2f}%")
+            else:
+                # 没有买入信息，如果预测值较高则保留
+                if current_pred >= high_prediction_protection:
+                    stocks_to_keep.add(code)
+                    if code in position_weights:
+                        target_weights[code] = position_weights[code]
+                elif current_pred >= 0.5:
+                    stocks_to_keep.add(code)
+                    if code in position_weights:
+                        target_weights[code] = position_weights[code]
+                else:
+                    stocks_to_sell.add(code)
+        
+        if logger and stocks_to_sell:
+            logger.info(f"智能卖出: {len(stocks_to_sell)} 只股票将被卖出")
+        if logger and stocks_to_keep:
+            logger.info(f"智能保留: {len(stocks_to_keep)} 只股票不在目标组合但被保留")
+    
     # 调仓频率控制：间隔 rebalance_interval 天才调一次仓
-    interval = getattr(context, "rebalance_interval", 1) or 1
+    interval = getattr(context, "rebalance_interval", 5) or 5
     last_date = getattr(context, "last_rebalance_date", None)
     delta_days = (current_date - last_date).days if last_date else None
     should_rebalance = (last_date is None) or (delta_days >= interval)
@@ -552,6 +808,12 @@ def rebalance_portfolio(context, bar_dict: Dict):
     我们直接尝试下单，让 RQAlpha 的撮合引擎处理不可交易的情况。
     """
     target_weights = getattr(context, "target_weights", {}) or {}
+    current_date = context.now.date()
+    
+    # 获取当日预测信号
+    signals = {}
+    if current_date in context.prediction_signals:
+        signals = context.prediction_signals[current_date]
     
     # 使用 get_positions() API 获取当前持仓
     current_positions = set()
@@ -585,6 +847,9 @@ def rebalance_portfolio(context, bar_dict: Dict):
     success_count = 0
     order_details = []
     
+    # 记录买入信息
+    buy_info = getattr(context, "buy_info", {})
+    
     for code in all_codes:
         target_weight = target_weights.get(code, 0.0)
         
@@ -597,6 +862,24 @@ def rebalance_portfolio(context, bar_dict: Dict):
             target_value = total_value * target_weight if total_value > 0 else 0
             if logger:
                 logger.debug(f"下单 {code}: 目标权重={target_weight:.4f}, 目标金额={target_value:.2f}")
+            
+            # 记录买入信息（在买入前）
+            if target_weight > 0 and code not in current_positions:
+                # 新买入
+                buy_info[code] = {
+                    "date": current_date,
+                    "pred": signals.get(code, 0.0),
+                    "weight": target_weight,
+                    "high_pred": signals.get(code, 0.0)  # 初始化最高预测值
+                }
+                if logger:
+                    logger.debug(f"记录买入: {code} - 预测值={signals.get(code, 0.0):.4f}")
+            elif target_weight == 0 and code in current_positions:
+                # 卖出，清除买入信息
+                if code in buy_info:
+                    del buy_info[code]
+                    if logger:
+                        logger.debug(f"清除买入信息: {code}")
             
             order = order_target_percent(code, target_weight)
             
@@ -621,6 +904,9 @@ def rebalance_portfolio(context, bar_dict: Dict):
             # RQAlpha 会在订单被拒绝时抛出异常（如停牌、涨跌停等）
             if logger:
                 logger.warning(f"调仓 {code} 到权重 {target_weight:.4f} 失败: {e}")
+    
+    # 更新买入信息
+    context.buy_info = buy_info
     
     # 检查未成交订单
     try:
@@ -690,4 +976,50 @@ def after_trading(context):
             logger.info("注意：当前无持仓但有未成交订单，这是 T+1 交易的正常情况（当日下单，次日成交）")
         elif position_count == 0 and open_orders_count == 0:
             logger.warning("警告：当前无持仓且无未成交订单，可能订单被全部拒绝或未提交成功")
+    
+    # ==================== 回测结束处理 ====================
+    # 检查是否是最后一个交易日
+    current_date = context.now.date()
+    all_dates = sorted(context.prediction_signals.keys())
+    if all_dates and current_date == all_dates[-1]:
+        if not getattr(context, "backtest_ended", False):
+            context.backtest_ended = True
+            
+            # 记录最终持仓信息
+            if logger:
+                logger.info("=" * 60)
+                logger.info("回测结束，统计最终持仓")
+                logger.info("=" * 60)
+                
+                # 统计未平仓持仓
+                if position_count > 0:
+                    logger.info(f"回测结束时仍有 {position_count} 只股票未平仓:")
+                    total_market_value = 0
+                    for pos in positions:
+                        if getattr(pos, "quantity", 0) > 0:
+                            code = getattr(pos, "order_book_id", "unknown")
+                            qty = getattr(pos, "quantity", 0)
+                            market_value = getattr(pos, "market_value", 0)
+                            total_market_value += market_value
+                            
+                            # 获取买入信息
+                            buy_info = getattr(context, "buy_info", {})
+                            if code in buy_info:
+                                buy_date = buy_info[code].get("date", "unknown")
+                                buy_pred = buy_info[code].get("pred", 0)
+                                logger.info(f"  {code}: {qty}股, 市值={market_value:.2f}, "
+                                          f"买入日期={buy_date}, 买入预测值={buy_pred:.4f}")
+                            else:
+                                logger.info(f"  {code}: {qty}股, 市值={market_value:.2f}")
+                    
+                    logger.info(f"未平仓股票总市值: {total_market_value:.2f}")
+                    logger.info(f"注意：这些持仓的盈亏已计入回测结果（按当日收盘价计算）")
+                
+                # 计算最终收益
+                initial_cash = getattr(context, "initial_cash", 10000000.0)
+                final_return = (total_value - initial_cash) / initial_cash * 100
+                logger.info(f"初始资金: {initial_cash:.2f}")
+                logger.info(f"最终资产: {total_value:.2f}")
+                logger.info(f"总收益率: {final_return:.2f}%")
+                logger.info("=" * 60)
 
