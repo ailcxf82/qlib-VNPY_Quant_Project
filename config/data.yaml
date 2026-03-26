@@ -4,140 +4,109 @@ qlib:
 
 data:
   instruments: "csi300, csi101"
-  # instruments: "all"
   start_time: "2026-01-01"
   end_time: "2026-03-28"
   freq: "day"
   
-  # 缺失值清理策略：
-  # - auto（默认）：根据缺失值比例自动选择 strict/relaxed
-  # - strict：对齐后直接 dropna（任何特征缺失都会丢行，可能导致回测起点被推迟）
-  # - relaxed：只丢弃 label 为 NaN 的行，特征缺失用 ffill/bfill/0 填充（更容易保留早期样本）
   missing_value_strategy: "auto"
   
-  # ========== 158 因子配置 ==========
-  # 是否使用 qlib 提供的 158 因子（Alpha158）
-  # ⚠️ 警告：Alpha158 因子存在严重的未来函数问题！
-  # 所有因子都除以当日收盘价 $close，这在 T 日交易时是未知的
-  # 必须禁用 Alpha158，只使用自定义特征
-  use_alpha158: false  # 禁用 158 因子，避免未来函数
-  
-  # 自定义 158 因子配置（可选，用于筛选因子，减少计算资源消耗）
-  # 如果不配置，将使用默认的完整 158 因子
-  alpha158_config:
-    # K线特征（9个因子）- 固定因子，不需要滚动窗口
-    # 配置说明：kbar: {} 表示启用所有 9 个 K 线特征（KMID, KLEN, KMID2, KUP, KUP2, KLOW, KLOW2, KSFT, KSFT2）
-    # 注意：K 线特征不应该配置 windows 和 include 参数，它们是固定的 9 个因子
-    kbar: {}  # 空字典表示启用所有 9 个 K 线特征
-    
-    # 价格特征（4个因子）- 使用 T-1 日数据避免未来函数
-    # 注意：Alpha158 内部会自动处理 Ref，这里配置 windows: [1] 表示使用前一日数据
-    price:
-      windows: [1]  # 使用 T-1 日价格，避免未来函数
-      feature: ["OPEN", "HIGH", "LOW", "CLOSE"]
-    rolling:
-      windows: [5, 10, 20, 30, 60]  # 滚动窗口
-      include: ["ROC", "MA", "STD", "BETA", "MAX", "MIN","RESI", "QTLU", "QTLD", "RSV", "IMAX", "IMIN", "CORR", "CORD","SUMP", "CNTD", "VMA", "VSTD"]
-  
-  # 因子筛选配置（可选，进一步筛选因子）
-  alpha158_filter:
-    # include_operators: ["ROC", "MA", "STD"]  # 只包含这些操作符
-    # exclude_operators: ["RANK", "IMAX", "IMIN"]  # 排除这些操作符
-    # include_windows: [5, 10, 20]  # 只使用这些窗口
-    # exclude_windows: [60]  # 排除这些窗口
-    # max_factors: 50  # 最多使用50个因子（按名称排序选择前N个）
-  
-  # 如果自动获取失败，可以手动指定 158 因子列表（可选）
-  # alpha158_factors:
-  #   - "($close-$open)/$open"  # 示例：因子表达式
-  #   - "Mean($close, 5)/$close"
-  
-  # ========== 关键：避免未来函数 ==========
-  # 所有特征必须使用 T-1 及之前的数据，不能使用当日价格
-  # 原因：在 T 日交易时，T 日的收盘价尚未确定
-  # 解决方案：所有特征使用 Ref($xxx, 1) 形式，即使用前一日数据
-  
-  features:
-    # ========== 技术面特征（使用 T-1 日数据）==========
-    # 价格特征：使用前一日收盘价
-    - "Ref($close, 1)"               # T-1日收盘价
-    - "Ref($open, 1)"                # T-1日开盘价
-    - "Ref($high, 1)"                # T-1日最高价
-    - "Ref($low, 1)"                 # T-1日最低价
-    - "Ref($volume, 1)"              # T-1日成交量
-    
-    # 收益率特征：使用 T-1 日和 T-2 日的数据
-    - "Ref($close, 2)/Ref($close, 1) - 1"     # T-2日收盘/T-1日收盘 - 1（前一日收益率）
-    - "Ref($volume, 2)/Ref($volume, 1) - 1"   # T-2日成交量/T-1日成交量 - 1（成交量变化率）
-    
-    # 均线特征：使用 T-1 日及之前数据
-    - "Mean(Ref($close, 1), 5)/Ref($close, 1) - 1"    # 5日均价相对T-1日收盘价的变化率
-    - "Mean(Ref($close, 1), 10)/Ref($close, 1) - 1"   # 10日均价相对T-1日收盘价的变化率
-    - "Std(Ref($close, 1), 10)"               # 10日收盘价标准差（波动率）
-    
-    # 价格位置特征：使用 T-1 日及之前数据
-    - "(Ref($close, 1) - Max(Ref($high, 1), 60)) / Ref($close, 1)"  # T-1日价格与近60日最高价的距离
-    
-    # 换手率特征：使用 T-1 日数据
-    - "Ref($turnover_rate, 1)"              # T-1日换手率
-    - "Mean(Ref($turnover_rate, 1), 5)"     # 5日平均换手率
-    - "Ref($turnover_rate, 1)/Mean(Ref($turnover_rate, 1), 20) - 1"  # 换手率相对20日均值的偏离度
-    
-    # 成交量特征：使用 T-1 日数据
-    - "Ref($volume, 1) / Mean(Ref($volume, 1), 20) - 1"  # T-1日成交量相对20日均值的偏离度
-    - "(Ref($close, 1) - Ref($close, 2)) * Ref($volume, 1)"  # 价量配合度（T-1日）
+  use_alpha158: false
 
   feature_sets:
+    # ==================== GRU OHLCV特征集（时序模型专用）====================
+    # 包含价格、成交量、波动率等时序特征，适合GRU等序列模型
     gru_ohlcv:
+      # 基础价格特征
       - "Ref($close, 1)"
       - "Ref($open, 1)"
       - "Ref($high, 1)"
       - "Ref($low, 1)"
       - "Ref($volume, 1)"
+      
+      # 收益率特征
       - "Ref($close, 2)/Ref($close, 1) - 1"
       - "Ref($volume, 2)/Ref($volume, 1) - 1"
+      
+      # 均线特征
       - "Mean(Ref($close, 1), 5)/Ref($close, 1) - 1"
       - "Mean(Ref($close, 1), 10)/Ref($close, 1) - 1"
+      - "Mean(Ref($close, 1), 20)/Ref($close, 1) - 1"
+      
+      # 波动率特征
       - "Std(Ref($close, 1), 5)"
       - "Std(Ref($close, 1), 10)"
+      - "Std(Ref($close, 1), 20)"
+      
+      # 换手率特征
       - "Ref($turnover_rate, 1)"
+      - "Mean(Ref($turnover_rate, 1), 5)"
       - "Ref($volume, 1) / Mean(Ref($volume, 1), 5) - 1"
+      
+      # 动量因子
+      - "Ref($close, 5)/Ref($close, 10) - 1"
+      - "Ref($close, 10)/Ref($close, 20) - 1"
+      
+      # 波动率因子
+      - "Std(Ref($close, 1), 20) / Mean(Ref($close, 1), 20)"
+      - "(Ref($high, 1) - Ref($low, 1)) / Ref($close, 1)"
+      
+      # 价格位置因子
+      - "(Ref($close, 1) - Min(Ref($low, 1), 20)) / (Max(Ref($high, 1), 20) - Min(Ref($low, 1), 20))"
+      - "(Ref($close, 1) - Mean(Ref($close, 1), 20)) / Std(Ref($close, 1), 20)"
 
+    # ==================== LGB基本面特征集（树模型专用）====================
+    # 包含估值、成长、质量、资金流向等基本面特征，适合LightGBM等树模型
     lgb_fundamental:
+      # ========== 估值因子 ==========
       - "Ref($pe, 1)"
       - "Ref($pb, 1)"
       - "Ref($ps, 1)"
       - "1/Ref($pe, 1)"
       - "Ref($market_cap, 1)"
+      - "Ref($pe, 1)/Mean(Ref($pe, 1), 20) - 1"
+      - "Ref($pb, 1)/Mean(Ref($pb, 1), 20) - 1"
+      - "Ref($pe, 1) / Ref($net_profit_growth, 1)"
+      
+      # ========== 成长因子 ==========
       - "Ref($roe, 1)"
       - "Ref($net_profit_margin, 1)"
       - "Ref($net_profit_growth, 1)"
       - "Ref($eps_growth, 1)"
       - "Ref($asset_turnover, 1)"
-      - "Ref($pe, 1)/Mean(Ref($pe, 1), 20) - 1"
-      - "Ref($pb, 1)/Mean(Ref($pb, 1), 20) - 1"
       - "Ref($roe, 1)/Mean(Ref($roe, 1), 4) - 1"
+      - "Ref($net_profit_margin, 1) * Ref($asset_turnover, 1)"
+      
+      # ========== 资金流向因子 ==========
       - "Ref($net_mf_amount, 1)"
       - "Ref($buy_elg_amount, 1)"
       - "Ref($buy_lg_amount, 1)"
       - "Ref($buy_md_amount, 1)"
       - "Ref($buy_sm_amount, 1)"
+      - "Ref($net_mf_amount, 1) / Ref($market_cap, 1)"
+      
+      # ========== 情绪因子 ==========
       - "Ref($margin_balance, 1)"
       - "Ref($short_balance, 1)"
       - "Ref($margin_balance, 2)/Ref($margin_balance, 1) - 1"
+      - "Ref($short_balance, 2)/Ref($short_balance, 1) - 1"
+      
+      # ========== 技术面因子 ==========
       - "(Ref($close, 1) - Ref($open, 1)) / Ref($open, 1)"
       - "(Ref($high, 1) - Ref($low, 1)) / Ref($close, 1)"
       - "(Ref($close, 1) - Mean(Ref($close, 1), 20)) / Std(Ref($close, 1), 20)"
+      - "Ref($close, 5)/Ref($close, 20) - 1"
+      - "Ref($close, 20)/Ref($close, 60) - 1"
+      - "Std(Ref($turnover_rate, 1), 10)"
+      - "Ref($volume, 1) / Mean(Ref($volume, 1), 20) - 1"
 
   active_feature_sets: ["gru_ohlcv", "lgb_fundamental"]
+  
   label: "Ref($close, -5)/Ref($close, 1) - 1"
   label_transform:
-    enabled: true              # 启用标签转换
-    method: "percentile"       # 转换方法：percentile（百分位）或 rank（排名）
-    groupby: "datetime"       # 分组方式：按日期分组（截面排名）
+    enabled: true
+    method: "percentile"
+    groupby: "datetime"
   filter:
     limit_up: true
     limit_down: true
   normalization: "zscore"
-
-

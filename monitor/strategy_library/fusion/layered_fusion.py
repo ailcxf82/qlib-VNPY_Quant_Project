@@ -864,7 +864,7 @@ class LayeredFusionProcessor:
     ) -> FusedSignal:
         name = model_sig.name if model_sig else strategy_sig.name if strategy_sig else code
         
-        action = "buy" if gain > 0.2 else "sell" if gain < -0.2 else "hold"
+        action = "buy" if gain > 0.05 else "sell" if gain < -0.05 else "hold"
         
         model_pred = None
         strategy_signal = None

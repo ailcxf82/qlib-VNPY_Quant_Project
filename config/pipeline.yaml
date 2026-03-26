@@ -28,16 +28,24 @@ model_gru: null
 ensemble:
   # 聚合策略选项：
   # - "average": 简单平均（Qlib 标准化后平均）
-  # - "weighted_average": 基于验证集 ICIR 的加权平均（推荐）
+  # - "weighted_average": 基于验证集 ICIR 的加权平均
+  # - "dynamic_weighted": 动态权重集成（推荐，基于历史IC动态调整）
+  # - "adaptive": 自适应集成（根据市场状态调整）
   # - "meta_learner": Meta-Learner（Ridge 回归，默认 alpha=1.0）
   # - "meta_learner_linear": Meta-Learner（线性回归）
   # - "meta_learner_ridge": Meta-Learner（Ridge 回归，alpha=1.0）
-  aggregator: "weighted_average"
+  # 当前值"dynamic_weighted"：基于历史IC动态调整权重，提升ICIR
+  aggregator: "dynamic_weighted"
   
-  # Meta-Learner 参数（仅当 aggregator="meta_learner" 时使用）
+  # 动态权重参数（仅当 aggregator="dynamic_weighted" 时使用）
   aggregator_params:
-    model_type: "ridge"
-    alpha: 1.0
+    window: 60              # IC历史窗口大小
+    half_life: 20            # 指数衰减半衰期
+    min_weight: 0.05         # 单个模型最小权重
+    max_weight: 0.5          # 单个模型最大权重
+    clip_negative: true     # 负ICIR模型权重设为min_weight
+    use_softmax: false       # 是否使用softmax平滑
+    temperature: 1.0        # softmax温度参数
   
   # 重要：这里留空，让系统从 base_models 自动派生模型清单
   models: []
@@ -71,8 +79,8 @@ rolling:
   # 验证集天数：用于早停和模型选择
   # - 较大值(30-60)：更可靠的验证指标
   # - 较小值(10-20)：更多数据用于训练
-  # - 当前值30：约1.5个月，平衡验证可靠性和训练数据量
-  valid_days: 30
+  # - 当前值40：约2个月，增强验证可靠性，减少过拟合风险
+  valid_days: 40
   
   # 测试集天数：用于最终评估
   # - 当前值30：与验证集一致

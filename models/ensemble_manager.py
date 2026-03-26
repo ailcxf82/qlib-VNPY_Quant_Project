@@ -46,6 +46,8 @@ class EnsembleAggregator:
     STRATEGY_MAP = {
         "average": _QlibAverageAdapter,
         "weighted_average": ICIRWeightedAverageAdapter,
+        "dynamic_weighted": None,  # 将在__init__中动态创建
+        "adaptive": None,  # 将在__init__中动态创建
         "meta_learner": MetaLearnerAdapter,
         "meta_learner_ridge": lambda: MetaLearnerAdapter(model_type="ridge", alpha=1.0),
         "meta_learner_linear": lambda: MetaLearnerAdapter(model_type="linear"),
@@ -60,13 +62,32 @@ class EnsembleAggregator:
         strategy = (strategy or "average").lower()
         strategy_params = strategy_params or {}
         
-        if strategy == "meta_learner":
+        # 支持动态权重集成策略
+        if strategy == "dynamic_weighted":
+            from models.dynamic_ensemble import DynamicWeightedEnsemble
+            self._adapter = DynamicWeightedEnsemble(
+                window=int(strategy_params.get("window", 60)),
+                half_life=int(strategy_params.get("half_life", 20)),
+                min_weight=float(strategy_params.get("min_weight", 0.05)),
+                max_weight=float(strategy_params.get("max_weight", 0.5)),
+                clip_negative=bool(strategy_params.get("clip_negative", True)),
+                use_softmax=bool(strategy_params.get("use_softmax", False)),
+                temperature=float(strategy_params.get("temperature", 1.0)),
+            )
+        elif strategy == "adaptive":
+            from models.dynamic_ensemble import AdaptiveEnsemble
+            self._adapter = AdaptiveEnsemble(
+                volatility_window=int(strategy_params.get("volatility_window", 20)),
+            )
+        elif strategy == "meta_learner":
             # 支持通过参数指定模型类型
             model_type = strategy_params.get("model_type", "ridge")
             alpha = strategy_params.get("alpha", 1.0)
             self._adapter = MetaLearnerAdapter(model_type=model_type, alpha=alpha)
         elif strategy in self.STRATEGY_MAP:
             adapter_cls_or_factory = self.STRATEGY_MAP[strategy]
+            if adapter_cls_or_factory is None:
+                raise ValueError(f"策略 {strategy} 需要特殊处理，但未正确初始化")
             if callable(adapter_cls_or_factory) and not isinstance(adapter_cls_or_factory, type):
                 # 是工厂函数
                 self._adapter = adapter_cls_or_factory()
@@ -76,8 +97,13 @@ class EnsembleAggregator:
         else:
             raise ValueError(f"暂不支持的 Ensemble 策略: {strategy}")
 
-    def aggregate(self, preds: Dict[str, pd.Series]) -> pd.Series:
-        return self._adapter(preds)
+    def aggregate(self, preds: Dict[str, pd.Series], labels: Optional[pd.Series] = None) -> pd.Series:
+        # 支持DynamicWeightedEnsemble和AdaptiveEnsemble
+        if hasattr(self._adapter, 'aggregate'):
+            return self._adapter.aggregate(preds, labels)
+        else:
+            # 兼容旧的适配器（可调用对象）
+            return self._adapter(preds)
     
     def fit(self, valid_preds: Dict[str, pd.Series], valid_label: pd.Series):
         """
@@ -497,7 +523,8 @@ class EnsembleModelManager:
 
         blended = None
         if self.aggregator is not None:
-            blended = self.aggregator.aggregate(preds)
+            # 动态权重集成需要labels，但在predict阶段没有labels，所以传None
+            blended = self.aggregator.aggregate(preds, labels=None)
         return blended, preds, aux
 
     def save(self, output_dir: str, tag: str):

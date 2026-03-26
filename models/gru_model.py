@@ -47,6 +47,88 @@ class _GRUNet(nn.Module):
         return y
 
 
+class _GRUNetWithAttention(nn.Module):
+    """带注意力机制的GRU网络"""
+    
+    def __init__(
+        self, 
+        input_dim: int, 
+        hidden_size: int, 
+        num_layers: int, 
+        dropout: float,
+        attention_type: str = "self_attention",
+        num_heads: int = 4,
+    ):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.attention_type = attention_type
+        
+        # GRU层
+        self.gru = nn.GRU(
+            input_size=input_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout if num_layers > 1 else 0.0,
+            batch_first=True,
+        )
+        
+        # 注意力层
+        if attention_type == "self_attention":
+            self.attention = nn.MultiheadAttention(
+                embed_dim=hidden_size,
+                num_heads=num_heads,
+                dropout=dropout,
+                batch_first=True,
+            )
+        elif attention_type == "temporal_attention":
+            # 时序注意力：学习每个时间步的权重
+            self.attention_weight = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.Tanh(),
+                nn.Linear(hidden_size // 2, 1),
+            )
+        
+        # Layer Normalization
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        
+        # 输出层
+        self.head = nn.Linear(hidden_size, 1)
+        
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, F)
+        batch_size, seq_len, _ = x.shape
+        
+        # GRU编码
+        gru_out, _ = self.gru(x)  # (B, T, H)
+        
+        # 注意力增强
+        if self.attention_type == "self_attention":
+            # 自注意力：捕获时间步之间的关系
+            attn_out, _ = self.attention(gru_out, gru_out, gru_out)
+            # 残差连接 + LayerNorm
+            gru_out = self.layer_norm(gru_out + self.dropout(attn_out))
+            # 取最后时刻
+            last = gru_out[:, -1, :]
+        
+        elif self.attention_type == "temporal_attention":
+            # 时序注意力：学习每个时间步的重要性权重
+            attn_weights = self.attention_weight(gru_out)  # (B, T, 1)
+            attn_weights = torch.softmax(attn_weights, dim=1)
+            # 加权求和
+            last = (gru_out * attn_weights).sum(dim=1)  # (B, H)
+        
+        else:
+            # 默认：取最后时刻
+            last = gru_out[:, -1, :]
+        
+        # 输出
+        y = self.head(last)  # (B, 1)
+        return y
+
+
 class GRURegressor:
     def __init__(self, config: Union[str, Dict[str, Any]]):
         if isinstance(config, str):
@@ -226,12 +308,26 @@ class GRURegressor:
         else:
             logger.info("GRU 验证序列: %d（valid样本=%d）", len(X_va), len(valid_feat) if valid_feat is not None else 0)
 
-        self.model = _GRUNet(
-            input_dim=self._input_dim,
-            hidden_size=int(self.config.get("hidden_size", 64)),
-            num_layers=int(self.config.get("num_layers", 2)),
-            dropout=float(self.config.get("dropout", 0.2)),
-        ).to(self.device)
+        # 构建模型（支持注意力机制）
+        attention_type = str(self.config.get("attention_type", "none")).lower()
+        if attention_type in ["self_attention", "temporal_attention"]:
+            logger.info("GRU 使用注意力机制: %s", attention_type)
+            self.model = _GRUNetWithAttention(
+                input_dim=self._input_dim,
+                hidden_size=int(self.config.get("hidden_size", 64)),
+                num_layers=int(self.config.get("num_layers", 2)),
+                dropout=float(self.config.get("dropout", 0.2)),
+                attention_type=attention_type,
+                num_heads=int(self.config.get("attention_heads", 4)),
+            ).to(self.device)
+        else:
+            logger.info("GRU 使用标准架构（无注意力机制）")
+            self.model = _GRUNet(
+                input_dim=self._input_dim,
+                hidden_size=int(self.config.get("hidden_size", 64)),
+                num_layers=int(self.config.get("num_layers", 2)),
+                dropout=float(self.config.get("dropout", 0.2)),
+            ).to(self.device)
 
         loss_type = str(self.config.get("loss", "mse")).lower()
         loss_params = self.config.get("loss_params", {}) or {}
@@ -496,12 +592,27 @@ class GRURegressor:
         if self._input_dim is None:
             raise RuntimeError("GRU ckpt 缺少 input_dim")
 
-        self.model = _GRUNet(
-            input_dim=int(self._input_dim),
-            hidden_size=int(self.config.get("hidden_size", 64)),
-            num_layers=int(self.config.get("num_layers", 2)),
-            dropout=float(self.config.get("dropout", 0.2)),
-        ).to(self.device)
+        # 构建模型（支持注意力机制）
+        attention_type = str(self.config.get("attention_type", "none")).lower()
+        if attention_type in ["self_attention", "temporal_attention"]:
+            logger.info("GRU 加载使用注意力机制: %s", attention_type)
+            self.model = _GRUNetWithAttention(
+                input_dim=int(self._input_dim),
+                hidden_size=int(self.config.get("hidden_size", 64)),
+                num_layers=int(self.config.get("num_layers", 2)),
+                dropout=float(self.config.get("dropout", 1.2)),
+                attention_type=attention_type,
+                num_heads=int(self.config.get("attention_heads", 4)),
+            ).to(self.device)
+        else:
+            logger.info("GRU 加载使用标准架构（无注意力机制）")
+            self.model = _GRUNet(
+                input_dim=int(self._input_dim),
+                hidden_size=int(self.config.get("hidden_size", 64)),
+                num_layers=int(self.config.get("num_layers", 2)),
+                dropout=float(self.config.get("dropout", 1.2)),
+            ).to(self.device)
+        
         self.model.load_state_dict(ckpt["state_dict"])
 
 
