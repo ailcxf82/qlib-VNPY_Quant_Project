@@ -158,16 +158,25 @@ def main():
         if not os.path.isabs(pool_base_log_dir):
             pool_base_log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), pool_base_log_dir)
         
-        # 如果路径不包含股票池名称，自动拼接
-        if not pool_base_model_dir.endswith(f"{pool_name}_models"):
-            temp_pipeline_config["paths"]["model_dir"] = os.path.join(pool_base_model_dir, f"{pool_name}_models")
-        else:
+        # 如果路径不包含股票池名称，优先复用“直接模型目录”，否则再拼接 {pool}_models
+        has_direct_models = False
+        if os.path.exists(pool_base_model_dir):
+            try:
+                has_direct_models = any(name.endswith("_lgb.txt") for name in os.listdir(pool_base_model_dir))
+            except OSError:
+                has_direct_models = False
+
+        if pool_base_model_dir.endswith(f"{pool_name}_models") or has_direct_models:
             temp_pipeline_config["paths"]["model_dir"] = pool_base_model_dir
-            
-        if not pool_base_log_dir.endswith(f"{pool_name}_logs"):
-            temp_pipeline_config["paths"]["log_dir"] = os.path.join(pool_base_log_dir, f"{pool_name}_logs")
         else:
+            temp_pipeline_config["paths"]["model_dir"] = os.path.join(pool_base_model_dir, f"{pool_name}_models")
+
+        # 日志目录同理：若基目录已有 training_metrics.csv，直接复用
+        has_direct_log = os.path.exists(os.path.join(pool_base_log_dir, "training_metrics.csv"))
+        if pool_base_log_dir.endswith(f"{pool_name}_logs") or has_direct_log:
             temp_pipeline_config["paths"]["log_dir"] = pool_base_log_dir
+        else:
+            temp_pipeline_config["paths"]["log_dir"] = os.path.join(pool_base_log_dir, f"{pool_name}_logs")
         # 预测文件夹保持统一，但文件名会包含股票池信息
         
         temp_pipeline_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')

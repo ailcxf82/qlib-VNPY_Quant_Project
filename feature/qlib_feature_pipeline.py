@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import re
 from pathlib import Path
 from typing import Dict, Tuple, Any, Union, List
 
@@ -208,6 +209,89 @@ class QlibFeaturePipeline:
         
         return filtered_fields
 
+    def _discover_available_fields(self) -> set[str]:
+        """从 qlib data/features 目录发现当前可用底层字段名。"""
+        qlib_cfg = self.config.get("qlib", {})
+        provider_uri = qlib_cfg.get("provider_uri")
+        if not provider_uri:
+            return set()
+        features_dir = Path(provider_uri) / "features"
+        if not features_dir.exists() or not features_dir.is_dir():
+            return set()
+        try:
+            sample_dirs = [d for d in features_dir.iterdir() if d.is_dir()]
+            if not sample_dirs:
+                return set()
+            # 取第一个标的目录作为字段样本
+            sample_dir = sample_dirs[0]
+            fields: set[str] = set()
+            for f in sample_dir.glob("*.day.bin"):
+                name = f.name
+                if not name.endswith(".day.bin"):
+                    continue
+                fields.add(name[: -len(".day.bin")])
+            return fields
+        except Exception as e:
+            logger.warning("扫描 qlib 特征字段失败: %s", e)
+            return set()
+
+    def _build_field_aliases(self, available_fields: set[str]) -> Dict[str, str]:
+        """构建字段别名映射（兼容 qlib_data 字段命名变化）。"""
+        # 默认兼容映射：old_name -> new_name / expression
+        aliases: Dict[str, str] = {
+            "open": "open_qfq",
+            "high": "high_qfq",
+            "low": "low_qfq",
+            "close": "close_qfq",
+            "volume": "vol",
+            "net_mf_amount": "net_amount",
+            "margin_balance": "rzye",
+            "short_balance": "rqye",
+            "asset_turnover": "assets_turn",
+            "market_cap": "total_mv",
+            "float_mv": "total_mv",
+            "net_profit_growth": "profit_to_gr",
+            "eps_growth": "q_profit_yoy",
+            # 行业轮动配置常见别名
+            "pct_change": "$close / Ref($close, 1) - 1",
+            "change": "$close - Ref($close, 1)",
+        }
+        # 配置可覆盖默认映射
+        custom_aliases = self.feature_cfg.get("field_aliases", {}) or {}
+        for k, v in custom_aliases.items():
+            aliases[str(k)] = str(v)
+
+        # 如果别名目标是“字段名”，但该字段在数据中不存在，则不启用该映射
+        filtered: Dict[str, str] = {}
+        for old, new in aliases.items():
+            # 表达式别名（包含运算符）直接保留
+            if any(op in new for op in (" ", "(", ")", "+", "-", "*", "/")):
+                filtered[old] = new
+                continue
+            # 字段别名：目标字段可用才生效
+            if (not available_fields) or (new in available_fields):
+                filtered[old] = new
+        return filtered
+
+    @staticmethod
+    def _replace_field_tokens(expr: str, alias_map: Dict[str, str]) -> str:
+        """将表达式中的 $field 按别名映射替换。"""
+        if not expr or not alias_map:
+            return expr
+
+        def repl(m: re.Match) -> str:
+            field = m.group(1)
+            target = alias_map.get(field)
+            if not target:
+                return m.group(0)
+            # 表达式别名
+            if any(op in target for op in (" ", "(", ")", "+", "-", "*", "/")):
+                return f"({target})"
+            # 字段别名
+            return f"${target}"
+
+        return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", repl, str(expr))
+
     def build(self, *, include_label: bool = True):
         """
         执行特征提取。
@@ -265,6 +349,25 @@ class QlibFeaturePipeline:
         end = self.feature_cfg["end_time"]
         freq = self.feature_cfg.get("freq", "day")
         label_expr = self.feature_cfg.get("label", "Ref($close, -5)/$close - 1")
+
+        # 字段兼容层：根据 qlib_data 的真实字段名自动适配表达式
+        available_fields = self._discover_available_fields()
+        alias_map = self._build_field_aliases(available_fields)
+        if alias_map:
+            feats = [self._replace_field_tokens(f, alias_map) for f in feats]
+            label_expr = self._replace_field_tokens(label_expr, alias_map)
+            logger.info("已应用字段别名映射，映射数量: %d", len(alias_map))
+
+        # 去重（替换后可能产生重复表达式）
+        if feats:
+            seen = set()
+            dedup = []
+            for f in feats:
+                if f in seen:
+                    continue
+                seen.add(f)
+                dedup.append(f)
+            feats = dedup
 
         logger.info("提取特征，共 %d 个特征表达式", len(feats))
         
@@ -666,18 +769,18 @@ class QlibFeaturePipeline:
             pool_name = inst_conf.split(",")[0].strip()
             try:
                 market_config = D.instruments(pool_name)
+            except Exception as e:
+                # 兼容精简版 qlib_data：仅提供 all.txt，没有 csi300/csi101 等细分池
+                logger.warning("股票池 '%s' 不存在，尝试回退到 'all': %s", pool_name, e)
+                pool_name = "all"
+                market_config = D.instruments(pool_name)
+            try:
                 # 使用 D.list_instruments() 获取股票代码列表
                 stock_list = D.list_instruments(instruments=market_config, as_list=True)
                 if isinstance(stock_list, list) and len(stock_list) > 0:
                     logger.info("从市场 '%s' 获取到 %d 只股票", pool_name, len(stock_list))
-                    # 确保返回的是纯数字股票代码（去掉 .SH 或 .SZ 后缀，如果存在）
-                    cleaned_list = []
-                    for code in stock_list:
-                        # 如果代码包含点号，提取前面的数字部分
-                        if '.' in str(code):
-                            code = str(code).split('.')[0]
-                        cleaned_list.append(str(code))
-                    return cleaned_list
+                    # 保留 qlib 原生证券格式（如 000001.SZ / 000001.sz），避免因为去后缀导致取数为空
+                    return [str(code) for code in stock_list]
                 else:
                     raise ValueError(f"无法从市场 '{pool_name}' 获取股票列表，返回结果为空")
             except Exception as e:
@@ -692,13 +795,8 @@ class QlibFeaturePipeline:
                 if isinstance(stock_list, list) and len(stock_list) > 0:
                     market_name = inst_conf.get("market", "未知市场")
                     logger.info("从市场配置 '%s' 获取到 %d 只股票", market_name, len(stock_list))
-                    # 确保返回的是纯数字股票代码
-                    cleaned_list = []
-                    for code in stock_list:
-                        if '.' in str(code):
-                            code = str(code).split('.')[0]
-                        cleaned_list.append(str(code))
-                    return cleaned_list
+                    # 保留 qlib 原生证券格式（如 000001.SZ / 000001.sz）
+                    return [str(code) for code in stock_list]
                 else:
                     raise ValueError(f"无法从市场配置获取股票列表，返回结果为空")
             except Exception as e:
@@ -706,15 +804,8 @@ class QlibFeaturePipeline:
                 raise ValueError(f"无法从市场配置获取股票列表: {e}")
         
         if isinstance(inst_conf, (list, tuple)):
-            # 如果是列表，确保格式正确（纯数字代码）
-            result = []
-            for code in inst_conf:
-                code_str = str(code)
-                # 如果包含点号，提取前面的数字部分
-                if '.' in code_str:
-                    code_str = code_str.split('.')[0]
-                result.append(code_str)
-            return result
+            # 列表形式直接保留原始代码格式
+            return [str(code) for code in inst_conf]
         
         raise ValueError(f"不支持的股票池配置类型: {type(inst_conf)}")
 
@@ -739,7 +830,13 @@ class QlibFeaturePipeline:
         if os.path.sep in industry_path or "/" in industry_path or "\\" in industry_path or industry_path.endswith(".txt"):
             # 从文件读取
             if not os.path.exists(industry_path):
-                raise FileNotFoundError(f"行业指数文件不存在: {industry_path}")
+                # 兼容精简版 qlib_data：默认行业文件缺失时，回退到 instruments/all.txt
+                fallback_path = os.path.join(self.config.get("qlib", {}).get("provider_uri", ""), "instruments", "all.txt")
+                if os.path.exists(fallback_path):
+                    logger.warning("行业指数文件不存在，回退到: %s", fallback_path)
+                    industry_path = fallback_path
+                else:
+                    raise FileNotFoundError(f"行业指数文件不存在: {industry_path}")
             
             logger.info("从文件读取行业指数列表: %s", industry_path)
             industry_list = []

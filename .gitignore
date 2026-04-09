@@ -5,6 +5,16 @@ data/oof/
 data/meta/
 data/predictions/
 data/models/
+.venv/
+classify/
+datasets/__pycache__/
+utils/__pycache__/
+trainer/__pycache__/
+tests/__pycache__/
+predictor/__pycache__/
+models/__pycache__/
+feature/__pycache__/
+
 mlruns/
 monitor/__pycache__/
 api/__pycache__/
