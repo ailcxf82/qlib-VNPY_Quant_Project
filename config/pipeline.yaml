@@ -17,8 +17,8 @@ base_models: ["lgb", "gru"]
 # - gru: 使用 gru_ohlcv（OHLCV价格量数据，适合时序建模）
 # - lgb: 使用 lgb_fundamental（基本面、融资数据，适合树模型）
 model_features:
-  gru: "gru_ohlcv"
-  lgb: "lgb_fundamental"
+  gru: "gru_short_cycle"
+  lgb: "lgb_short_cycle"
 
 # GRU 超参：若此处为 dict，会优先覆盖 gru_config；
 # 现在设为 null，表示使用 config/model_gru.yaml

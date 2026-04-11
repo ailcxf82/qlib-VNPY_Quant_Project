@@ -160,10 +160,21 @@ class OOFManager:
                 feature_sets = {}
 
         feature_log_done: set[str] = set()
+        # 可选：在每个 fold 内部再切一个 early-stop 验证段（来自 fold.train_dates 的尾部）
+        # 目的：让 LGB/GRU 在 OOF 训练时也能 early stopping，但避免“使用 fold.valid_dates 既早停又产出 OOF”的轻微乐观偏差
+        oof_cfg = (pipeline_cfg.get("oof_stacking") or {}) if isinstance(pipeline_cfg, dict) else {}
+        fold_early_stop_days = 0
+        try:
+            fold_early_stop_days = int(oof_cfg.get("fold_early_stop_days", 0) or 0)
+        except Exception:
+            fold_early_stop_days = 0
 
         def _resolve_feature_cols(model_name: str, all_cols: List[str]) -> Optional[List[str]]:
             if not model_features:
                 return None
+            missing_mode = str(pipeline_cfg.get("feature_missing_mode", "compat") or "compat").strip().lower()
+            if missing_mode not in {"compat", "strict"}:
+                missing_mode = "compat"
             spec = model_features.get(model_name)
             if spec is None:
                 raise ValueError(
@@ -195,7 +206,20 @@ class OOFManager:
                 return None
             missing = [c for c in cols if c not in all_cols]
             if missing:
-                raise ValueError(f"OOF: 模型 {model_name} 特征缺失: {missing[:10]}")
+                available = [c for c in cols if c in all_cols]
+                if missing_mode == "strict":
+                    raise ValueError(f"OOF: 模型 {model_name} 特征缺失（strict）: {missing[:10]}")
+                # 与主训练一致：部分特征在清洗阶段被移除时，降级为“跳过缺失列”。
+                if available:
+                    logger.warning(
+                        "OOF: 模型 %s 有 %d 个配置特征在当前窗口缺失，已自动跳过（示例: %s）",
+                        model_name,
+                        len(missing),
+                        missing[:10],
+                    )
+                    cols = available
+                else:
+                    raise ValueError(f"OOF: 模型 {model_name} 特征全部缺失: {missing[:10]}")
             if model_name not in feature_log_done:
                 logger.info(
                     "OOF: 模型 %s 使用特征集合=%s，列数=%d（示例: %s）",
@@ -283,10 +307,24 @@ class OOFManager:
                     pickle.dump(valid_index, fp)
                 np.save(y_fold_path, y_valid.values.astype(np.float32), allow_pickle=False)
 
-            # 训练集 mask（可选 gap）
-            train_mask = self._mask_by_dates(train_feat.index, fold.train_dates)
+            # 训练集 mask（可选 gap + 可选 fold 内 early-stop 切分）
+            train_dates_main = fold.train_dates
+            early_stop_dates = None
+            if fold_early_stop_days > 0:
+                # 仅当 fold.train_dates 足够长时启用（至少留 1 天用于训练）
+                if len(fold.train_dates) > fold_early_stop_days + 1:
+                    train_dates_main = fold.train_dates[: -fold_early_stop_days]
+                    early_stop_dates = fold.train_dates[-fold_early_stop_days:]
+
+            train_mask = self._mask_by_dates(train_feat.index, train_dates_main)
             fold_train_feat = train_feat.loc[train_mask]
             fold_train_lbl = train_label.loc[train_mask]
+            fold_es_feat = None
+            fold_es_lbl = None
+            if early_stop_dates is not None:
+                es_mask = self._mask_by_dates(train_feat.index, early_stop_dates)
+                fold_es_feat = train_feat.loc[es_mask]
+                fold_es_lbl = train_label.loc[es_mask]
             fold_valid_feat = train_feat.loc[valid_mask]
 
             for spec in model_specs:
@@ -329,6 +367,7 @@ class OOFManager:
                 model = create_model(spec["type"], cfg)
                 # 按模型选择特征列
                 fold_train_feat_sel = _select_features(mname, fold_train_feat)
+                fold_es_feat_sel = _select_features(mname, fold_es_feat) if fold_es_feat is not None else None
                 fold_valid_feat_sel = _select_features(mname, fold_valid_feat)
                 # ===== per-model normalization（每 fold 单独拟合；与主训练一致）=====
                 mean = fold_train_feat_sel.mean()
@@ -343,9 +382,14 @@ class OOFManager:
                     z = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
                     return z.clip(-5, 5)
                 fold_train_feat_sel = _apply_norm(fold_train_feat_sel)
+                if fold_es_feat_sel is not None:
+                    fold_es_feat_sel = _apply_norm(fold_es_feat_sel)
                 fold_valid_feat_sel = _apply_norm(fold_valid_feat_sel)
                 # 注意：OOF 仅基于训练折训练；valid 折仅用于预测
-                model.fit(fold_train_feat_sel, fold_train_lbl, None, None)
+                if fold_es_feat_sel is not None and fold_es_lbl is not None and len(fold_es_feat_sel) > 0 and len(fold_es_lbl) > 0:
+                    model.fit(fold_train_feat_sel, fold_train_lbl, fold_es_feat_sel, fold_es_lbl)
+                else:
+                    model.fit(fold_train_feat_sel, fold_train_lbl, None, None)
                 # 对序列模型（如 GRU）传入历史特征，避免 valid 前期缺历史导致 OOF 为空
                 try:
                     pred_out = model.predict(fold_valid_feat_sel, history_feat=fold_train_feat_sel)

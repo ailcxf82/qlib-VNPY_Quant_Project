@@ -315,6 +315,9 @@ class EnsembleModelManager:
         """解析每个模型需要的特征列。"""
         if not self._model_features:
             return None
+        missing_mode = str(self.pipeline_cfg.get("feature_missing_mode", "compat") or "compat").strip().lower()
+        if missing_mode not in {"compat", "strict"}:
+            missing_mode = "compat"
         model_key = str(model_name).strip().lower()
         spec = self._model_features.get(model_key)
         if spec is None:
@@ -349,7 +352,21 @@ class EnsembleModelManager:
             return None
         missing = [c for c in cols if c not in all_cols]
         if missing:
-            raise ValueError(f"模型 {model_name} 特征缺失: {missing[:10]}")
+            available = [c for c in cols if c in all_cols]
+            # strict：任何缺失直接中断（用于发现数据/表达式问题）
+            if missing_mode == "strict":
+                raise ValueError(f"模型 {model_name} 特征缺失（strict）: {missing[:10]}")
+            # compat：某些特征可能在特征清理阶段（如全 NaN 列）被移除，不应直接中断训练。
+            if available:
+                logger.warning(
+                    "模型 %s 有 %d 个配置特征在当前窗口缺失，已自动跳过（示例: %s）",
+                    model_name,
+                    len(missing),
+                    missing[:10],
+                )
+                cols = available
+            else:
+                raise ValueError(f"模型 {model_name} 特征全部缺失: {missing[:10]}")
         if model_name not in self._feature_log_done:
             logger.info(
                 "模型 %s 使用特征集合=%s，列数=%d（示例: %s）",
