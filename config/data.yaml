@@ -3,7 +3,7 @@
   region: "cn"
 
 data:
-  instruments: "test"
+  instruments: "csi500,csi300"
   start_time: "2025-10-01"
   end_time: "2026-04-07"
   freq: "day"

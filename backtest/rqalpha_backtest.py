@@ -28,6 +28,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from utils import load_yaml_config
+from backtest.msa.code_utils import qlib_to_rqalpha
 
 
 def _resolve_path(path: Optional[str], *, prefer_project_root: bool = False) -> Optional[str]:
@@ -46,55 +47,11 @@ def _resolve_path(path: Optional[str], *, prefer_project_root: bool = False) -> 
 
 def convert_qlib_code_to_rqalpha(instrument) -> str:
     """
-    将 Qlib 格式代码转换为 RQAlpha 格式。
-    
-    支持两种格式：
-    1. 带交易所前缀：SH600000 -> 600000.XSHG, SZ000001 -> 000001.XSHE
-    2. 纯数字代码：000001 -> 000001.XSHE, 600000 -> 600000.XSHG
-    
-    注意：会自动补全股票代码到6位（中国股票代码标准长度）
+    将 Qlib / Tushare 等格式代码转换为 RQAlpha order_book_id。
+
+    统一委托 `code_utils.qlib_to_rqalpha`，避免 `601016.SH` 等后缀被误拼为 `601016.SH.XSHG`。
     """
-    # 转换为字符串类型
-    code_str = str(instrument).strip()
-    
-    # 如果已经有交易所前缀（SH/SZ），提取代码部分
-    if code_str.startswith("SH"):
-        code = code_str[2:]
-        # 补全到6位
-        code = code.zfill(6)
-        return f"{code}.XSHG"
-    elif code_str.startswith("SZ"):
-        code = code_str[2:]
-        # 补全到6位
-        code = code.zfill(6)
-        return f"{code}.XSHE"
-    
-    # 如果没有交易所前缀，先补全到6位
-    code_str = code_str.zfill(6)
-    
-    # 根据代码前缀判断交易所
-    # 先判断特殊情况（更具体的匹配）
-    if code_str.startswith("688") or code_str.startswith("689"):
-        # 科创板属于上海
-        return f"{code_str}.XSHG"
-    elif code_str.startswith("300"):
-        # 创业板属于深圳
-        return f"{code_str}.XSHE"
-    # 再判断一般情况
-    elif code_str.startswith("6") or code_str.startswith("9"):
-        # 6、9开头的是上海（SH）
-        return f"{code_str}.XSHG"
-    elif code_str.startswith("0") or code_str.startswith("3"):
-        # 0、3开头的是深圳（SZ）
-        return f"{code_str}.XSHE"
-    # elif code_str.startswith("1"):
-    #     return f"{code_str}.XSHG"
-    # elif code_str.startswith("5"):
-    #     return f"{code_str}.XSHE"
-    else:
-        # 未知格式，返回原样（可能会报错，但至少不会崩溃）
-        logging.warning(f"无法识别股票代码格式: {code_str}，返回原值")
-        return code_str
+    return qlib_to_rqalpha(str(instrument).strip())
 
 
 def prepare_prediction_file(prediction_path: str, output_path: str, *, score_col: str = "final"):

@@ -16,6 +16,28 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 IC_COLUMNS = ["ic_lgb", "ic_gru", "ic_stack", "ic_qlib_ensemble"]
 
 
+def _feature_scope_fields(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """从 result.json 的 data_scope 提取便于筛选因子组的列。"""
+    ds = meta.get("data_scope") or {}
+    afs = ds.get("active_feature_sets")
+    out: Dict[str, Any] = {
+        "scope_label": ds.get("label", ""),
+        "scope_instruments": ds.get("instruments", ""),
+        "scope_start_time": ds.get("start_time", ""),
+        "scope_end_time": ds.get("end_time", ""),
+    }
+    if isinstance(afs, list):
+        parts = sorted(str(x) for x in afs)
+        out["active_feature_sets"] = "|".join(parts)
+        out["n_active_feature_sets"] = len(afs)
+        out["feature_sets_key"] = "|".join(parts)
+    else:
+        out["active_feature_sets"] = ""
+        out["n_active_feature_sets"] = 0
+        out["feature_sets_key"] = ""
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="汇总微调实验结果")
     parser.add_argument("--runs-dir", type=str, default="data/tuning/runs", help="实验运行目录")
@@ -43,6 +65,7 @@ def collect_one(run_dir: Path, include_stale: bool = False) -> tuple[Dict[str, A
     if not result_path.exists():
         return {}, pd.DataFrame()
     meta: Dict[str, Any] = json.loads(result_path.read_text(encoding="utf-8"))
+    scope_cols = _feature_scope_fields(meta)
     metrics_path = run_dir / "logs" / "training_metrics.csv"
     trained = bool(meta.get("trained", False))
     status = str(meta.get("status", "unknown"))
@@ -62,6 +85,7 @@ def collect_one(run_dir: Path, include_stale: bool = False) -> tuple[Dict[str, A
             "included_in_ranking": False,
             "skip_reason": meta.get("skip_reason", "not_fresh_or_not_trained"),
         }
+        row.update(scope_cols)
         return row, pd.DataFrame()
 
     if not metrics_path.exists():
@@ -79,6 +103,7 @@ def collect_one(run_dir: Path, include_stale: bool = False) -> tuple[Dict[str, A
             "included_in_ranking": False,
             "skip_reason": "metrics_csv_missing",
         }
+        row.update(scope_cols)
         return row, pd.DataFrame()
 
     df = pd.read_csv(metrics_path)
@@ -99,6 +124,7 @@ def collect_one(run_dir: Path, include_stale: bool = False) -> tuple[Dict[str, A
         "included_in_ranking": True,
         "skip_reason": "",
     }
+    row.update(scope_cols)
 
     for col in IC_COLUMNS:
         if col in valid_df.columns:
@@ -133,7 +159,12 @@ def main() -> None:
 
     summary_df = pd.DataFrame(summary_rows)
     if not summary_df.empty and "ic_qlib_ensemble_icir" in summary_df.columns:
-        summary_df = summary_df.sort_values(by=["included_in_ranking", "ic_qlib_ensemble_icir"], ascending=[False, False], na_position="last")
+        sort_cols = ["included_in_ranking", "ic_qlib_ensemble_icir"]
+        sort_asc = [False, False]
+        if "feature_sets_key" in summary_df.columns:
+            sort_cols.append("feature_sets_key")
+            sort_asc.append(True)
+        summary_df = summary_df.sort_values(by=sort_cols, ascending=sort_asc, na_position="last")
     if not summary_df.empty:
         score_col = args.selection_metric
         score_series = pd.to_numeric(summary_df.get(score_col, np.nan), errors="coerce")

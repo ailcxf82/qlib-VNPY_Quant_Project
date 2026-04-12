@@ -142,6 +142,23 @@ def _find_latest_prediction(prediction_dir: str, pool_name: str = None) -> str:
     return latest
 
 
+def _expected_rqalpha_bundle_dir(rqalpha_config_path: str) -> str:
+    """与 RQAlpha 一致：base.data_bundle_path 为空时使用 ~/.rqalpha/bundle。"""
+    rq_cfg = load_yaml_config(rqalpha_config_path)
+    raw = (rq_cfg.get("base") or {}).get("data_bundle_path")
+    if raw is None:
+        pass
+    elif isinstance(raw, str) and raw.strip().lower() in ("", "null", "none"):
+        raw = None
+    if raw is None:
+        return os.path.normpath(os.path.join(os.path.expanduser("~"), ".rqalpha", "bundle"))
+    p = os.path.expanduser(str(raw).strip())
+    if not os.path.isabs(p):
+        root = os.path.dirname(os.path.abspath(__file__))
+        p = os.path.join(root, p)
+    return os.path.normpath(p)
+
+
 def run_rqalpha_backtest(
     rqalpha_config_path: str,
     prediction_path: str,
@@ -162,6 +179,16 @@ def run_rqalpha_backtest(
     """
     import tempfile
     import yaml
+
+    bundle_dir = _expected_rqalpha_bundle_dir(rqalpha_config_path)
+    if not os.path.isdir(bundle_dir):
+        raise RuntimeError(
+            "RQAlpha 行情数据包（bundle）目录不存在: {}\n"
+            "请先下载官方 Bundle（需联网，体积较大）:\n"
+            "  rqalpha download-bundle\n"
+            "默认会解压到用户目录下 .rqalpha\\bundle；若使用自定义路径，请在配置中设置 base.data_bundle_path。\n"
+            "详见 docs/RQALPHA_USAGE.md".format(bundle_dir)
+        )
     
     strategy_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),

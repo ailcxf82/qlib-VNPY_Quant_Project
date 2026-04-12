@@ -4,6 +4,7 @@
 """
 
 import argparse
+import copy
 import logging
 import os
 
@@ -24,6 +25,24 @@ def parse_args():
         "--gru_only",
         action="store_true",
         help="仅训练 GRU：自动设置 base_models=['gru']，并关闭 stack 与 oof_stacking（不改动原配置文件）",
+    )
+    parser.add_argument(
+        "--data-config",
+        type=str,
+        default=None,
+        help="覆盖 pipeline 中的 data 配置文件路径（用于因子消融/临时配置，不修改磁盘上的 pipeline 文件）",
+    )
+    parser.add_argument(
+        "--active-feature-sets",
+        type=str,
+        default=None,
+        help='覆盖 data.active_feature_sets，逗号分隔集合名，例如 "gru_ohlcv,lgb_fundamental"',
+    )
+    parser.add_argument(
+        "--label",
+        type=str,
+        default=None,
+        help="覆盖 data.label（qlib 标签表达式）；不传则使用配置文件中的标签",
     )
     return parser.parse_args()
 
@@ -50,17 +69,29 @@ def main():
         cfg["stack"]["enabled"] = False
         cfg.setdefault("oof_stacking", {})
         cfg["oof_stacking"]["enabled"] = False
-    data_cfg = load_yaml_config(cfg["data_config"])
-    
+    data_config_path = args.data_config if args.data_config else cfg["data_config"]
+    data_cfg = load_yaml_config(data_config_path)
+    if args.active_feature_sets:
+        names = [s.strip() for s in args.active_feature_sets.split(",") if s.strip()]
+        if names:
+            data_cfg.setdefault("data", {})["active_feature_sets"] = names
+    if args.label is not None:
+        data_cfg.setdefault("data", {})["label"] = args.label
+
     # 解析股票池列表
     instruments_config = data_cfg["data"]["instruments"]
     instrument_pools = QlibFeaturePipeline._parse_instrument_pools(instruments_config)
     
     logger = logging.getLogger(__name__)
     logger.info("检测到 %d 个股票池: %s", len(instrument_pools), instrument_pools)
+    afs = (data_cfg.get("data") or {}).get("active_feature_sets")
+    logger.info(
+        "数据配置: data_config=%s | active_feature_sets=%s",
+        data_config_path,
+        afs,
+    )
     
     # 在循环开始前，保存原始的基础路径（避免在循环中被修改）
-    import copy
     original_paths = copy.deepcopy(cfg["paths"])
     base_model_dir = original_paths["model_dir"]
     base_log_dir = original_paths["log_dir"]
@@ -80,10 +111,9 @@ def main():
         # 创建临时配置文件，只包含当前股票池
         import tempfile
         import yaml
-        import shutil
-        
-        # 创建临时数据配置文件
-        temp_data_config = data_cfg.copy()
+
+        # 创建临时数据配置文件（深拷贝，避免多股票池时污染共用嵌套字典）
+        temp_data_config = copy.deepcopy(data_cfg)
         temp_data_config["data"]["instruments"] = pool_name
         
         temp_data_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')

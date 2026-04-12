@@ -24,13 +24,13 @@ def parse_args():
     parser.add_argument(
         "--start",
         type=str,
-        default=os.environ.get("RUN_PRED_START", "2025-06-01"),
-        help="预测起始日期，默认 2024-10-01，可通过环境变量 RUN_PRED_START 覆盖",
+        default=os.environ.get("RUN_PRED_START", "2025-11-01"),
+        help="预测起始日期，默认 2024-11-01，可通过环境变量 RUN_PRED_START 覆盖",
     )
     parser.add_argument(
         "--end",
         type=str,
-        default=os.environ.get("RUN_PRED_END", "2026-03-23"),
+        default=os.environ.get("RUN_PRED_END", "2026-04-07"),
         help="预测结束日期，默认 2026-01-23，可通过环境变量 RUN_PRED_END 覆盖",
     )
     parser.add_argument(

@@ -9,10 +9,17 @@ RQAlpha 策略脚本：基于预测信号执行真实 T+1 交易回测。
 """
 
 import os
+import sys
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
 import logging
+
+_rq_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _rq_root not in sys.path:
+    sys.path.insert(0, _rq_root)
+from backtest.msa.code_utils import qlib_to_rqalpha
+
 logger = logging.getLogger(__name__)
 
     
@@ -278,16 +285,10 @@ def init(context):
         # 原始格式，需要转换代码
         df["datetime"] = pd.to_datetime(df["datetime"])
         
-        # 转换为 RQAlpha 格式的股票代码（如 SH600000 -> 600000.XSHG）
+        # 转换为 RQAlpha 格式的股票代码（与 rqalpha_backtest.prepare_prediction_file 一致）
         def convert_code(instrument: str) -> str:
-            """将 Qlib 格式代码转换为 RQAlpha 格式。"""
-            if instrument.startswith("SH"):
-                return f"{instrument[2:]}.XSHG"
-            elif instrument.startswith("SZ"):
-                return f"{instrument[2:]}.XSHE"
-            else:
-                return instrument
-        
+            return qlib_to_rqalpha(str(instrument).strip())
+
         df["rq_code"] = df["instrument"].apply(convert_code)
         df.set_index(["datetime", "rq_code"], inplace=True)
         signal_col = "final"
