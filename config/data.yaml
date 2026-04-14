@@ -1,247 +1,250 @@
-﻿qlib:
-  provider_uri: "D:/qlib_data/qlib_data"
-  region: "cn"
-
+qlib:
+  provider_uri: D:/qlib_data/qlib_data
+  region: cn
 data:
-  instruments: "csi500,csi300"
-  start_time: "2025-10-01"
-  end_time: "2026-04-07"
-  freq: "day"
-  missing_value_strategy: "auto"
+  instruments: csi500,csi300
+  start_time: '2025-10-01'
+  end_time: '2026-04-07'
+  freq: day
+  missing_value_strategy: auto
   use_alpha158: false
-
   feature_sets:
     gru_ohlcv:
-      - "Ref($close_qfq, 1)"
-      - "Ref($open_qfq, 1)"
-      - "Ref($high_qfq, 1)"
-      - "Ref($low_qfq, 1)"
-      - "Ref($vol, 1)"
-      - "Ref($amount, 1)"
-      - "Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 3)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 5)/Ref($close_qfq, 1) - 1"
-      - "Ref($vol, 2)/Ref($vol, 1) - 1"
-      - "Ref($amount, 2)/Ref($amount, 1) - 1"
-      - "Mean(Ref($close_qfq, 1), 5)/Ref($close_qfq, 1) - 1"
-      - "Mean(Ref($close_qfq, 1), 10)/Ref($close_qfq, 1) - 1"
-      - "Mean(Ref($close_qfq, 1), 20)/Ref($close_qfq, 1) - 1"
-      - "Std(Ref($close_qfq, 1), 5)"
-      - "Std(Ref($close_qfq, 1), 10)"
-      - "Std(Ref($close_qfq, 1), 20)"
-      - "Ref($turnover_rate, 1)"
-      - "Ref($turnover_rate_f, 1)"
-      - "Ref($volume_ratio, 1)"
-      - "Mean(Ref($turnover_rate, 1), 5)"
-      - "Mean(Ref($turnover_rate_f, 1), 5)"
-      - "Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1"
-      - "Ref($amount, 1) / Mean(Ref($amount, 1), 5) - 1"
-      - "Ref($close_qfq, 5)/Ref($close_qfq, 10) - 1"
-      - "Ref($close_qfq, 10)/Ref($close_qfq, 20) - 1"
-      - "Std(Ref($close_qfq, 1), 20) / Mean(Ref($close_qfq, 1), 20)"
-      - "(Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)"
-      - "(Ref($close_qfq, 1) - Min(Ref($low_qfq, 1), 20)) / (Max(Ref($high_qfq, 1), 20) - Min(Ref($low_qfq, 1), 20))"
-      - "(Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 20)) / Std(Ref($close_qfq, 1), 20)"
-      - "Ref($rsi_qfq_12, 1)"
-      - "Ref($macd_qfq, 1)"
-      - "Ref($macd_dif_qfq, 1)"
-      - "Ref($macd_dea_qfq, 1)"
-      - "Ref($kdj_qfq, 1)"
-      - "Ref($kdj_k_qfq, 1)"
-      - "Ref($kdj_d_qfq, 1)"
-      - "Ref($atr_qfq, 1)"
-      - "Ref($mtmma_qfq, 1)"
-      - "Ref($rsi_qfq_12, 1) - Mean(Ref($rsi_qfq_12, 1), 10)"
-      - "Ref($macd_qfq, 1) - Mean(Ref($macd_qfq, 1), 10)"
-      - "Ref($atr_qfq, 1) / Mean(Ref($atr_qfq, 1), 10) - 1"
-      - "Ref($net_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_elg_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_lg_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_md_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_sm_amount, 1) / Ref($amount, 1)"
-      - "Ref($rzye, 1) / Ref($total_mv, 1)"
-      - "Ref($rqye, 1) / Ref($total_mv, 1)"
-      - "Ref($rzye, 2)/Ref($rzye, 1) - 1"
-      - "Ref($rqye, 2)/Ref($rqye, 1) - 1"
-
+    - Ref($close_qfq, 1)
+    - Ref($open_qfq, 1)
+    - Ref($high_qfq, 1)
+    - Ref($low_qfq, 1)
+    - Ref($vol, 1)
+    - Ref($amount, 1)
+    - Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 3)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 5)/Ref($close_qfq, 1) - 1
+    - Ref($vol, 2)/Ref($vol, 1) - 1
+    - Ref($amount, 2)/Ref($amount, 1) - 1
+    - Mean(Ref($close_qfq, 1), 5)/Ref($close_qfq, 1) - 1
+    - Mean(Ref($close_qfq, 1), 10)/Ref($close_qfq, 1) - 1
+    - Mean(Ref($close_qfq, 1), 20)/Ref($close_qfq, 1) - 1
+    - Std(Ref($close_qfq, 1), 5)
+    - Std(Ref($close_qfq, 1), 10)
+    - Std(Ref($close_qfq, 1), 20)
+    - Ref($turnover_rate, 1)
+    - Ref($turnover_rate_f, 1)
+    - Ref($volume_ratio, 1)
+    - Mean(Ref($turnover_rate, 1), 5)
+    - Mean(Ref($turnover_rate_f, 1), 5)
+    - Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1
+    - Ref($amount, 1) / Mean(Ref($amount, 1), 5) - 1
+    - Ref($close_qfq, 5)/Ref($close_qfq, 10) - 1
+    - Ref($close_qfq, 10)/Ref($close_qfq, 20) - 1
+    - Std(Ref($close_qfq, 1), 20) / Mean(Ref($close_qfq, 1), 20)
+    - (Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)
+    - (Ref($close_qfq, 1) - Min(Ref($low_qfq, 1), 20)) / (Max(Ref($high_qfq, 1), 20)
+      - Min(Ref($low_qfq, 1), 20))
+    - (Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 20)) / Std(Ref($close_qfq, 1),
+      20)
+    - Ref($rsi_qfq_12, 1)
+    - Ref($macd_qfq, 1)
+    - Ref($macd_dif_qfq, 1)
+    - Ref($macd_dea_qfq, 1)
+    - Ref($kdj_qfq, 1)
+    - Ref($kdj_k_qfq, 1)
+    - Ref($kdj_d_qfq, 1)
+    - Ref($atr_qfq, 1)
+    - Ref($mtmma_qfq, 1)
+    - Ref($rsi_qfq_12, 1) - Mean(Ref($rsi_qfq_12, 1), 10)
+    - Ref($macd_qfq, 1) - Mean(Ref($macd_qfq, 1), 10)
+    - Ref($atr_qfq, 1) / Mean(Ref($atr_qfq, 1), 10) - 1
+    - Ref($net_amount, 1) / Ref($amount, 1)
+    - Ref($buy_elg_amount, 1) / Ref($amount, 1)
+    - Ref($buy_lg_amount, 1) / Ref($amount, 1)
+    - Ref($buy_md_amount, 1) / Ref($amount, 1)
+    - Ref($buy_sm_amount, 1) / Ref($amount, 1)
+    - Ref($rzye, 1) / Ref($total_mv, 1)
+    - Ref($rqye, 1) / Ref($total_mv, 1)
+    - Ref($rzye, 2)/Ref($rzye, 1) - 1
+    - Ref($rqye, 2)/Ref($rqye, 1) - 1
     lgb_fundamental:
-      - "Ref($pe, 1)"
-      - "Ref($pe_ttm, 1)"
-      - "Ref($pb, 1)"
-      - "Ref($ps, 1)"
-      - "Ref($ps_ttm, 1)"
-      - "Ref($dv_ratio, 1)"
-      - "Ref($dv_ttm, 1)"
-      - "1/Ref($pe, 1)"
-      - "1/Ref($pb, 1)"
-      - "1/Ref($ps, 1)"
-      - "Ref($total_mv, 1)"
-      - "Ref($pe, 1)/Mean(Ref($pe, 1), 20) - 1"
-      - "Ref($pb, 1)/Mean(Ref($pb, 1), 20) - 1"
-      - "Ref($ps, 1)/Mean(Ref($ps, 1), 20) - 1"
-      - "Ref($pe, 1) / Ref($q_profit_yoy, 1)"
-      - "Ref($roe, 1)"
-      - "Ref($roa, 1)"
-      - "Ref($roa2_yearly, 1)"
-      - "Ref($profit_to_gr, 1)"
-      - "Ref($net_profit_margin, 1)"
-      - "Ref($q_profit_yoy, 1)"
-      - "Ref($q_eps, 1)"
-      - "Ref($assets_turn, 1)"
-      - "Ref($roe, 1)/Mean(Ref($roe, 1), 4) - 1"
-      - "Ref($roa, 1)/Mean(Ref($roa, 1), 4) - 1"
-      - "Ref($net_profit_margin, 1) * Ref($assets_turn, 1)"
-      - "Ref($net_amount, 1)"
-      - "Ref($buy_elg_amount, 1)"
-      - "Ref($buy_lg_amount, 1)"
-      - "Ref($buy_md_amount, 1)"
-      - "Ref($buy_sm_amount, 1)"
-      - "Ref($net_amount, 1) / Ref($total_mv, 1)"
-      - "Ref($net_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_elg_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_lg_amount, 1) / Ref($amount, 1)"
-      - "Ref($rzye, 1)"
-      - "Ref($rqye, 1)"
-      - "Ref($rzye, 2)/Ref($rzye, 1) - 1"
-      - "Ref($rqye, 2)/Ref($rqye, 1) - 1"
-      - "Ref($rzye, 1) / Ref($total_mv, 1)"
-      - "Ref($rqye, 1) / Ref($total_mv, 1)"
-      - "(Ref($close_qfq, 1) - Ref($open_qfq, 1)) / Ref($open_qfq, 1)"
-      - "(Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)"
-      - "(Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 20)) / Std(Ref($close_qfq, 1), 20)"
-      - "Ref($close_qfq, 5)/Ref($close_qfq, 20) - 1"
-      - "Ref($close_qfq, 20)/Ref($close_qfq, 60) - 1"
-      - "Std(Ref($turnover_rate, 1), 10)"
-      - "Ref($turnover_rate, 1)"
-      - "Ref($turnover_rate_f, 1)"
-      - "Ref($volume_ratio, 1)"
-      - "Ref($vol, 1) / Mean(Ref($vol, 1), 20) - 1"
-      - "Ref($amount, 1) / Mean(Ref($amount, 1), 20) - 1"
-      - "Ref($rsi_qfq_12, 1)"
-      - "Ref($macd_qfq, 1)"
-      - "Ref($macd_dif_qfq, 1)"
-      - "Ref($macd_dea_qfq, 1)"
-      - "Ref($kdj_qfq, 1)"
-      - "Ref($kdj_k_qfq, 1)"
-      - "Ref($kdj_d_qfq, 1)"
-      - "Ref($atr_qfq, 1)"
-
+    - Ref($pe, 1)
+    - Ref($pe_ttm, 1)
+    - Ref($pb, 1)
+    - Ref($ps, 1)
+    - Ref($ps_ttm, 1)
+    - Ref($dv_ratio, 1)
+    - Ref($dv_ttm, 1)
+    - 1/Ref($pe, 1)
+    - 1/Ref($pb, 1)
+    - 1/Ref($ps, 1)
+    - Ref($total_mv, 1)
+    - Ref($pe, 1)/Mean(Ref($pe, 1), 20) - 1
+    - Ref($pb, 1)/Mean(Ref($pb, 1), 20) - 1
+    - Ref($ps, 1)/Mean(Ref($ps, 1), 20) - 1
+    - Ref($pe, 1) / Ref($q_profit_yoy, 1)
+    - Ref($roe, 1)
+    - Ref($roa, 1)
+    - Ref($roa2_yearly, 1)
+    - Ref($profit_to_gr, 1)
+    - Ref($net_profit_margin, 1)
+    - Ref($q_profit_yoy, 1)
+    - Ref($q_eps, 1)
+    - Ref($assets_turn, 1)
+    - Ref($roe, 1)/Mean(Ref($roe, 1), 4) - 1
+    - Ref($roa, 1)/Mean(Ref($roa, 1), 4) - 1
+    - Ref($net_profit_margin, 1) * Ref($assets_turn, 1)
+    - Ref($net_amount, 1)
+    - Ref($buy_elg_amount, 1)
+    - Ref($buy_lg_amount, 1)
+    - Ref($buy_md_amount, 1)
+    - Ref($buy_sm_amount, 1)
+    - Ref($net_amount, 1) / Ref($total_mv, 1)
+    - Ref($net_amount, 1) / Ref($amount, 1)
+    - Ref($buy_elg_amount, 1) / Ref($amount, 1)
+    - Ref($buy_lg_amount, 1) / Ref($amount, 1)
+    - Ref($rzye, 1)
+    - Ref($rqye, 1)
+    - Ref($rzye, 2)/Ref($rzye, 1) - 1
+    - Ref($rqye, 2)/Ref($rqye, 1) - 1
+    - Ref($rzye, 1) / Ref($total_mv, 1)
+    - Ref($rqye, 1) / Ref($total_mv, 1)
+    - (Ref($close_qfq, 1) - Ref($open_qfq, 1)) / Ref($open_qfq, 1)
+    - (Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)
+    - (Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 20)) / Std(Ref($close_qfq, 1),
+      20)
+    - Ref($close_qfq, 5)/Ref($close_qfq, 20) - 1
+    - Ref($close_qfq, 20)/Ref($close_qfq, 60) - 1
+    - Std(Ref($turnover_rate, 1), 10)
+    - Ref($turnover_rate, 1)
+    - Ref($turnover_rate_f, 1)
+    - Ref($volume_ratio, 1)
+    - Ref($vol, 1) / Mean(Ref($vol, 1), 20) - 1
+    - Ref($amount, 1) / Mean(Ref($amount, 1), 20) - 1
+    - Ref($rsi_qfq_12, 1)
+    - Ref($macd_qfq, 1)
+    - Ref($macd_dif_qfq, 1)
+    - Ref($macd_dea_qfq, 1)
+    - Ref($kdj_qfq, 1)
+    - Ref($kdj_k_qfq, 1)
+    - Ref($kdj_d_qfq, 1)
+    - Ref($atr_qfq, 1)
     short_momentum_reversal:
-      - "Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 3)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 5)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 8)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 10)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 1)/Ref($close_qfq, 2) - 1"
-      - "Ref($close_qfq, 1)/Ref($close_qfq, 3) - 1"
-      - "Ref($close_qfq, 1)/Ref($close_qfq, 5) - 1"
-      - "Ref($close_qfq, 1)/Mean(Ref($close_qfq, 1), 5) - 1"
-      - "Ref($close_qfq, 1)/Mean(Ref($close_qfq, 1), 10) - 1"
-      - "Ref($rsi_qfq_12, 1) - Mean(Ref($rsi_qfq_12, 1), 5)"
-      - "Ref($macd_qfq, 1) - Mean(Ref($macd_qfq, 1), 5)"
-      - "Ref($kdj_k_qfq, 1) - Ref($kdj_d_qfq, 1)"
-
+    - Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 3)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 5)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 8)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 10)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 1)/Ref($close_qfq, 2) - 1
+    - Ref($close_qfq, 1)/Ref($close_qfq, 3) - 1
+    - Ref($close_qfq, 1)/Ref($close_qfq, 5) - 1
+    - Ref($close_qfq, 1)/Mean(Ref($close_qfq, 1), 5) - 1
+    - Ref($close_qfq, 1)/Mean(Ref($close_qfq, 1), 10) - 1
+    - Ref($rsi_qfq_12, 1) - Mean(Ref($rsi_qfq_12, 1), 5)
+    - Ref($macd_qfq, 1) - Mean(Ref($macd_qfq, 1), 5)
+    - Ref($kdj_k_qfq, 1) - Ref($kdj_d_qfq, 1)
     short_volatility_range:
-      - "(Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)"
-      - "Std(Ref($close_qfq, 1), 5)"
-      - "Std(Ref($close_qfq, 1), 10)"
-      - "Std(Ref($close_qfq, 1), 20)"
-      - "Std(Ref($close_qfq, 1), 5) / Mean(Ref($close_qfq, 1), 5)"
-      - "Std(Ref($close_qfq, 1), 10) / Mean(Ref($close_qfq, 1), 10)"
-      - "Ref($atr_qfq, 1)"
-      - "Ref($atr_qfq, 1) / Mean(Ref($atr_qfq, 1), 10) - 1"
-      - "(Ref($close_qfq, 1) - Min(Ref($low_qfq, 1), 10)) / (Max(Ref($high_qfq, 1), 10) - Min(Ref($low_qfq, 1), 10))"
-      - "(Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 10)) / Std(Ref($close_qfq, 1), 10)"
-      - "(Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 20)) / Std(Ref($close_qfq, 1), 20)"
-
+    - (Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)
+    - Std(Ref($close_qfq, 1), 5)
+    - Std(Ref($close_qfq, 1), 10)
+    - Std(Ref($close_qfq, 1), 20)
+    - Std(Ref($close_qfq, 1), 5) / Mean(Ref($close_qfq, 1), 5)
+    - Std(Ref($close_qfq, 1), 10) / Mean(Ref($close_qfq, 1), 10)
+    - Ref($atr_qfq, 1)
+    - Ref($atr_qfq, 1) / Mean(Ref($atr_qfq, 1), 10) - 1
+    - (Ref($close_qfq, 1) - Min(Ref($low_qfq, 1), 10)) / (Max(Ref($high_qfq, 1), 10)
+      - Min(Ref($low_qfq, 1), 10))
+    - (Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 10)) / Std(Ref($close_qfq, 1),
+      10)
+    - (Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 20)) / Std(Ref($close_qfq, 1),
+      20)
     short_volume_price:
-      - "Ref($vol, 2)/Ref($vol, 1) - 1"
-      - "Ref($vol, 3)/Ref($vol, 1) - 1"
-      - "Ref($amount, 2)/Ref($amount, 1) - 1"
-      - "Ref($amount, 3)/Ref($amount, 1) - 1"
-      - "Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1"
-      - "Ref($amount, 1) / Mean(Ref($amount, 1), 5) - 1"
-      - "Ref($vol, 1) / Mean(Ref($vol, 1), 20) - 1"
-      - "Ref($amount, 1) / Mean(Ref($amount, 1), 20) - 1"
-      - "Ref($turnover_rate, 1)"
-      - "Ref($turnover_rate_f, 1)"
-      - "Ref($volume_ratio, 1)"
-      - "Mean(Ref($turnover_rate, 1), 5)"
-      - "Ref($net_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_elg_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_lg_amount, 1) / Ref($amount, 1)"
-
+    - Ref($vol, 2)/Ref($vol, 1) - 1
+    - Ref($vol, 3)/Ref($vol, 1) - 1
+    - Ref($amount, 2)/Ref($amount, 1) - 1
+    - Ref($amount, 3)/Ref($amount, 1) - 1
+    - Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1
+    - Ref($amount, 1) / Mean(Ref($amount, 1), 5) - 1
+    - Ref($vol, 1) / Mean(Ref($vol, 1), 20) - 1
+    - Ref($amount, 1) / Mean(Ref($amount, 1), 20) - 1
+    - Ref($turnover_rate, 1)
+    - Ref($turnover_rate_f, 1)
+    - Ref($volume_ratio, 1)
+    - Mean(Ref($turnover_rate, 1), 5)
+    - Ref($net_amount, 1) / Ref($amount, 1)
+    - Ref($buy_elg_amount, 1) / Ref($amount, 1)
+    - Ref($buy_lg_amount, 1) / Ref($amount, 1)
     gru_short_cycle:
-      - "Ref($close_qfq, 1)"
-      - "Ref($open_qfq, 1)"
-      - "Ref($high_qfq, 1)"
-      - "Ref($low_qfq, 1)"
-      - "Ref($vol, 1)"
-      - "Ref($amount, 1)"
-      - "Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 3)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 5)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 8)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 1)/Ref($close_qfq, 2) - 1"
-      - "Ref($close_qfq, 1)/Ref($close_qfq, 3) - 1"
-      - "Std(Ref($close_qfq, 1), 5)"
-      - "Std(Ref($close_qfq, 1), 10)"
-      - "(Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)"
-      - "Ref($atr_qfq, 1)"
-      - "Ref($rsi_qfq_12, 1)"
-      - "Ref($macd_qfq, 1)"
-      - "Ref($kdj_k_qfq, 1) - Ref($kdj_d_qfq, 1)"
-      - "Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1"
-      - "Ref($amount, 1) / Mean(Ref($amount, 1), 5) - 1"
-      - "Ref($turnover_rate, 1)"
-      - "Ref($volume_ratio, 1)"
-      - "Ref($net_amount, 1) / Ref($amount, 1)"
-
+    - Ref($close_qfq, 1)
+    - Ref($open_qfq, 1)
+    - Ref($high_qfq, 1)
+    - Ref($low_qfq, 1)
+    - Ref($vol, 1)
+    - Ref($amount, 1)
+    - Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 3)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 5)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 8)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 1)/Ref($close_qfq, 2) - 1
+    - Ref($close_qfq, 1)/Ref($close_qfq, 3) - 1
+    - Std(Ref($close_qfq, 1), 5)
+    - Std(Ref($close_qfq, 1), 10)
+    - (Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)
+    - Ref($atr_qfq, 1)
+    - Ref($rsi_qfq_12, 1)
+    - Ref($macd_qfq, 1)
+    - Ref($kdj_k_qfq, 1) - Ref($kdj_d_qfq, 1)
+    - Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1
+    - Ref($amount, 1) / Mean(Ref($amount, 1), 5) - 1
+    - Ref($turnover_rate, 1)
+    - Ref($volume_ratio, 1)
+    - Ref($net_amount, 1) / Ref($amount, 1)
+    - Ref($close_qfq, 6)/Ref($close_qfq, 1) - 1
+    - Mean(Ref($close_qfq, 1), 3)/Ref($close_qfq, 1) - 1
     lgb_short_cycle:
-      - "Ref($pe, 1)"
-      - "Ref($pe_ttm, 1)"
-      - "Ref($pb, 1)"
-      - "Ref($ps, 1)"
-      - "Ref($total_mv, 1)"
-      - "Ref($roe, 1)"
-      - "Ref($roa, 1)"
-      - "Ref($net_profit_margin, 1)"
-      - "Ref($q_profit_yoy, 1)"
-      - "Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 3)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 5)/Ref($close_qfq, 1) - 1"
-      - "Ref($close_qfq, 1)/Mean(Ref($close_qfq, 1), 5) - 1"
-      - "Ref($close_qfq, 1)/Mean(Ref($close_qfq, 1), 10) - 1"
-      - "Std(Ref($close_qfq, 1), 5)"
-      - "Std(Ref($close_qfq, 1), 10)"
-      - "Std(Ref($close_qfq, 1), 20)"
-      - "Ref($atr_qfq, 1)"
-      - "Ref($rsi_qfq_12, 1)"
-      - "Ref($macd_qfq, 1)"
-      - "Ref($kdj_qfq, 1)"
-      - "Ref($turnover_rate, 1)"
-      - "Ref($turnover_rate_f, 1)"
-      - "Ref($volume_ratio, 1)"
-      - "Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1"
-      - "Ref($amount, 1) / Mean(Ref($amount, 1), 5) - 1"
-      - "Ref($net_amount, 1)"
-      - "Ref($net_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_elg_amount, 1) / Ref($amount, 1)"
-      - "Ref($buy_lg_amount, 1) / Ref($amount, 1)"
-
+    - Ref($pe, 1)
+    - Ref($pe_ttm, 1)
+    - Ref($pb, 1)
+    - Ref($ps, 1)
+    - Ref($total_mv, 1)
+    - Ref($roe, 1)
+    - Ref($roa, 1)
+    - Ref($net_profit_margin, 1)
+    - Ref($q_profit_yoy, 1)
+    - Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 3)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 5)/Ref($close_qfq, 1) - 1
+    - Ref($close_qfq, 1)/Mean(Ref($close_qfq, 1), 5) - 1
+    - Ref($close_qfq, 1)/Mean(Ref($close_qfq, 1), 10) - 1
+    - Std(Ref($close_qfq, 1), 5)
+    - Std(Ref($close_qfq, 1), 10)
+    - Std(Ref($close_qfq, 1), 20)
+    - Ref($atr_qfq, 1)
+    - Ref($rsi_qfq_12, 1)
+    - Ref($macd_qfq, 1)
+    - Ref($kdj_qfq, 1)
+    - Ref($turnover_rate, 1)
+    - Ref($turnover_rate_f, 1)
+    - Ref($volume_ratio, 1)
+    - Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1
+    - Ref($amount, 1) / Mean(Ref($amount, 1), 5) - 1
+    - Ref($net_amount, 1)
+    - Ref($net_amount, 1) / Ref($amount, 1)
+    - Ref($buy_elg_amount, 1) / Ref($amount, 1)
+    - Ref($buy_lg_amount, 1) / Ref($amount, 1)
+    - Ref($close_qfq, 6)/Ref($close_qfq, 1) - 1
+    - Mean(Ref($close_qfq, 1), 3)/Ref($close_qfq, 1) - 1
+    rdagent_imported:
+    - Ref($close_qfq, 6)/Ref($close_qfq, 1) - 1
+    - Mean(Ref($close_qfq, 1), 3)/Ref($close_qfq, 1) - 1
   active_feature_sets:
-    - "short_momentum_reversal"
-    - "short_volatility_range"
-    - "short_volume_price"
-    - "gru_short_cycle"
-    - "lgb_short_cycle"
-  label: "Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1"
+  - short_momentum_reversal
+  - short_volatility_range
+  - short_volume_price
+  - gru_short_cycle
+  - lgb_short_cycle
+  label: Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1
   label_transform:
     enabled: true
-    method: "percentile"
-    groupby: "datetime"
+    method: percentile
+    groupby: datetime
   filter:
     limit_up: true
     limit_down: true
-  normalization: "zscore"
-
+  normalization: zscore

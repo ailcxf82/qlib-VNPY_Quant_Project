@@ -6,6 +6,12 @@ data/meta/
 data/predictions/
 data/models/
 .venv/
+scripts/__pycache__/
+scripts/rdagent/__pycache__/
+git_ignore_folder/
+rdagent_integration/__pycache__/
+pickle_cache/
+log/
 classify/
 datasets/__pycache__/
 utils/__pycache__/
@@ -4332,3 +4338,9 @@ feature/__pycache__/qlib_feature_pipeline.cpython-313.pyc
 models/__pycache__/ensemble_manager.cpython-311.pyc
 __pycache__/run_train_with_tuning.cpython-313.pyc
 debug-f559e7.log
+
+# RD-Agent
+.env
+
+git_ignore_folder/factor_implementation_source_data/daily_pv.h5
+rdagent_overrides/model_template/__pycache__/read_exp_res.cpython-311.pyc
