@@ -60,12 +60,31 @@ def icir(series: pd.Series) -> float:
     return float(s.mean() / (s.std(ddof=0) + 1e-12))
 
 
+def _diag_fields(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """提取 preflight 与 error_tail 汇总字段，便于失败汇总。"""
+    pf = meta.get("preflight") or {}
+    pf_status = str(pf.get("status", "")) if isinstance(pf, dict) else ""
+    pf_fails = []
+    if isinstance(pf, dict):
+        for c in pf.get("checks", []) or []:
+            if not bool(c.get("ok")):
+                pf_fails.append(f"{c.get('name','?')}:{c.get('detail','')}")
+    pf_fail_text = "; ".join(pf_fails)[:500]
+    error_tail = str(meta.get("error_tail", "") or "")[:500]
+    return {
+        "preflight": pf_status,
+        "preflight_failures": pf_fail_text,
+        "error_tail": error_tail,
+    }
+
+
 def collect_one(run_dir: Path, include_stale: bool = False) -> tuple[Dict[str, Any], pd.DataFrame]:
     result_path = run_dir / "result.json"
     if not result_path.exists():
         return {}, pd.DataFrame()
     meta: Dict[str, Any] = json.loads(result_path.read_text(encoding="utf-8"))
     scope_cols = _feature_scope_fields(meta)
+    diag_cols = _diag_fields(meta)
     metrics_path = run_dir / "logs" / "training_metrics.csv"
     trained = bool(meta.get("trained", False))
     status = str(meta.get("status", "unknown"))
@@ -86,6 +105,7 @@ def collect_one(run_dir: Path, include_stale: bool = False) -> tuple[Dict[str, A
             "skip_reason": meta.get("skip_reason", "not_fresh_or_not_trained"),
         }
         row.update(scope_cols)
+        row.update(diag_cols)
         return row, pd.DataFrame()
 
     if not metrics_path.exists():
@@ -104,6 +124,7 @@ def collect_one(run_dir: Path, include_stale: bool = False) -> tuple[Dict[str, A
             "skip_reason": "metrics_csv_missing",
         }
         row.update(scope_cols)
+        row.update(diag_cols)
         return row, pd.DataFrame()
 
     df = pd.read_csv(metrics_path)
@@ -125,6 +146,7 @@ def collect_one(run_dir: Path, include_stale: bool = False) -> tuple[Dict[str, A
         "skip_reason": "",
     }
     row.update(scope_cols)
+    row.update(diag_cols)
 
     for col in IC_COLUMNS:
         if col in valid_df.columns:

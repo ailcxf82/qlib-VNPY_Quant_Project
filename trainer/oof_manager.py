@@ -158,6 +158,12 @@ class OOFManager:
                     e,
                 )
                 feature_sets = {}
+        feature_sets = dict(feature_sets)
+        rt_ov = pipeline_cfg.get("feature_sets_runtime_override") or {}
+        if isinstance(rt_ov, dict):
+            for k, v in rt_ov.items():
+                if isinstance(v, (list, tuple)):
+                    feature_sets[str(k)] = list(v)
 
         feature_log_done: set[str] = set()
         # 可选：在每个 fold 内部再切一个 early-stop 验证段（来自 fold.train_dates 的尾部）
@@ -199,7 +205,22 @@ class OOFManager:
                         + (f"（可用 keys 示例: {avail}）" if avail else "")
                     )
             elif isinstance(spec, list):
-                cols = list(spec)
+                raw = list(spec)
+                if raw and all(isinstance(x, str) for x in raw):
+                    keys = [str(x).strip() for x in raw]
+                    if keys and all(k in feature_sets for k in keys):
+                        cols = []
+                        seen: set[str] = set()
+                        for k in keys:
+                            for c in feature_sets.get(k) or []:
+                                sc = str(c)
+                                if sc not in seen:
+                                    seen.add(sc)
+                                    cols.append(sc)
+                    else:
+                        cols = raw
+                else:
+                    cols = raw
             else:
                 raise ValueError(f"OOF: model_features[{model_name}] 仅支持 str 或 list")
             if not cols:

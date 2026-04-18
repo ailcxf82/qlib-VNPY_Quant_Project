@@ -21,7 +21,7 @@ project/
 
 ## 2. 功能概述
 
-- **特征工程**：`QlibFeaturePipeline` 基于 `D.features` 提取行情与因子数据，自动对齐标签 `Ref($close,-5)/$close - 1`，并进行标准化。
+- **特征工程**：`QlibFeaturePipeline` 基于 `D.features` 提取行情与因子数据，自动对齐标签（当前主工程口径 `Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1`，以 `config/data.yaml` 的 `label` 字段为准），并进行标准化。
 - **模型体系**：
   - `LightGBMModelWrapper` 封装 qlib 原生 LightGBM，输出预测值与叶子索引；
   - `MLPRegressor` 由 PyTorch 实现的一层或多层感知机；

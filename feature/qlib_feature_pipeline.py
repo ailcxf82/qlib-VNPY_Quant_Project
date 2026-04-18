@@ -2,7 +2,8 @@
 基于 qlib 的特征提取流水线，负责：
 1. 初始化 qlib 环境
 2. 调用 D.features 获取行情与因子
-3. 生成对齐标签 Ref($close, -5)/$close - 1
+3. 生成对齐标签（默认跟随 config/data.yaml 的 `label` 字段，
+   当前主工程口径为 `Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1`）
 4. 进行基础标准化，并输出训练用 DataFrame
 """
 
@@ -64,6 +65,8 @@ class QlibFeaturePipeline:
         self._feature_mean: pd.Series | None = None
         self._feature_std: pd.Series | None = None
         self._label_is_rank: bool = False  # 标记标签是否为排名
+        # P0-1：RD-Agent 导出因子（combined_factors_df.parquet）列名，供 trainer/ensemble 注册 feature_sets
+        self.rdagent_factor_columns: list[str] = []
 
     def _init_qlib(self):
         qlib_cfg = self.config.get("qlib", {})
@@ -292,6 +295,70 @@ class QlibFeaturePipeline:
 
         return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", repl, str(expr))
 
+    def _default_rdagent_parquet_path(self) -> Path:
+        return _project_root / "git_ignore_folder" / "combined_factors_df.parquet"
+
+    def _maybe_merge_rdagent_parquet(self, feature_panel: pd.DataFrame) -> pd.DataFrame:
+        """若 active_feature_sets 含 rdagent_exported，则左连接 combined_factors_df.parquet 列到特征表。"""
+        self.rdagent_factor_columns = []
+        feature_sets = self.feature_cfg.get("feature_sets", {}) or {}
+        active_sets = self.feature_cfg.get("active_feature_sets", []) or []
+        if "rdagent_exported" not in active_sets:
+            return feature_panel
+
+        rd_cfg = self.feature_cfg.get("rdagent_parquet") or {}
+        path_raw = rd_cfg.get("path") if isinstance(rd_cfg, dict) else None
+        pq_path = Path(path_raw) if path_raw else self._default_rdagent_parquet_path()
+        if not pq_path.is_absolute():
+            pq_path = _project_root / pq_path
+        if not pq_path.exists():
+            logger.warning(
+                "P0-1：已启用 rdagent_exported，但未找到 parquet：%s（可配置 data.rdagent_parquet.path）",
+                pq_path,
+            )
+            return feature_panel
+
+        try:
+            extra = pd.read_parquet(str(pq_path))
+        except Exception as e:
+            logger.error("P0-1：读取 RD-Agent parquet 失败 %s: %s", pq_path, e)
+            return feature_panel
+
+        extra = self._normalize_index(extra)
+        if not isinstance(extra.index, pd.MultiIndex) or "datetime" not in extra.index.names:
+            logger.error("P0-1：parquet 索引需为 MultiIndex(datetime, instrument)，实际=%s", type(extra.index))
+            return feature_panel
+
+        # 可选：仅用 feature_sets.rdagent_exported 中列出的列名过滤（非表达式）
+        want = feature_sets.get("rdagent_exported")
+        if isinstance(want, list) and want:
+            use_cols = [c for c in want if c in extra.columns and isinstance(c, str) and not str(c).strip().startswith("Ref(")]
+            if not use_cols:
+                use_cols = list(extra.columns)
+        else:
+            use_cols = list(extra.columns)
+
+        extra = extra[use_cols]
+        extra = extra.reindex(feature_panel.index)
+        overlap = [c for c in extra.columns if c in feature_panel.columns]
+        if overlap:
+            logger.warning("P0-1：parquet 与 qlib 特征列名冲突，跳过 parquet 侧列: %s", overlap[:10])
+            extra = extra.drop(columns=[c for c in overlap])
+
+        if extra.shape[1] == 0:
+            logger.warning("P0-1：合并后无新增 RD-Agent 列，跳过")
+            return feature_panel
+
+        out = pd.concat([feature_panel, extra], axis=1)
+        self.rdagent_factor_columns = list(extra.columns)
+        logger.info(
+            "P0-1：已合并 RD-Agent 因子 %d 列（parquet=%s），示例: %s",
+            len(self.rdagent_factor_columns),
+            pq_path,
+            self.rdagent_factor_columns[:5],
+        )
+        return out
+
     def build(self, *, include_label: bool = True):
         """
         执行特征提取。
@@ -309,6 +376,9 @@ class QlibFeaturePipeline:
         active_sets = self.feature_cfg.get("active_feature_sets", []) or []
         if feature_sets and active_sets:
             for set_name in active_sets:
+                if set_name == "rdagent_exported":
+                    # P0-1：该集合来自 parquet 合并，不参与 D.features 表达式列表
+                    continue
                 if set_name not in feature_sets:
                     logger.warning("active_feature_sets 中的 %s 不存在于 feature_sets，已忽略", set_name)
                     continue
@@ -348,7 +418,9 @@ class QlibFeaturePipeline:
         start = self.feature_cfg["start_time"]
         end = self.feature_cfg["end_time"]
         freq = self.feature_cfg.get("freq", "day")
-        label_expr = self.feature_cfg.get("label", "Ref($close, -5)/$close - 1")
+        label_expr = self.feature_cfg.get(
+            "label", "Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1"
+        )
 
         # 字段兼容层：根据 qlib_data 的真实字段名自动适配表达式
         available_fields = self._discover_available_fields()
@@ -424,6 +496,7 @@ class QlibFeaturePipeline:
             logger.info("缺失值最多的前10个特征: %s", top_nan_cols.to_dict())
 
         feature_panel = self._normalize_index(feature_panel)
+        feature_panel = self._maybe_merge_rdagent_parquet(feature_panel)
         if include_label and label_series is not None:
             label_series = self._normalize_index(label_series)
 

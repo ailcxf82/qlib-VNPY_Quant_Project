@@ -2,36 +2,75 @@
     provider_uri: "/mnt/d/qlib_data/qlib_data"
     region: cn
 
-market: &market csi500
-benchmark: &benchmark SH000905
+market: &market all
+benchmark: &benchmark 000001.SZ
 
 data_handler_config: &data_handler_config
-    start_time: 2008-01-01
-    end_time: 2020-08-01
-    fit_start_time: 2008-01-01
-    fit_end_time: 2014-12-31
+    start_time: 2020-01-01
+    end_time: 2022-12-31
     instruments: *market
-    infer_processors:
-        - class: FilterCol
-          kwargs:
-              fields_group: feature
-              col_list: ["RESI5", "WVMA5", "RSQR5", "KLEN", "RSQR10", "CORR5", "CORD5", "CORR10", 
-                            "ROC60", "RESI10", "VSTD5", "RSQR60", "CORR60", "WVMA60", "STD5", 
-                            "RSQR20", "CORD60", "CORD10", "CORR20", "KLOW"
-                        ]
-        - class: RobustZScoreNorm
-          kwargs:
-              fields_group: feature
-              clip_outlier: true
-        - class: Fillna
-          kwargs:
-              fields_group: feature
+    data_loader:
+        class: qlib.data.dataset.loader.QlibDataLoader
+        kwargs:
+            config:
+                feature:
+                    - ["$close_qfq/Ref($close_qfq,1)-1",
+                       "$close_qfq/Ref($close_qfq,5)-1",
+                       "$close_qfq/Ref($close_qfq,10)-1",
+                       "$close_qfq/Ref($close_qfq,20)-1",
+                       "Ref($close_qfq,1)/Ref($close_qfq,5)-1",
+                       "Std($close_qfq/Ref($close_qfq,1)-1,5)",
+                       "Std($close_qfq/Ref($close_qfq,1)-1,10)",
+                       "Std($close_qfq/Ref($close_qfq,1)-1,20)",
+                       "$vol/Mean($vol,5)",
+                       "$vol/Mean($vol,10)",
+                       "$vol/Mean($vol,20)",
+                       "($high_qfq-$low_qfq)/$close_qfq",
+                       "Mean(($high_qfq-$low_qfq)/$close_qfq,5)",
+                       "Mean(($high_qfq-$low_qfq)/$close_qfq,10)",
+                       "$turnover_rate",
+                       "$turnover_rate_f",
+                       "$turnover_rate/Mean($turnover_rate,20)-1",
+                       "$volume_ratio",
+                       "$pe_ttm",
+                       "$pb",
+                       "$ps_ttm",
+                       "Log($total_mv)",
+                       "$roe",
+                       "$roa",
+                       "$q_profit_yoy",
+                       "$rsi_qfq_12",
+                       "$macd_qfq",
+                       "$kdj_k_qfq-$kdj_d_qfq",
+                       "$atr_qfq",
+                       "$rzye/$total_mv",
+                       "$rqye/$total_mv"]
+                    - ["RET1","MOM5","MOM10","MOM20","MOM1_5","VOL5","VOL10","VOL20",
+                       "VRATIO5","VRATIO10","VRATIO20","HLRANGE","HLRANGE5","HLRANGE10",
+                       "TURN","TURN_F","TURN_REL","VOLVOL",
+                       "PE_TTM","PB","PS_TTM","LOG_MV",
+                       "ROE","ROA","PROFIT_YOY",
+                       "RSI12","MACD","KDJ_DIFF","ATR",
+                       "MARGIN_L","MARGIN_S"]
+                label:
+                    # 与主工程 config/data.yaml 一致：3 日远期相对收益
+                    - ["Ref($close_qfq,-3)/Ref($close_qfq,1)-1"]
+                    - ["LABEL0"]
     learn_processors:
         - class: DropnaLabel
         - class: CSRankNorm
           kwargs:
               fields_group: label
-    label: ["Ref($close, -2) / Ref($close, -1) - 1"] 
+    infer_processors:
+        - class: RobustZScoreNorm
+          kwargs:
+              fields_group: feature
+              clip_outlier: true
+              fit_start_time: 2020-01-01
+              fit_end_time: 2021-06-30
+        - class: Fillna
+          kwargs:
+              fields_group: feature
 
 port_analysis_config: &port_analysis_config
     strategy:
@@ -42,8 +81,8 @@ port_analysis_config: &port_analysis_config
             topk: 50
             n_drop: 5
     backtest:
-        start_time: 2017-01-01
-        end_time: 2020-08-01
+        start_time: 2022-01-01
+        end_time: 2022-12-30
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -52,45 +91,50 @@ port_analysis_config: &port_analysis_config
             open_cost: 0.0005
             close_cost: 0.0015
             min_cost: 5
+
 task:
     model:
         class: LGBModel
         module_path: qlib.contrib.model.gbdt
         kwargs:
+            # Tuned for ~32 mixed features (price/volume + fundamental + technical)
+            # Lower learning_rate + more estimators for better generalization
             loss: mse
-            colsample_bytree: 0.8879
-            learning_rate: 0.2
-            subsample: 0.8789
-            lambda_l1: 205.6999
-            lambda_l2: 580.9768
-            max_depth: 8
-            num_leaves: 210
+            colsample_bytree: 0.75
+            learning_rate: 0.05
+            subsample: 0.85
+            lambda_l1: 80.0
+            lambda_l2: 200.0
+            max_depth: 6
+            num_leaves: 63
             num_threads: 20
+            n_estimators: 400
+            early_stopping_rounds: 50
+            min_child_samples: 60
     dataset:
         class: DatasetH
         module_path: qlib.data.dataset
         kwargs:
             handler:
-                class: Alpha158
+                class: DataHandlerLP
                 module_path: qlib.contrib.data.handler
                 kwargs: *data_handler_config
             segments:
-                train: [2008-01-01, 2014-12-31]
-                valid: [2015-01-01, 2016-12-31]
-                test: [2017-01-01, 2020-08-01]
-    record: 
+                train: [2020-01-01, 2021-06-30]
+                valid: [2021-07-01, 2021-12-31]
+                test: [2022-01-01, 2022-12-30]
+    record:
         - class: SignalRecord
           module_path: qlib.workflow.record_temp
-          kwargs: 
+          kwargs:
             model: <MODEL>
             dataset: <DATASET>
         - class: SigAnaRecord
           module_path: qlib.workflow.record_temp
-          kwargs: 
+          kwargs:
             ana_long_short: False
             ann_scaler: 252
         - class: PortAnaRecord
           module_path: qlib.workflow.record_temp
-          kwargs: 
+          kwargs:
             config: *port_analysis_config
-

@@ -72,8 +72,14 @@ model:
   # 确定性模式：牺牲性能换取完全可复现
   deterministic: true
 
-  # 混合精度训练：加速训练，减少显存占用
+  # 混合精度训练：加速训练，减少显存占用（仅 CUDA 生效）
   amp: true
+
+  # 训练设备偏好：auto|cuda|cpu
+  # - "auto"（默认）：有 CUDA 用 CUDA，否则 CPU
+  # - "cuda"：显式要求 GPU；若 CUDA 不可用会打印 WARNING 并回退 CPU
+  # - "cpu"：强制 CPU（用于调试或无 GPU 机器）
+  device: auto
 
   # 梯度裁剪：防止梯度爆炸
   # - 较小(0.5-1.0)：强约束，防止梯度爆炸

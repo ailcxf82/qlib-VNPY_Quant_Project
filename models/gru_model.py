@@ -136,7 +136,50 @@ class GRURegressor:
         else:
             raw = config
         self.config = raw.get("model", raw)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # 设备选择：支持 config.device = "cuda"/"cpu"/"auto"（默认 auto）；
+        # 若请求 cuda 但不可用，给醒目警告并 fallback 到 CPU。
+        requested = str(self.config.get("device", "auto")).lower()
+        cuda_avail = torch.cuda.is_available()
+        if requested == "cuda":
+            if not cuda_avail:
+                logger.warning(
+                    "GRU 请求 device=cuda 但 torch.cuda.is_available()=False，已回退到 CPU。"
+                    " 请检查 CUDA/cuDNN/PyTorch-GPU 安装；nvidia-smi 是否可见；"
+                    "或把 device 改为 'auto'/'cpu'。"
+                )
+                self.device = torch.device("cpu")
+            else:
+                self.device = torch.device("cuda")
+        elif requested == "cpu":
+            self.device = torch.device("cpu")
+        else:  # auto
+            self.device = torch.device("cuda" if cuda_avail else "cpu")
+
+        # 环境摘要（每个 GRURegressor 实例打印一次；trainer 每窗口会实例化，
+        # 但因为包含 rolling window 便于核对设备是否一致，可接受）
+        try:
+            if self.device.type == "cuda":
+                gpu_idx = torch.cuda.current_device()
+                gpu_name = torch.cuda.get_device_name(gpu_idx)
+                mem_total = torch.cuda.get_device_properties(gpu_idx).total_memory / (1024 ** 3)
+                mem_alloc = torch.cuda.memory_allocated(gpu_idx) / (1024 ** 3)
+                logger.info(
+                    "GRU device=cuda:%d (%s) | total=%.2fGB alloc=%.2fGB | "
+                    "torch=%s cuda=%s cudnn=%s",
+                    gpu_idx, gpu_name, mem_total, mem_alloc,
+                    torch.__version__,
+                    torch.version.cuda,
+                    torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else "n/a",
+                )
+            else:
+                logger.info(
+                    "GRU device=cpu | torch=%s (CUDA not used; cuda_available=%s)",
+                    torch.__version__, cuda_avail,
+                )
+        except Exception as e:
+            logger.warning("打印 GRU device 摘要失败（忽略继续）：%s", e)
+
         self.model: Optional[nn.Module] = None
         self._input_dim: Optional[int] = None
         self._feature_names: Optional[list[str]] = None
@@ -360,10 +403,29 @@ class GRURegressor:
         amp_enabled = bool(self.config.get("amp", False)) and (self.device.type == "cuda")
         scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
 
+        # 打印模型结构摘要
+        try:
+            n_params = sum(p.numel() for p in self.model.parameters())
+            n_trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            logger.info(
+                "GRU model params=%s (trainable=%s) | loss=%s | optimizer=Adam lr=%.1e wd=%.1e | "
+                "batch_size=%d max_epochs=%d patience=%d grad_clip=%.2f amp=%s early=%s",
+                f"{n_params:,}", f"{n_trainable:,}",
+                loss_type,
+                float(self.config.get("lr", 5e-4)),
+                float(self.config.get("weight_decay", 0.0)),
+                batch_size, max_epochs, patience, grad_clip, amp_enabled, early_metric,
+            )
+        except Exception:
+            pass
+
+        # 用 pin_memory 加速 CPU→GPU 拷贝（仅当 cuda）
+        pin_mem = (self.device.type == "cuda")
         train_loader = DataLoader(
             TensorDataset(torch.tensor(X_tr), torch.tensor(y_tr).unsqueeze(-1)),
             batch_size=batch_size,
             shuffle=True,
+            pin_memory=pin_mem,
         )
         valid_loader = None
         if X_va is not None and y_va is not None:
@@ -371,6 +433,7 @@ class GRURegressor:
                 TensorDataset(torch.tensor(X_va), torch.tensor(y_va).unsqueeze(-1)),
                 batch_size=batch_size,
                 shuffle=False,
+                pin_memory=pin_mem,
             )
 
         # early stopping
@@ -379,19 +442,24 @@ class GRURegressor:
         best_state: Optional[dict] = None
         self._history = []
 
+        import time as _time
+        n_batches = len(train_loader)
+        # 每个 epoch 内，每隔 N 个 batch 打一次进度；N 大约为 n_batches/4（至少 1）
+        log_every = max(1, n_batches // 4)
+
         for epoch in range(max_epochs):
             self.model.train()
             total = 0.0
             n = 0
-            for bx, by in train_loader:
-                bx = bx.to(self.device)
-                by = by.to(self.device)
+            epoch_t0 = _time.time()
+            for b_idx, (bx, by) in enumerate(train_loader):
+                bx = bx.to(self.device, non_blocking=pin_mem)
+                by = by.to(self.device, non_blocking=pin_mem)
                 optimizer.zero_grad()
                 with torch.cuda.amp.autocast(enabled=amp_enabled):
                     pred = self.model(bx)
                     loss = criterion(pred, by)
                 scaler.scale(loss).backward()
-                # 梯度裁剪（对 AMP 需要先 unscale）
                 if grad_clip and grad_clip > 0:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=grad_clip)
@@ -399,6 +467,12 @@ class GRURegressor:
                 scaler.update()
                 total += float(loss.item()) * len(bx)
                 n += len(bx)
+                if (b_idx + 1) % log_every == 0 or (b_idx + 1) == n_batches:
+                    avg = total / max(1, n)
+                    logger.info(
+                        "GRU epoch %d [%d/%d] train_loss=%.6f (running avg)",
+                        epoch, b_idx + 1, n_batches, avg,
+                    )
             train_loss = total / max(1, n)
 
             val_loss = train_loss
@@ -435,16 +509,23 @@ class GRURegressor:
 
             # 选择监控指标
             monitor_value = val_loss if early_metric == "loss" else (val_rankic if val_rankic is not None else float("-inf"))
-            # 训练日志（每 epoch）
+            # 训练日志（每 epoch，含耗时与显存）
+            epoch_elapsed = _time.time() - epoch_t0
+            if self.device.type == "cuda":
+                mem_peak = torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
+                mem_tag = f" | peak_mem={mem_peak:.2f}GB"
+                torch.cuda.reset_peak_memory_stats(self.device)
+            else:
+                mem_tag = ""
             if val_rankic is None:
-                logger.info("GRU epoch %d train_loss=%.6f valid_loss=%.6f", epoch, train_loss, val_loss)
+                logger.info(
+                    "GRU epoch %d train_loss=%.6f valid_loss=%.6f | %.1fs%s",
+                    epoch, train_loss, val_loss, epoch_elapsed, mem_tag,
+                )
             else:
                 logger.info(
-                    "GRU epoch %d train_loss=%.6f valid_loss=%.6f valid_rankic=%.6f",
-                    epoch,
-                    train_loss,
-                    val_loss,
-                    val_rankic,
+                    "GRU epoch %d train_loss=%.6f valid_loss=%.6f valid_rankic=%.6f | %.1fs%s",
+                    epoch, train_loss, val_loss, val_rankic, epoch_elapsed, mem_tag,
                 )
             self._history.append(
                 {

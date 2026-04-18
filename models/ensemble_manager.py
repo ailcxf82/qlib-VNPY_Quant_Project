@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import logging
+import os
 from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
@@ -311,6 +312,14 @@ class EnsembleModelManager:
             cfg = self._resolve_config(spec)
             self.models[name] = create_model(model_type, cfg)
 
+    def update_feature_set(self, name: str, columns: Optional[List[str]]) -> None:
+        """运行时覆盖/补充 data.feature_sets 中的某一集合（如 RD-Agent parquet 列名）。"""
+        key = str(name).strip()
+        merged = dict(self._feature_sets)
+        merged[key] = list(columns or [])
+        self._feature_sets = merged
+        logger.info("已更新 feature_sets[%s]，列数=%d", key, len(merged[key]))
+
     def _resolve_feature_cols(self, model_name: str, all_cols: List[str]) -> Optional[List[str]]:
         """解析每个模型需要的特征列。"""
         if not self._model_features:
@@ -343,9 +352,24 @@ class EnsembleModelManager:
                     f"model_features[{model_name}]={key} 未在 data.feature_sets 中定义"
                     + (f"（可用 keys 示例: {avail}）" if avail else "")
                 )
-        # list：直接给列名/表达式
+        # list：要么全部为 feature_sets 的 key（按顺序拼接列名、去重），要么直接给列名/表达式
         elif isinstance(spec, list):
-            cols = list(spec)
+            raw = list(spec)
+            if raw and all(isinstance(x, str) for x in raw):
+                keys = [str(x).strip() for x in raw]
+                if keys and all(k in self._feature_sets for k in keys):
+                    cols = []
+                    seen: set[str] = set()
+                    for k in keys:
+                        for c in self._feature_sets.get(k) or []:
+                            sc = str(c)
+                            if sc not in seen:
+                                seen.add(sc)
+                                cols.append(sc)
+                else:
+                    cols = raw
+            else:
+                cols = raw
         else:
             raise ValueError(f"model_features[{model_name}] 仅支持 str 或 list")
         if not cols:

@@ -8,6 +8,9 @@ data:
   freq: day
   missing_value_strategy: auto
   use_alpha158: false
+  # P0-1：RD-Agent 导出因子 parquet（相对项目根）；列在运行时合并进特征表
+  rdagent_parquet:
+    path: git_ignore_folder/combined_factors_df.parquet
   feature_sets:
     gru_ohlcv:
     - Ref($close_qfq, 1)
@@ -233,12 +236,15 @@ data:
     rdagent_imported:
     - Ref($close_qfq, 6)/Ref($close_qfq, 1) - 1
     - Mean(Ref($close_qfq, 1), 3)/Ref($close_qfq, 1) - 1
+    # P0-1：占位；真实列名由 QlibFeaturePipeline 合并 parquet 后写入 ensemble.feature_sets
+    rdagent_exported: []
   active_feature_sets:
   - short_momentum_reversal
   - short_volatility_range
   - short_volume_price
   - gru_short_cycle
   - lgb_short_cycle
+  - rdagent_exported
   label: Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1
   label_transform:
     enabled: true

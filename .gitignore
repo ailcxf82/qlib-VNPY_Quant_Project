@@ -5,6 +5,8 @@ data/oof/
 data/meta/
 data/predictions/
 data/models/
+data/
+run_artifacts/
 .venv/
 scripts/__pycache__/
 scripts/rdagent/__pycache__/
@@ -4344,3 +4346,5 @@ debug-f559e7.log
 
 git_ignore_folder/factor_implementation_source_data/daily_pv.h5
 rdagent_overrides/model_template/__pycache__/read_exp_res.cpython-311.pyc
+debug-82be18.log
+debug-872e26.log

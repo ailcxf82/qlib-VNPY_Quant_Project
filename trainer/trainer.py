@@ -119,19 +119,29 @@ class RollingTrainer:
         if not self.stack_enabled:
             logger.info("已关闭 LeafStackModel（stack.enabled=false）：本次训练仅训练/评估基础模型，不训练 stack。")
         
-        # 解析标签表达式，获取需要的未来天数
-        label_expr = self.data_section.get("label", "Ref($close, -5)/$close - 1")
+        # 解析标签表达式，获取需要的未来天数（label_future_days）。
+        # 语义：对 label_expr 中所有 Ref($<field>, -N) 形态，取最大的 N（N > 0 才算未来）。
+        # 兼容任意字段名（例如 $close / $close_qfq / $open_qfq / $vwap 等）。
+        # 例：label = "Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1" → label_future_days=3
+        label_expr = self.data_section.get(
+            "label", "Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1"
+        )
         import re
         self.label_future_days = 0
-        if "Ref($close, -" in label_expr:
-            match = re.search(r'Ref\(\$close,\s*-(\d+)\)', label_expr)
-            if match:
-                self.label_future_days = int(match.group(1))
-                logger.info(
-                    "标签需要未来 %d 天数据来计算，训练/验证切片的结束日期将自动提前 %d 天（避免跨窗口使用未来价格形成标签）",
-                    self.label_future_days,
-                    self.label_future_days,
-                )
+        _future_matches = re.findall(
+            r'Ref\(\s*\$[A-Za-z_][A-Za-z0-9_]*\s*,\s*-(\d+)\s*\)', label_expr
+        )
+        if _future_matches:
+            self.label_future_days = max(int(m) for m in _future_matches)
+            logger.info(
+                "标签需要未来 %d 天数据来计算，训练/验证切片的结束日期将自动提前 %d 天"
+                "（避免跨窗口使用未来价格形成标签）；label=%s",
+                self.label_future_days,
+                self.label_future_days,
+                label_expr,
+            )
+        else:
+            logger.info("label=%s 不含未来引用（label_future_days=0）", label_expr)
 
     def _generate_windows(self) -> Iterable[Window]:
         rolling = self.cfg["rolling"]
@@ -276,6 +286,10 @@ class RollingTrainer:
 
     def train(self):
         self.pipeline.build()
+        rd_cols = list(getattr(self.pipeline, "rdagent_factor_columns", None) or [])
+        self.ensemble.update_feature_set("rdagent_exported", rd_cols)
+        self.cfg.setdefault("feature_sets_runtime_override", {})["rdagent_exported"] = rd_cols
+
         features, labels = self.pipeline.get_all()
         
         # 检查标签转换是否生效
@@ -363,13 +377,25 @@ class RollingTrainer:
                     logger.warning("构造序列历史特征失败（忽略继续）：%s", e)
 
             # 统一训练多模型（归一化在 EnsembleModelManager 内部按模型进行）
-            self.ensemble.fit(
-                train_feat,
-                train_lbl,
-                valid_feat if has_valid else None,
-                valid_lbl,
-                history_feat=history_feat_raw,
-            )
+            import time as _time
+            _win_t0 = _time.time()
+            try:
+                self.ensemble.fit(
+                    train_feat,
+                    train_lbl,
+                    valid_feat if has_valid else None,
+                    valid_lbl,
+                    history_feat=history_feat_raw,
+                )
+            except Exception:
+                # 用 logger.exception 打印完整 traceback，便于在 tuning 透传日志中一眼定位
+                logger.exception(
+                    "窗口 %d 训练失败（train=[%s,%s] valid=[%s,%s]）",
+                    idx, window.train_start, window.train_end,
+                    window.valid_start, window.valid_end,
+                )
+                raise
+            logger.info("窗口 %d 训练完成，耗时 %.1fs", idx, _time.time() - _win_t0)
 
             train_blend, train_preds, train_aux = self.ensemble.predict(train_feat, history_feat=history_feat_raw)
             lgb_train_pred = train_preds.get("lgb")

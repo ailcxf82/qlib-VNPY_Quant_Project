@@ -12,14 +12,18 @@
 ### 当前问题
 
 ```yaml
-# config/data.yaml:124
-label: "Ref($close, -5)/$close - 1"  # 预测未来 5 日收益
+# config/data.yaml 历史版本片段（仅作历史记录）
+label: "Ref($close, -5)/$close - 1"   # 历史版本：5 日远期收益
+# 当前主工程版本：
+# label: "Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1"  # 3 日远期相对收益
 ```
 
-**问题分析**：
+**历史问题分析（针对 -5 版本）**：
 1. **预测周期过短**：5 日收益无法捕捉中长期趋势
 2. **信号噪声大**：短期波动干扰大，模型难以学习趋势
 3. **不适合趋势市场**：在快速上涨时，5 日收益可能滞后
+
+> 注：当前主工程已调整为 3 日相对收益（以 `config/data.yaml` 为准）。本节保留以回溯历史改动动机；实际口径请以配置为准。
 
 ### 改进建议
 
@@ -47,7 +51,7 @@ label: "Ref($close, -60)/$close - 1"   # 预测未来 60 日收益（约 3 个�
 
 ```yaml
 # 可以创建多个配置文件
-# config/data_short.yaml: label: "Ref($close, -5)/$close - 1"   # 短期
+# config/data_short.yaml: label: "Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1"  # 短期（当前主工程口径）
 # config/data_medium.yaml: label: "Ref($close, -20)/$close - 1" # 中期
 # config/data_long.yaml: label: "Ref($close, -60)/$close - 1"   # 长期
 ```

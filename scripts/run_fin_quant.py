@@ -29,11 +29,14 @@ from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
-from rdagent_integration.patch_qlib_conda import apply_qlib_conda_env_patch
+from rdagent_integration.patch_qlib_conda import apply_qlib_conda_env_patch, _patch_qlib_runner_env
 
 apply_qlib_conda_env_patch()
 
 from rdagent.app.qlib_rd_loop.quant import main
+
+# Hypothesis D/B: patch any stale references in runner modules (imported after patch)
+_patch_qlib_runner_env()
 
 if __name__ == "__main__":
     import fire

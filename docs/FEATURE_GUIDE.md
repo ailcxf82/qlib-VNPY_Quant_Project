@@ -18,7 +18,7 @@
 
 ### 标签说明
 
-- `Ref($close, -5)/$close - 1`：未来5日收益率（用于监督学习）
+- `Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1`：3 日远期相对收益（当前主工程 label，以 `config/data.yaml` 为准）
 
 ## 二、添加基本面数据
 

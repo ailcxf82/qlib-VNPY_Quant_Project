@@ -3,16 +3,12 @@ from pathlib import Path
 
 import pandas as pd
 import qlib
-from mlflow.entities import ViewType
-from mlflow.tracking import MlflowClient
 
 qlib.init()
 
 from qlib.workflow import R
 
 # here is the documents of the https://qlib.readthedocs.io/en/latest/component/recorder.html
-
-# TODO: list all the recorder and metrics
 
 # Assuming you have already listed the experiments
 experiments = R.list_experiments()
@@ -28,7 +24,6 @@ for experiment in experiments:
             recorder = R.get_recorder(recorder_id=recorder_id, experiment_name=experiment)
             end_time = recorder.info["end_time"]
             try:
-                # Check if the recorder has a valid end time
                 if end_time is not None:
                     if latest_recorder is None or end_time > latest_recorder.info["end_time"]:
                         latest_recorder = recorder
@@ -43,13 +38,21 @@ if latest_recorder is None:
 else:
     print(f"Latest recorder: {latest_recorder}")
 
-    # Load the specified file from the latest recorder
     metrics = pd.Series(latest_recorder.list_metrics())
-
     output_path = Path(__file__).resolve().parent / "qlib_res.csv"
     metrics.to_csv(output_path)
-
     print(f"Output has been saved to {output_path}")
 
-    ret_data_frame = latest_recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
-    ret_data_frame.to_pickle("ret.pkl")
+    # Try to load portfolio analysis; fall back to IC metrics if PortAnaRecord failed
+    try:
+        ret_data_frame = latest_recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
+        ret_data_frame.to_pickle("ret.pkl")
+        print("Portfolio analysis saved to ret.pkl")
+    except Exception as e:
+        print(f"PortAnaRecord not available ({e}), creating fallback ret.pkl from IC metrics")
+        ic_metrics = {k: v for k, v in metrics.items() if "IC" in k or "ic" in k}
+        if not ic_metrics:
+            ic_metrics = metrics.to_dict()
+        fallback_df = pd.DataFrame([ic_metrics])
+        fallback_df.to_pickle("ret.pkl")
+        print("Fallback ret.pkl created with metrics:", list(ic_metrics.keys())[:5])

@@ -47,6 +47,30 @@ def parse_args():
     return parser.parse_args()
 
 
+def _log_torch_env():
+    """一次性打印 torch/CUDA/显卡摘要，方便一眼确认训练设备。"""
+    logger = logging.getLogger(__name__)
+    try:
+        import torch
+        msg = [f"torch={torch.__version__}", f"cuda_available={torch.cuda.is_available()}"]
+        if torch.cuda.is_available():
+            idx = torch.cuda.current_device()
+            name = torch.cuda.get_device_name(idx)
+            total = torch.cuda.get_device_properties(idx).total_memory / (1024 ** 3)
+            msg.append(f"device=cuda:{idx}({name})")
+            msg.append(f"total_mem={total:.2f}GB")
+            msg.append(f"cuda_ver={torch.version.cuda}")
+            try:
+                msg.append(f"cudnn_ver={torch.backends.cudnn.version()}")
+            except Exception:
+                pass
+        else:
+            msg.append("device=cpu")
+        logger.info("[env] %s", " | ".join(msg))
+    except Exception as e:
+        logger.warning("打印 torch 环境摘要失败（忽略继续）：%s", e)
+
+
 def main():
     args = parse_args()
     logging.basicConfig( 
@@ -54,6 +78,7 @@ def main():
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
     )
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    _log_torch_env()
     
     # 加载配置
     cfg = load_yaml_config(args.config)

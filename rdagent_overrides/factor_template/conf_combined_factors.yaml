@@ -2,42 +2,80 @@
     provider_uri: "/mnt/d/qlib_data/qlib_data"
     region: cn
 
-market: &market csi500
-benchmark: &benchmark SH000905
+market: &market all
+benchmark: &benchmark 000001.SZ
 
 data_handler_config: &data_handler_config
-    start_time: 2008-01-01
-    end_time: 2022-08-01
+    start_time: 2020-01-01
+    end_time: 2022-12-31
     instruments: *market
     data_loader:
         class: NestedDataLoader
         kwargs:
             dataloader_l:
-                - class: qlib.contrib.data.loader.Alpha158DL
+                - class: qlib.data.dataset.loader.QlibDataLoader
                   kwargs:
                     config:
-                        label: 
-                            - ["Ref($close, -2)/Ref($close, -1) - 1"]
-                            - ["LABEL0"]
                         feature:
-                            - ["Resi($close, 5)/$close", "Std(Abs($close/Ref($close, 1)-1)*$volume, 5)/(Mean(Abs($close/Ref($close, 1)-1)*$volume, 5)+1e-12)",
-                               "Rsquare($close, 5)", "($high-$low)/$open", "Rsquare($close, 10)", "Corr($close, Log($volume+1), 5)",
-                               "Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 5)", "Corr($close, Log($volume+1), 10)",
-                               "Ref($close, 60)/$close", "Resi($close, 10)/$close", "Std($volume, 5)/($volume+1e-12)",
-                               "Rsquare($close, 60)", "Corr($close, Log($volume+1), 60)", "Std(Abs($close/Ref($close, 1)-1)*$volume, 60)/(Mean(Abs($close/Ref($close, 1)-1)*$volume, 60)+1e-12)",
-                               "Std($close, 5)/$close", "Rsquare($close, 20)", "Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 60)",
-                               "Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 10)", "Corr($close, Log($volume+1), 20)",
-                               "(Less($open, $close)-$low)/$open"]
-                            - ["RESI5", "WVMA5", "RSQR5", "KLEN", "RSQR10", "CORR5", "CORD5", "CORR10", 
-                               "ROC60", "RESI10", "VSTD5", "RSQR60", "CORR60", "WVMA60", "STD5", 
-                               "RSQR20", "CORD60", "CORD10", "CORR20", "KLOW"]
+                            # ── Short-cycle price/volume alpha ─────────────────────
+                            - ["$close_qfq/Ref($close_qfq,1)-1",
+                               "$close_qfq/Ref($close_qfq,5)-1",
+                               "$close_qfq/Ref($close_qfq,10)-1",
+                               "$close_qfq/Ref($close_qfq,20)-1",
+                               "Ref($close_qfq,1)/Ref($close_qfq,5)-1",
+                               "Std($close_qfq/Ref($close_qfq,1)-1,5)",
+                               "Std($close_qfq/Ref($close_qfq,1)-1,10)",
+                               "Std($close_qfq/Ref($close_qfq,1)-1,20)",
+                               "$vol/Mean($vol,5)",
+                               "$vol/Mean($vol,10)",
+                               "$vol/Mean($vol,20)",
+                               "($high_qfq-$low_qfq)/$close_qfq",
+                               "Mean(($high_qfq-$low_qfq)/$close_qfq,5)",
+                               "Mean(($high_qfq-$low_qfq)/$close_qfq,10)",
+                               # ── Liquidity signals ──────────────────────────────
+                               "$turnover_rate",
+                               "$turnover_rate_f",
+                               "$turnover_rate/Mean($turnover_rate,20)-1",
+                               "$volume_ratio",
+                               # ── Valuation (fundamental) ────────────────────────
+                               "$pe_ttm",
+                               "$pb",
+                               "$ps_ttm",
+                               "Log($total_mv)",
+                               "$dv_ratio",
+                               # ── Quality / growth ───────────────────────────────
+                               "$roe",
+                               "$roa",
+                               "$q_profit_yoy",
+                               "$q_eps",
+                               # ── Technical pre-computed ─────────────────────────
+                               "$rsi_qfq_12",
+                               "$macd_qfq",
+                               "$kdj_k_qfq-$kdj_d_qfq",
+                               "$atr_qfq",
+                               # ── Margin financing pressure ──────────────────────
+                               "$rzye/$total_mv",
+                               "$rqye/$total_mv"]
+                            - ["RET1","MOM5","MOM10","MOM20","MOM1_5","VOL5","VOL10","VOL20",
+                               "VRATIO5","VRATIO10","VRATIO20","HLRANGE","HLRANGE5","HLRANGE10",
+                               "TURN","TURN_F","TURN_REL","VOLVOL",
+                               "PE_TTM","PB","PS_TTM","LOG_MV","DV",
+                               "ROE","ROA","PROFIT_YOY","EPS",
+                               "RSI12","MACD","KDJ_DIFF","ATR",
+                               "MARGIN_L","MARGIN_S"]
+                        label:
+                            # 与主工程 config/data.yaml 一致：3 日远期相对收益
+                            - ["Ref($close_qfq,-3)/Ref($close_qfq,1)-1"]
+                            - ["LABEL0"]
                 - class: qlib.data.dataset.loader.StaticDataLoader
                   kwargs:
-                    config: "combined_factors_df.parquet"
+                    # Absolute path so qrun can find it from any workspace directory.
+                    # Update this path if the project moves.
+                    config: "/mnt/d/quant_project/Qlib_Quant/qlib-VNPY_Quant_Project/git_ignore_folder/combined_factors_df.parquet"
 
     learn_processors:
         - class: DropnaLabel
-        - class: CSZScoreNorm
+        - class: CSRankNorm
           kwargs:
               fields_group: label
 
@@ -50,8 +88,8 @@ port_analysis_config: &port_analysis_config
             topk: 50
             n_drop: 5
     backtest:
-        start_time: 2017-01-01
-        end_time: 2020-08-01
+        start_time: 2022-01-01
+        end_time: 2022-12-30
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -66,15 +104,20 @@ task:
         class: LGBModel
         module_path: qlib.contrib.model.gbdt
         kwargs:
+            # Balanced config for mixed fundamental+technical features
+            # Slower learning rate with more trees to capture complex interactions
             loss: mse
-            colsample_bytree: 0.8879
-            learning_rate: 0.2
-            subsample: 0.8789
-            lambda_l1: 205.6999
-            lambda_l2: 580.9768
-            max_depth: 8
-            num_leaves: 210
+            colsample_bytree: 0.72
+            learning_rate: 0.05
+            subsample: 0.8
+            lambda_l1: 50.0
+            lambda_l2: 100.0
+            max_depth: 6
+            num_leaves: 63
             num_threads: 20
+            n_estimators: 500
+            early_stopping_rounds: 50
+            min_child_samples: 50
     dataset:
         class: DatasetH
         module_path: qlib.data.dataset
@@ -84,22 +127,21 @@ task:
                 module_path: qlib.contrib.data.handler
                 kwargs: *data_handler_config
             segments:
-                train: [2008-01-01, 2014-12-31]
-                valid: [2015-01-01, 2016-12-31]
-                test: [2017-01-01, 2020-08-01]
-    record: 
+                train: [2020-01-01, 2021-06-30]
+                valid: [2021-07-01, 2021-12-31]
+                test: [2022-01-01, 2022-12-30]
+    record:
         - class: SignalRecord
           module_path: qlib.workflow.record_temp
-          kwargs: 
+          kwargs:
             model: <MODEL>
             dataset: <DATASET>
         - class: SigAnaRecord
           module_path: qlib.workflow.record_temp
-          kwargs: 
+          kwargs:
             ana_long_short: False
             ann_scaler: 252
         - class: PortAnaRecord
           module_path: qlib.workflow.record_temp
-          kwargs: 
+          kwargs:
             config: *port_analysis_config
-

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import argparse
 import html
+import re
+from collections import Counter
 from pathlib import Path
 from typing import List, Tuple
 
@@ -53,6 +55,84 @@ def _bar_svg(items: List[Tuple[str, float]], title: str, width: int = 1100, heig
         + "".join(labels)
         + f'<line x1="{margin}" y1="{margin+chart_h}" x2="{margin+chart_w}" y2="{margin+chart_h}" stroke="#444" />'
         + "</svg>"
+    )
+
+
+_ERR_SIGNATURE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_\.]*(?:Error|Exception|Warning))(?::\s*(.{0,120}))?")
+
+
+def _classify_error(text: str) -> str:
+    """从 error_tail 抽取最后一个异常类名或关键信号，作为聚类键。"""
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    matches = _ERR_SIGNATURE_RE.findall(text)
+    if matches:
+        etype, emsg = matches[-1]
+        emsg = (emsg or "").strip().splitlines()[0] if emsg else ""
+        emsg = re.sub(r"\s+", " ", emsg)[:80]
+        return f"{etype}: {emsg}".strip(": ").strip() or etype
+    lowered = text.lower()
+    for kw in ("traceback", "killed", "segmentation fault", "cuda", "out of memory"):
+        if kw in lowered:
+            return kw
+    last_line = [ln for ln in text.splitlines() if ln.strip()]
+    return (last_line[-1][:100] if last_line else "")
+
+
+def _failure_summary_html(summary_df: pd.DataFrame) -> str:
+    if summary_df.empty:
+        return ""
+    failed = summary_df[summary_df.get("included_in_ranking", True).astype(bool) == False].copy()
+    if failed.empty:
+        return ""
+    preflight_col = failed.get("preflight_failures") if "preflight_failures" in failed.columns else None
+    error_col = failed.get("error_tail") if "error_tail" in failed.columns else None
+
+    reason_buckets: List[Tuple[str, str]] = []
+    for _, r in failed.iterrows():
+        pf_fail = str(r.get("preflight_failures", "") or "")
+        et = str(r.get("error_tail", "") or "")
+        if pf_fail:
+            reason_buckets.append(("preflight", pf_fail.split(";")[0].strip()[:120]))
+        elif et:
+            sig = _classify_error(et)
+            if sig:
+                reason_buckets.append(("runtime", sig))
+            else:
+                reason_buckets.append(("runtime", "unknown"))
+        else:
+            skip = str(r.get("skip_reason", "") or "unknown")
+            reason_buckets.append(("skipped", skip[:120]))
+
+    counter = Counter(reason_buckets)
+    if not counter:
+        return ""
+
+    rows_html = []
+    total = sum(counter.values())
+    for (bucket, sig), n in counter.most_common():
+        rows_html.append(
+            f"<tr><td>{html.escape(bucket)}</td>"
+            f"<td>{html.escape(sig)}</td>"
+            f"<td style='text-align:right'>{n}</td></tr>"
+        )
+
+    cols = ["experiment_id", "status", "preflight", "preflight_failures", "error_tail", "skip_reason"]
+    cols = [c for c in cols if c in failed.columns]
+    detail_df = failed[cols].copy() if cols else failed.head(0)
+    if "error_tail" in detail_df.columns:
+        detail_df["error_tail"] = detail_df["error_tail"].fillna("").astype(str).str[:200]
+    if "preflight_failures" in detail_df.columns:
+        detail_df["preflight_failures"] = detail_df["preflight_failures"].fillna("").astype(str).str[:200]
+    detail_html = detail_df.to_html(index=False, classes="summary-table", border=0)
+
+    return (
+        "<h2>失败原因汇总</h2>"
+        f"<p>失败/未入选实验：{len(failed)} 条（不同原因 {len(counter)} 类，累计 {total} 次）</p>"
+        "<table class='summary-table'><thead><tr><th>类别</th><th>原因/签名</th><th>次数</th></tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody></table>"
+        "<h3>失败样本明细（截断）</h3>"
+        f"{detail_html}"
     )
 
 
@@ -135,6 +215,7 @@ def main() -> None:
 
     bar_svg = _bar_svg(bar_items, f"实验排行榜（{score_col}）")
     line_svg = _line_svg(window_df, "ic_qlib_ensemble", top_ids)
+    failure_html = _failure_summary_html(summary_df) if not summary_df.empty else ""
 
     table_html = (
         top_df.to_html(index=False, classes="summary-table", border=0, float_format=lambda x: f"{x:.6f}")
@@ -171,6 +252,7 @@ h1, h2 {{ margin: 8px 0; }}
 <div class="block">{line_svg}</div>
 <h2>实验汇总 TopN</h2>
 <div class="block" id="summaryTableWrap">{table_html}</div>
+<div class="block">{failure_html}</div>
 <script>
 const filter = document.getElementById('modelFilter');
 if (filter) {{

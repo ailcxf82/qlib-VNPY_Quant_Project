@@ -30,7 +30,7 @@
 data:
   # ... 其他配置 ...
   
-  label: "Ref($close, -5)/$close - 1"  # 原始标签（收益）
+  label: "Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1"  # 主工程口径：3 日远期相对收益
   
   # 标签转换配置
   label_transform:

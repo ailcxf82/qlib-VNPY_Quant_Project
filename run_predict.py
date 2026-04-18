@@ -265,6 +265,8 @@ def main():
             
             # 预测
             predictor = PredictorEngine(temp_pipeline_file.name)
+            rd_cols = list(getattr(pipeline, "rdagent_factor_columns", None) or [])
+            predictor.ensemble.update_feature_set("rdagent_exported", rd_cols)
             try:
                 predictor.load_models(tag)
             except FileNotFoundError as e:
