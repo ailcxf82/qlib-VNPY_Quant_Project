@@ -1,4 +1,14 @@
-import pickle
+"""
+Custom RD-Agent reward signal for model_template (P3a).
+
+Same logic as factor_template/read_exp_res.py: the LLM optimisation target now
+includes turnover penalty + composite score in addition to the default IC and
+annualised return + max drawdown that RD-Agent already tracks.
+"""
+
+from __future__ import annotations
+
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -8,51 +18,135 @@ qlib.init()
 
 from qlib.workflow import R
 
-# here is the documents of the https://qlib.readthedocs.io/en/latest/component/recorder.html
+OUT_DIR = Path(__file__).resolve().parent
+RET_PKL = Path("ret.pkl")
 
-# Assuming you have already listed the experiments
-experiments = R.list_experiments()
 
-# Iterate through each experiment to find the latest recorder
-experiment_name = None
-latest_recorder = None
-for experiment in experiments:
-    recorders = R.list_recorders(experiment_name=experiment)
-    for recorder_id in recorders:
-        if recorder_id is not None:
-            experiment_name = experiment
-            recorder = R.get_recorder(recorder_id=recorder_id, experiment_name=experiment)
-            end_time = recorder.info["end_time"]
+def _latest_recorder():
+    latest = None
+    for exp_name in R.list_experiments():
+        for rec_id in R.list_recorders(experiment_name=exp_name):
+            if rec_id is None:
+                continue
             try:
-                if end_time is not None:
-                    if latest_recorder is None or end_time > latest_recorder.info["end_time"]:
-                        latest_recorder = recorder
-                else:
-                    print(f"Warning: Recorder {recorder_id} has no valid end time")
-            except Exception as e:
-                print(f"Error: {e}")
+                rec = R.get_recorder(recorder_id=rec_id, experiment_name=exp_name)
+                end_time = rec.info.get("end_time")
+                if end_time is None:
+                    continue
+                if latest is None or end_time > latest.info["end_time"]:
+                    latest = rec
+            except Exception as exc:
+                print(f"[warn] skipped recorder {rec_id}: {exc}")
+    return latest
 
-# Check if the latest recorder is found
-if latest_recorder is None:
-    print("No recorders found")
-else:
-    print(f"Latest recorder: {latest_recorder}")
 
-    metrics = pd.Series(latest_recorder.list_metrics())
-    output_path = Path(__file__).resolve().parent / "qlib_res.csv"
-    metrics.to_csv(output_path)
-    print(f"Output has been saved to {output_path}")
+def _ic_ir(metrics: pd.Series) -> float:
+    for key in ("ICIR", "Rank ICIR", "ic_ir", "RankICIR"):
+        if key in metrics.index:
+            try:
+                v = float(metrics[key])
+                if not math.isnan(v):
+                    return v
+            except Exception:
+                pass
+    ic_mean = ic_std = None
+    for k in ("IC", "ic"):
+        if k in metrics.index:
+            try:
+                ic_mean = float(metrics[k])
+                break
+            except Exception:
+                pass
+    for k in ("ICStd", "IC.std", "ic_std"):
+        if k in metrics.index:
+            try:
+                ic_std = float(metrics[k])
+                break
+            except Exception:
+                pass
+    if ic_mean is not None and ic_std and ic_std > 0:
+        return ic_mean / ic_std
+    return float("nan")
 
-    # Try to load portfolio analysis; fall back to IC metrics if PortAnaRecord failed
+
+def _annualized_turnover(rec) -> float:
     try:
-        ret_data_frame = latest_recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
-        ret_data_frame.to_pickle("ret.pkl")
-        print("Portfolio analysis saved to ret.pkl")
-    except Exception as e:
-        print(f"PortAnaRecord not available ({e}), creating fallback ret.pkl from IC metrics")
-        ic_metrics = {k: v for k, v in metrics.items() if "IC" in k or "ic" in k}
-        if not ic_metrics:
-            ic_metrics = metrics.to_dict()
-        fallback_df = pd.DataFrame([ic_metrics])
-        fallback_df.to_pickle("ret.pkl")
-        print("Fallback ret.pkl created with metrics:", list(ic_metrics.keys())[:5])
+        df = rec.load_object("portfolio_analysis/report_normal_1day.pkl")
+        if "turnover" in df.columns:
+            return float(df["turnover"].mean()) * 252.0
+    except Exception as exc:
+        print(f"[warn] turnover unavailable: {exc}")
+    return float("nan")
+
+
+def _composite_score(ir: float, ic_ir: float, ann_turnover: float) -> float:
+    parts = []
+    if ir == ir:
+        parts.append(1.0 * ir)
+    if ic_ir == ic_ir:
+        parts.append(2.0 * ic_ir)
+    if ann_turnover == ann_turnover and ann_turnover > 0:
+        parts.append(-0.5 * math.log(1.0 + ann_turnover))
+    if not parts:
+        return float("nan")
+    return float(sum(parts))
+
+
+def _safe_get(metrics: pd.Series, key: str) -> float:
+    if key not in metrics.index:
+        return float("nan")
+    try:
+        return float(metrics[key])
+    except Exception:
+        return float("nan")
+
+
+def main() -> None:
+    rec = _latest_recorder()
+    if rec is None:
+        print("[error] no recorder found")
+        empty = pd.Series(dtype="float64", name="value")
+        empty.to_csv(OUT_DIR / "qlib_res.csv")
+        pd.DataFrame({0: empty}).to_pickle(RET_PKL)
+        return
+
+    metrics = pd.Series(rec.list_metrics())
+    ann_ret = _safe_get(metrics, "1day.excess_return_with_cost.annualized_return")
+    max_dd = _safe_get(metrics, "1day.excess_return_with_cost.max_drawdown")
+    info_ratio = _safe_get(metrics, "1day.excess_return_with_cost.information_ratio")
+    ic_ir = _ic_ir(metrics)
+    ann_turnover = _annualized_turnover(rec)
+    composite = _composite_score(info_ratio, ic_ir, ann_turnover)
+
+    metrics["1day.excess_return_with_cost.information_ratio"] = info_ratio
+    metrics["1day.excess_return_with_cost.annualized_turnover"] = ann_turnover
+    metrics["1day.composite_score"] = composite
+    metrics["ICIR_proxy"] = ic_ir
+    metrics.to_csv(OUT_DIR / "qlib_res.csv")
+
+    print(
+        f"[reward] composite={composite:.6f} | IR={info_ratio:.4f} "
+        f"IC_IR={ic_ir:.4f} ann_ret={ann_ret:.4f} "
+        f"max_dd={max_dd:.4f} ann_turnover={ann_turnover:.4f}"
+    )
+
+    try:
+        ret_df = rec.load_object("portfolio_analysis/report_normal_1day.pkl")
+        ret_df.to_pickle(RET_PKL)
+    except Exception as exc:
+        fallback = pd.DataFrame(
+            {
+                "composite_score": [composite],
+                "information_ratio": [info_ratio],
+                "annualized_turnover": [ann_turnover],
+                "annualized_return": [ann_ret],
+                "max_drawdown": [max_dd],
+                "ICIR": [ic_ir],
+            }
+        )
+        fallback.to_pickle(RET_PKL)
+        print(f"[warn] PortAnaRecord unavailable ({exc}); fallback ret.pkl written")
+
+
+if __name__ == "__main__":
+    main()

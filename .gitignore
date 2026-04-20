@@ -7,6 +7,10 @@ data/predictions/
 data/models/
 data/
 run_artifacts/
+test/__pycache__/
+test/factor_lab/__pycache__/
+test/factor_validation/__pycache__/
+test/factor_registry/__pycache__/
 .venv/
 scripts/__pycache__/
 scripts/rdagent/__pycache__/
@@ -4348,3 +4352,46 @@ git_ignore_folder/factor_implementation_source_data/daily_pv.h5
 rdagent_overrides/model_template/__pycache__/read_exp_res.cpython-311.pyc
 debug-82be18.log
 debug-872e26.log
+ 
+
+# ==================== 因子三层架构 (factor_lab / factor_validation / factor_registry) ====================
+# L1 工作区：候选因子物料（每次 RD-Agent 跑都会落盘，不入库）
+factor_lab/workspace/
+
+# L2 报告产出：HTML / Markdown 验证报告，可重生
+factor_validation/reports/
+
+# L3 production 因子值仓库：parquet 物料，可由证书 + L1 物料重建
+factor_registry/parquet/
+
+# 反例：以下必须入库（防止上面规则误伤）
+!factor_registry/data/
+!factor_registry/data/manifest.json
+!factor_registry/data/certified/
+!factor_registry/data/retired/
+!factor_registry/data/certified/.gitkeep
+!factor_registry/data/retired/.gitkeep
+
+# ==================== Factor Lab Architecture (v1.0+) ====================
+# L1 试验场工作区（候选因子物料，可任意失败）
+factor_lab/workspace/
+factor_lab/**/__pycache__/
+
+# L2 验证报告产出
+factor_validation/reports/
+factor_validation/**/__pycache__/
+
+# L3 production 因子值仓库（按版本号；体积大）
+factor_registry/parquet/
+factor_registry/**/__pycache__/
+
+# Pickle cache backups (Windows posix path issue 应急回滚)
+pickle_cache_BAK_*/
+
+tests/factor_lab/__pycache__/conftest.cpython-311-pytest-9.0.3.pyc
+tests/factor_lab/__pycache__/__init__.cpython-311.pyc
+tests/factor_lab/__pycache__/test_candidate_schema.cpython-311-pytest-9.0.3.pyc
+tests/factor_registry/__pycache__/__init__.cpython-311.pyc
+tests/factor_registry/__pycache__/test_production_schema.cpython-311-pytest-9.0.3.pyc
+tests/factor_validation/__pycache__/__init__.cpython-311.pyc
+tests/factor_validation/__pycache__/test_certified_schema.cpython-311-pytest-9.0.3.pyc

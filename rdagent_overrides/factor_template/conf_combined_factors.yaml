@@ -3,11 +3,12 @@
     region: cn
 
 market: &market all
-benchmark: &benchmark 000001.SZ
+# P3a: switched to a real index benchmark so excess_return_with_cost is meaningful.
+benchmark: &benchmark SH000300
 
 data_handler_config: &data_handler_config
-    start_time: 2020-01-01
-    end_time: 2022-12-31
+    start_time: 2022-01-01
+    end_time: 2025-10-31
     instruments: *market
     data_loader:
         class: NestedDataLoader
@@ -88,8 +89,10 @@ port_analysis_config: &port_analysis_config
             topk: 50
             n_drop: 5
     backtest:
-        start_time: 2022-01-01
-        end_time: 2022-12-30
+        # P3a: backtest on 2025-01~2025-10, leaving 2025-11~2026-03 untouched as the
+        # held-out period used by the project's real ensemble + rqalpha pipeline.
+        start_time: 2025-01-01
+        end_time: 2025-10-31
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -127,9 +130,11 @@ task:
                 module_path: qlib.contrib.data.handler
                 kwargs: *data_handler_config
             segments:
-                train: [2020-01-01, 2021-06-30]
-                valid: [2021-07-01, 2021-12-31]
-                test: [2022-01-01, 2022-12-30]
+                # P3a: shifted forward to use modern market regime; held-out window
+                # 2025-11~2026-03 stays untouched for the project's real backtest.
+                train: [2022-01-01, 2024-06-30]
+                valid: [2024-07-01, 2024-12-31]
+                test: [2025-01-01, 2025-10-31]
     record:
         - class: SignalRecord
           module_path: qlib.workflow.record_temp

@@ -180,6 +180,23 @@ def _exec_factor(ws_dir: Path, pv: pd.DataFrame, timeout_warn_sec: float = 20.0)
     return captured[-1]
 
 
+def _normalize_dt_inst(s: pd.Series) -> pd.Series:
+    """把 MultiIndex 调整为 (datetime, instrument) 并按字典序排序。"""
+    if s.index.nlevels < 2:
+        return s
+    names = list(s.index.names)
+    if names == ["datetime", "instrument"]:
+        return s.sort_index() if not s.index.is_monotonic_increasing else s
+    if set(names) == {"datetime", "instrument"} and names[0] != "datetime":
+        s = s.swaplevel()
+    elif names[0] is None or names[1] is None:
+        l0 = s.index.get_level_values(0)
+        if l0.dtype == object:
+            s = s.swaplevel()
+        s.index.set_names(["datetime", "instrument"], inplace=True)
+    return s.sort_index()
+
+
 def _ic(factor: pd.Series, label: pd.Series) -> float:
     try:
         aligned = pd.DataFrame({"f": factor, "l": label}).dropna()
@@ -188,6 +205,83 @@ def _ic(factor: pd.Series, label: pd.Series) -> float:
         return float(aligned["f"].rank().corr(aligned["l"].rank(), method="pearson"))
     except Exception:
         return float("nan")
+
+
+# ════════════════════════════════════════════════════════════════════════
+#                     B 模式：严格 OOS 筛选 + 去冗余
+# ════════════════════════════════════════════════════════════════════════
+
+def _ic_in_segments(factor: pd.Series, label: pd.Series,
+                    segments: list[tuple[str, str]]) -> list[float]:
+    out = []
+    for s, e in segments:
+        ms = pd.Timestamp(s); me = pd.Timestamp(e)
+        df = pd.DataFrame({
+            "f": factor.loc[(slice(ms, me), slice(None))],
+            "l": label.loc[(slice(ms, me), slice(None))],
+        }).dropna()
+        if len(df) < 200:
+            out.append(np.nan)
+        else:
+            out.append(float(df["f"].rank().corr(df["l"].rank())))
+    return out
+
+
+def _make_in_segments(start: str, cutoff: str, n: int) -> list[tuple[str, str]]:
+    sd = pd.Timestamp(start); ed = pd.Timestamp(cutoff)
+    bounds = pd.date_range(sd, ed, periods=n + 1)
+    return [(bounds[i].strftime("%Y-%m-%d"),
+             (bounds[i + 1] - pd.Timedelta(days=1)).strftime("%Y-%m-%d")) for i in range(n)]
+
+
+def _load_lgb_short_cycle_panel(start: str, end: str, instruments: list[str]) -> pd.DataFrame:
+    import yaml
+    from qlib.data import D
+    data_cfg = yaml.safe_load((_ROOT / "config" / "data.yaml").read_text(encoding="utf-8"))
+    expr = list(data_cfg["data"]["feature_sets"]["lgb_short_cycle"])
+    df = D.features(instruments, expr, start_time=start, end_time=end, freq="day")
+    df.columns = expr
+    if list(df.index.names) != ["datetime", "instrument"]:
+        df = df.swaplevel()
+    df.index.set_names(["datetime", "instrument"], inplace=True)
+    return df.sort_index()
+
+
+def _max_abs_corr_to_panel(series: pd.Series, panel: pd.DataFrame,
+                           sample_n: int = 100_000) -> tuple[float, str]:
+    """以 spearman 计算 series 与 panel 各列的最大 |corr|；为加速，对长 series 抽样。"""
+    s = series.dropna()
+    if len(s) > sample_n:
+        s = s.sample(sample_n, random_state=42).sort_index()
+    best = (0.0, "")
+    for col in panel.columns:
+        q = panel[col].reindex(s.index)
+        df = pd.DataFrame({"a": s, "b": q}).dropna()
+        if len(df) < 500:
+            continue
+        c = float(df["a"].rank().corr(df["b"].rank()))
+        if abs(c) > abs(best[0]):
+            best = (c, col)
+    return abs(best[0]), best[1]
+
+
+def _max_abs_corr_to_selected(series: pd.Series, picked: list[dict],
+                              sample_n: int = 100_000) -> float:
+    if not picked:
+        return 0.0
+    s = series.dropna()
+    if len(s) > sample_n:
+        s = s.sample(sample_n, random_state=42).sort_index()
+    best = 0.0
+    for c in picked:
+        q = c["series"].reindex(s.index)
+        df = pd.DataFrame({"a": s, "b": q}).dropna()
+        if len(df) < 500:
+            continue
+        v = abs(float(df["a"].rank().corr(df["b"].rank())))
+        if v > best:
+            best = v
+    return best
 
 
 def main() -> None:
@@ -199,11 +293,24 @@ def main() -> None:
     ap.add_argument("--start", default="2020-01-01")
     ap.add_argument("--end", default="2026-04-07")
     ap.add_argument("--instruments", default="csi500,csi300")
-    ap.add_argument("--ic-threshold", type=float, default=0.02)
+    ap.add_argument("--ic-threshold", type=float, default=0.02,
+                    help="松模式：仅按 |IC| 过滤")
     ap.add_argument("--max-nan-ratio", type=float, default=0.50)
     ap.add_argument("--max-factors", type=int, default=50)
     ap.add_argument("--dry-run", action="store_true")
+    # ── 严格 OOS 模式（B 模式）：传 --oos-cutoff 即启用 ──
+    ap.add_argument("--oos-cutoff", default=None,
+                    help="启用严格模式：仅用 ≤ 该日期的段算 IC_IR；> 该日期的段仅作 OOS 报告")
+    ap.add_argument("--ic-ir-threshold", type=float, default=0.30,
+                    help="严格模式：in-sample 段 IC_IR 阈值")
+    ap.add_argument("--max-corr-vs-lgb", type=float, default=0.70,
+                    help="严格模式：与 lgb_short_cycle 任一列 |spearman| 上限")
+    ap.add_argument("--max-corr-among-selected", type=float, default=0.70,
+                    help="严格模式：保留集合内部两两 |spearman| 上限（greedy 去冗余）")
+    ap.add_argument("--n-segments", type=int, default=12,
+                    help="严格模式：in-sample 区间被等分的段数")
     args = ap.parse_args()
+    strict = bool(args.oos_cutoff)
 
     if not WS_ROOT.exists():
         logger.error("MISSING: %s", WS_ROOT)
@@ -212,7 +319,7 @@ def main() -> None:
     logger.info("=== Step 1: build in-memory daily_pv from qlib_data ===")
     pv = build_in_memory_daily_pv(args.start, args.end, args.instruments)
     logger.info("=== Step 2: compute label ===")
-    label = build_label(pv)
+    label = _normalize_dt_inst(build_label(pv))
     logger.info("label non-null=%d", label.notna().sum())
 
     logger.info("=== Step 3: scan RD-Agent_workspace ===")
@@ -250,6 +357,7 @@ def main() -> None:
             n_fail += 1
             continue
         series = pd.to_numeric(result[col0], errors="coerce").rename(name)
+        series = _normalize_dt_inst(series)
 
         nan_ratio = float(series.isna().mean())
         if nan_ratio > args.max_nan_ratio:
@@ -279,11 +387,83 @@ def main() -> None:
         logger.error("no candidate factor qualified — abort.")
         sys.exit(2)
 
-    candidates.sort(key=lambda x: abs(x["ic"]), reverse=True)
-    selected = candidates[: args.max_factors]
-    logger.info("selected top %d by |IC|:", len(selected))
+    # ── 选因子：严格模式（B） vs 松模式（旧行为，按 |IC| 排序） ──
+    extras_per_factor: Dict[str, dict] = {}
+    if strict:
+        logger.info("=== Step 4.5: STRICT mode (OOS cutoff=%s) ===", args.oos_cutoff)
+        in_segs = _make_in_segments(args.start, args.oos_cutoff, args.n_segments)
+        oos_seg = (
+            (pd.Timestamp(args.oos_cutoff) + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+            args.end,
+        )
+        logger.info("in-sample 段 = %d 段，OOS 段 = %s ~ %s",
+                    args.n_segments, oos_seg[0], oos_seg[1])
+
+        logger.info("加载 lgb_short_cycle 表达式面板（用于共线性筛除）...")
+        instruments = sorted(set(label.index.get_level_values("instrument")))
+        lgb_panel = _load_lgb_short_cycle_panel(args.start, args.end, instruments)
+        logger.info("lgb_short_cycle 面板 shape=%s", lgb_panel.shape)
+
+        # (a) 算每个候选 IC_IR + OOS IC + 与 lgb 最大 corr
+        n_dropped_ir = n_dropped_corr = 0
+        scored: list[dict] = []
+        for c in candidates:
+            ic_in_vals = _ic_in_segments(c["series"], label, in_segs)
+            valid = [v for v in ic_in_vals if not np.isnan(v)]
+            if not valid:
+                ic_in_mean = np.nan; ic_in_std = np.nan; ir = np.nan
+            else:
+                ic_in_mean = float(np.mean(valid))
+                ic_in_std = float(np.std(valid))
+                ir = ic_in_mean / ic_in_std if ic_in_std > 1e-9 else np.nan
+            ic_oos = _ic_in_segments(c["series"], label, [oos_seg])[0]
+            corr_max, corr_col = _max_abs_corr_to_panel(c["series"], lgb_panel)
+            extras_per_factor[c["name"]] = {
+                "ic_in_mean": None if np.isnan(ic_in_mean) else round(ic_in_mean, 6),
+                "ic_in_std": None if np.isnan(ic_in_std) else round(ic_in_std, 6),
+                "ic_in_ir": None if np.isnan(ir) else round(ir, 4),
+                "ic_oos": None if np.isnan(ic_oos) else round(ic_oos, 6),
+                "max_abs_corr_vs_lgb": round(corr_max, 4),
+                "argmax_lgb_col": corr_col,
+            }
+            if np.isnan(ir) or ir < args.ic_ir_threshold:
+                n_dropped_ir += 1
+                continue
+            if corr_max > args.max_corr_vs_lgb:
+                n_dropped_corr += 1
+                continue
+            scored.append({**c, "ic_in_ir": ir, "ic_oos": ic_oos,
+                           "corr_lgb": corr_max, "corr_lgb_col": corr_col})
+        scored.sort(key=lambda x: x["ic_in_ir"], reverse=True)
+        logger.info("严格筛除：IC_IR<%s 丢 %d；|corr_vs_lgb|>%s 丢 %d；剩余 %d",
+                    args.ic_ir_threshold, n_dropped_ir,
+                    args.max_corr_vs_lgb, n_dropped_corr, len(scored))
+
+        # (b) greedy 去冗余 + 截 max-factors
+        selected: list[dict] = []
+        n_dropped_internal = 0
+        for c in scored:
+            if len(selected) >= args.max_factors:
+                break
+            cor_in = _max_abs_corr_to_selected(c["series"], selected)
+            if cor_in > args.max_corr_among_selected:
+                n_dropped_internal += 1
+                continue
+            selected.append(c)
+        logger.info("内部去冗余（|corr_among_selected|>%s）丢 %d；最终入选 %d",
+                    args.max_corr_among_selected, n_dropped_internal, len(selected))
+    else:
+        candidates.sort(key=lambda x: abs(x["ic"]), reverse=True)
+        selected = candidates[: args.max_factors]
+
+    logger.info("selected %d factor(s):", len(selected))
     for c in selected:
-        logger.info("  %-28s ic=%+.4f nan=%.3f", c["name"], c["ic"], c["nan_ratio"])
+        if strict:
+            logger.info("  %-28s ic=%+.4f IR=%+.2f oos=%+.4f corr_lgb=%.2f(vs %s)",
+                        c["name"], c["ic"], c["ic_in_ir"], c["ic_oos"],
+                        c["corr_lgb"], c["corr_lgb_col"][:34])
+        else:
+            logger.info("  %-28s ic=%+.4f nan=%.3f", c["name"], c["ic"], c["nan_ratio"])
 
     if args.dry_run:
         logger.info("dry-run: not writing parquet")
@@ -312,16 +492,27 @@ def main() -> None:
     summary = {
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "script": "refresh_rdagent_parquet.py",
+        "mode": "strict" if strict else "loose",
         "start": args.start,
         "end": args.end,
         "instruments": args.instruments,
         "ic_threshold": args.ic_threshold,
         "max_nan_ratio": args.max_nan_ratio,
         "max_factors": args.max_factors,
+        "oos_cutoff": args.oos_cutoff,
+        "ic_ir_threshold": args.ic_ir_threshold if strict else None,
+        "max_corr_vs_lgb": args.max_corr_vs_lgb if strict else None,
+        "max_corr_among_selected": args.max_corr_among_selected if strict else None,
+        "n_segments": args.n_segments if strict else None,
         "n_factors": len(selected),
         "shape": list(merged.shape),
         "factors": [
-            {"name": c["name"], "ic": round(c["ic"], 6), "nan_ratio": round(c["nan_ratio"], 4)}
+            {
+                "name": c["name"],
+                "ic": round(c["ic"], 6),
+                "nan_ratio": round(c["nan_ratio"], 4),
+                **(extras_per_factor.get(c["name"], {}) if strict else {}),
+            }
             for c in selected
         ],
     }

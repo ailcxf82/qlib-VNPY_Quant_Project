@@ -304,7 +304,64 @@ RD-Agent `factor.py` 期望的字段 ← 项目 qlib_data 实际字段：
 
 ---
 
-## 9. 与 Roadmap 的关系
+## 10. 对照实验结论与回滚说明（2026-04-19）
+
+P0-1 链路验证通过后，做了一次"含 RD vs 无 RD"完整训练 + rqalpha 回测对照：
+
+**回测窗口**：2025-11-03 ~ 2026-03-31（~5 个月，105 个交易日）；基准 沪深 300 期间 −4.11%
+
+| 指标 | csi300（无 RD） | csi300_RD | csi500（无 RD） | csi500_RD |
+|---|---:|---:|---:|---:|
+| 总收益率 | **+43.47%** | +11.04% | **+10.69%** | **−3.96%** |
+| 年化收益 | **+150.05%** | +30.29% | +29.20% | −9.94% |
+| 夏普 | **3.59** | 1.16 | 1.10 | **−0.17** |
+| 信息比 | 11.16 | 2.08 | 2.69 | 0.13 |
+| 最大回撤 | 8.39% | 9.40% | 15.99% | **22.11%** |
+| **年化换手** | 4.70 | **10.49（+123%）** | 3.59 | **11.34（+216%）** |
+| 胜率 | 56.6% | 51.5% | 52.5% | **46.5%** |
+| Alpha | 1.66 | 0.40 | 0.43 | 0.04 |
+
+**结论**：当前 14 个 RD-Agent 因子在所有维度均为负贡献，**csi500_RD 由盈利转亏损**。
+
+**根因诊断**：
+
+1. **In-sample factor selection bias**：14 个因子是在 2020-01 ~ 2026-04 全样本上按 |IC| 筛出的，回测窗口已被"看过"，属"看似无前视实际有前视"
+2. **同质化严重**：14 个里 4 个 MomRet_*、3 个 Volume*、3 个 VolRatio/VolumeTrend，几乎全是动量/量价族，与 `lgb_short_cycle` 中价格类表达式高度共线
+3. **高换手 → 成本吃光**：换手翻 2~3 倍是最干净的"作案证据"，扣完手续费/印花税/滑点后利润被吃光（csi500 从 +29% 退到 −10%）
+4. **胜率低于 50%**：csi500_RD 胜率 46.5%，验证集 IC 高（+0.148）而真实胜率反向 → 强证据指向"OOS 信号崩塌"
+
+### 10.1 回滚动作（已执行 2026-04-19）
+
+```yaml
+# config/pipeline.yaml
+model_features:
+  gru: "gru_short_cycle"
+  lgb: "lgb_short_cycle"   # 从 ["lgb_short_cycle", "rdagent_exported"] 回滚
+```
+
+P0-1 链路代码（`feature/qlib_feature_pipeline.py` / `models/ensemble_manager.py` / `trainer/trainer.py` / `trainer/oof_manager.py` / `run_predict.py`）**全部保留**，只改 `model_features.lgb` 一行即可重新启用。`config/data.yaml.active_feature_sets` 中的 `rdagent_exported` 也无需删除（pipeline 会根据是否被任何模型引用决定是否合并 parquet）。
+
+### 10.2 后置门槛：何时再启用 RD-Agent 因子
+
+必须在以下三件事**同时满足**后才重新启用：
+
+| 门槛 | 检查方式 |
+|---|---|
+| OOS 严格筛选（不再用全样本算 |IC|） | `refresh_rdagent_parquet.py --oos-cutoff 2024-12-31 --ic-ir-threshold 0.4` |
+| 与已有 `lgb_short_cycle` 列两两 |corr| ≤ 0.7 | `scripts/factor_diagnostic_p01.py` 共线性 heatmap |
+| OOS 段 IC_IR ≥ 0.3 且符号稳定 | `scripts/factor_diagnostic_p01.py` 滚动 IC 表 |
+
+预计 14 个因子会缩到 **3~5 个**。届时再启用，并跑同样的 csi300/csi500 对照回测，**夏普 / 年化收益 / 换手率三项必须不弱于无 RD 版本**才算通过。
+
+### 10.3 历史产物保留
+
+- 回测对照：`data/backtest/rqalpha/csi{300,500}` vs `data/backtest/rqalpha/csi{300,500}_RD`
+- parquet 备份：`git_ignore_folder/combined_factors_df.parquet.bak.<ts>`（旧 200 股版 + 当前 799 股版均保留）
+- 当前在用 parquet 仍是 14 因子版本，方便随时切回 P0-1 ON 跑 A/B
+
+---
+
+## 11. 与 Roadmap 的关系
 
 P0-1 完成后，可衔接：
 

@@ -50,6 +50,9 @@ def main() -> None:
     pipe_cfg["ensemble"] = {"aggregator": "average", "models": []}
     pipe_cfg["stack"] = {"enabled": False}
     pipe_cfg.setdefault("oof_stacking", {})["enabled"] = False
+    # smoke 必须强制 LGB 走双 feature set，绕开 pipeline.yaml 的"对照实验回滚"
+    pipe_cfg.setdefault("model_features", {})
+    pipe_cfg["model_features"]["lgb"] = ["lgb_short_cycle", "rdagent_exported"]
     pipe_cfg["rolling"] = {
         "window_mode": "classic",
         "feature_normalization": "per_model",
@@ -87,10 +90,24 @@ def main() -> None:
         log.error("ERROR: 未找到 LGB 模型文件")
         sys.exit(2)
 
-    import lightgbm as lgb
-    booster = lgb.Booster(model_file=str(lgb_txts[0]))
-    names = booster.feature_name()
-    rd_candidates = {"MomRet_5D", "VolumeWeightedReturn_5D", "MomRet_10D", "VolRatio_10D", "VolRatio_20D"}
+    import json as _json
+    meta_path = lgb_txts[0].with_name(lgb_txts[0].stem + "_meta.json")
+    if meta_path.exists():
+        meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+        names = meta.get("feature_names") or []
+        log.info("从 _meta.json 读到 %d 个 feature_name", len(names))
+    else:
+        import lightgbm as lgb
+        booster = lgb.Booster(model_file=str(lgb_txts[0]))
+        names = booster.feature_name()
+        log.warning("无 _meta.json，回退到 booster.feature_name() 可能为 Column_NN")
+    rd_candidates = {
+        # 旧 14 因子版（兼容历史 parquet）
+        "MomRet_5D", "VolumeWeightedReturn_5D", "MomRet_10D",
+        # P0-1 严格筛选后 5 因子版
+        "RangeRatio_10D", "VolumePriceTrend_10D", "VolRatio_10D", "VolRatio_20D",
+        "VolumeTrend_10D", "VolRet_5D",
+    }
     rd_hits = [n for n in names if n in rd_candidates]
     log.info("LGB 特征总数=%d", len(names))
     log.info("LGB 使用了 RD-Agent 因子: %d 个（示例: %s）", len(rd_hits), rd_hits)

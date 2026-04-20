@@ -45,6 +45,38 @@ def _patch_embedding_graceful_fallback() -> None:
         pass  # Silently skip if rdagent internals change in a future version.
 
 
+def _patch_feedback_important_metrics() -> None:
+    """
+    P3a: extend RD-Agent's hard-coded IMPORTANT_METRICS so the LLM feedback loop
+    also sees turnover + composite_score + information_ratio.
+
+    Without this patch the LLM only optimises against {IC, annualized_return,
+    max_drawdown}. After this patch the comparison table presented to the LLM
+    additionally contains:
+      - 1day.excess_return_with_cost.information_ratio
+      - 1day.excess_return_with_cost.annualized_turnover  (added in read_exp_res.py)
+      - 1day.composite_score                              (added in read_exp_res.py)
+    Steering the LLM to propose factors with high signal-to-noise ratio AND low
+    turnover, instead of high-IC short-cycle reversal factors that blow up
+    turnover (the failure mode observed in csi300_RD_v2).
+    """
+    try:
+        import rdagent.scenarios.qlib.developer.feedback as feedback_mod
+
+        extra = [
+            "1day.excess_return_with_cost.information_ratio",
+            "1day.excess_return_with_cost.annualized_turnover",
+            "1day.composite_score",
+        ]
+        existing = list(getattr(feedback_mod, "IMPORTANT_METRICS", []))
+        for k in extra:
+            if k not in existing:
+                existing.append(k)
+        feedback_mod.IMPORTANT_METRICS = existing
+    except Exception:
+        pass
+
+
 def _patch_feedback_process_results() -> None:
     """
     Wrap feedback.process_results to gracefully handle missing benchmark metrics.
@@ -54,6 +86,10 @@ def _patch_feedback_process_results() -> None:
     a KeyError for 'annualized_return' and 'max_drawdown'. This patch catches that
     specific KeyError and returns a NaN-filled fallback DataFrame so the workflow
     continues instead of crashing.
+
+    P3a addendum: also reindex with the extended IMPORTANT_METRICS list installed
+    by ``_patch_feedback_important_metrics`` so missing turnover/composite keys
+    do not crash older runs.
     """
     try:
         import pandas as pd
@@ -68,6 +104,9 @@ def _patch_feedback_process_results() -> None:
                 important = [
                     "1day.excess_return_with_cost.annualized_return",
                     "1day.excess_return_with_cost.max_drawdown",
+                    "1day.excess_return_with_cost.information_ratio",
+                    "1day.excess_return_with_cost.annualized_turnover",
+                    "1day.composite_score",
                 ]
                 try:
                     if isinstance(current_result, pd.Series) and isinstance(sota_result, pd.Series):
@@ -115,6 +154,8 @@ def apply_qlib_conda_env_patch() -> None:
 
     # Prevent embedding-API crash from killing runs when a factor task first succeeds.
     _patch_embedding_graceful_fallback()
+    # P3a: extend the LLM's reward signal BEFORE the feedback wrapper is installed.
+    _patch_feedback_important_metrics()
     _patch_feedback_process_results()
 
 
