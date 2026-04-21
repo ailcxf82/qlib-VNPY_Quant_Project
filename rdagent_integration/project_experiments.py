@@ -1,25 +1,16 @@
-"""Use rdagent_overrides templates aligned with config/data.yaml (provider_uri, csi500)."""
+"""REMOVED (stage G.2) — see ``factor_lab.adapters.experiments``.
+
+Any import of this module raises ``RuntimeError`` on purpose. Update to::
+
+    from factor_lab.adapters.experiments import (
+        ProjectQlibFactorExperiment,
+        ProjectQlibModelExperiment,
+    )
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from rdagent.scenarios.qlib.experiment.factor_experiment import QlibFactorExperiment
-from rdagent.scenarios.qlib.experiment.model_experiment import QlibModelExperiment
-from rdagent.scenarios.qlib.experiment.workspace import QlibFBWorkspace
-
-_ROOT = Path(__file__).resolve().parent.parent
-_FACTOR_TPL = _ROOT / "rdagent_overrides" / "factor_template"
-_MODEL_TPL = _ROOT / "rdagent_overrides" / "model_template"
-
-
-class ProjectQlibFactorExperiment(QlibFactorExperiment):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.experiment_workspace = QlibFBWorkspace(template_folder_path=_FACTOR_TPL)
-
-
-class ProjectQlibModelExperiment(QlibModelExperiment):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.experiment_workspace = QlibFBWorkspace(template_folder_path=_MODEL_TPL)
+raise RuntimeError(
+    "rdagent_integration.project_experiments 已在阶段 G.2 下线；"
+    "请 import factor_lab.adapters.experiments"
+)

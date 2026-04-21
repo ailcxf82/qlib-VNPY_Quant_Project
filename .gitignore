@@ -1,3 +1,9 @@
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+*.json
 **/mlruns/
 data/backtest/
 data/logs/
@@ -6,12 +12,18 @@ data/meta/
 data/predictions/
 data/models/
 data/
+logs/
+factor_registry/data/
+factor_registry/data/certified/
+factor_registry/data/retired/
+scripts/lab/__pycache__/
 run_artifacts/
 test/__pycache__/
 test/factor_lab/__pycache__/
 test/factor_validation/__pycache__/
 test/factor_registry/__pycache__/
 .venv/
+scripts/lab/
 scripts/__pycache__/
 scripts/rdagent/__pycache__/
 git_ignore_folder/

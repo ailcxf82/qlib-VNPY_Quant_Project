@@ -45,14 +45,14 @@ CertifiedFactorRecord
 ## 3. CheckResult 字段
 
 
-| 字段           | 类型             | 必填  | 说明                                    |
-| ------------ | -------------- | --- | ------------------------------------- |
-| `name`       | `str`          | ✅   | check 名，例如 `'ic'`、`'turnover'`        |
-| `passed`     | `bool`         | ✅   | 本项是否通过                                |
-| `score`      | `float | None` | ⬜   | 0~1 区间，参与 overall_score 聚合；不参与时填 None |
-| `threshold`  | `float | None` | ⬜   | 判定阈值；便于报告解释                           |
-| `detail`     | `dict`         | ⬜   | 任意附加信息（IC 序列摘要、p 值、子时段表现等）            |
-| `elapsed_ms` | `int`          | ✅   | 本项耗时（毫秒）≥0                            |
+| 字段           | 类型     | 必填    | 说明                             |
+| ------------ | ------ | ----- | ------------------------------ |
+| `name`       | `str`  | ✅     | check 名，例如 `'ic'`、`'turnover'` |
+| `passed`     | `bool` | ✅     | 本项是否通过                         |
+| `score`      | `float | None` | ⬜                              |
+| `threshold`  | `float | None` | ⬜                              |
+| `detail`     | `dict` | ⬜     | 任意附加信息（IC 序列摘要、p 值、子时段表现等）     |
+| `elapsed_ms` | `int`  | ✅     | 本项耗时（毫秒）≥0                     |
 
 
 ---
@@ -60,19 +60,19 @@ CertifiedFactorRecord
 ## 4. CertifiedFactorRecord 字段
 
 
-| 字段                  | 类型                       | 必填  | 说明                                       |
-| ------------------- | ------------------------ | --- | ---------------------------------------- |
-| `factor_id`         | `str`                    | ✅   | 必须等于 `candidate.factor_id`               |
-| `candidate`         | `CandidateFactorPackage` | ✅   | C1 全文                                    |
-| `profile_name`      | `str`                    | ✅   | 使用的 profile 名                            |
-| `profile_hash`      | `str`                    | ✅   | profile YAML 的 sha256（64 位小写十六进制）        |
-| `decision`          | `Decision`               | ✅   | `PASS` / `FAIL` / `HOLD`                 |
-| `overall_score`     | `float`                  | ✅   | [0, 1]                                   |
-| `check_results`     | `list[CheckResult]`      | ✅   | ≥ 1 项；name 不可重复                          |
-| `backtest_metrics`  | `dict[str, float]`       | ⬜   | RQAlpha 真实回测的核心指标                        |
-| `validated_at`      | `datetime`               | ✅   | UTC                                      |
-| `validator_version` | `str`                    | ✅   | factor_validation 包版本（PEP440 风格 'x.y.z'） |
-| `notes`             | `str | None`             | ⬜   | 人工备注，≤4000 字                             |
+| 字段                  | 类型                       | 必填    | 说明                                       |
+| ------------------- | ------------------------ | ----- | ---------------------------------------- |
+| `factor_id`         | `str`                    | ✅     | 必须等于 `candidate.factor_id`               |
+| `candidate`         | `CandidateFactorPackage` | ✅     | C1 全文                                    |
+| `profile_name`      | `str`                    | ✅     | 使用的 profile 名                            |
+| `profile_hash`      | `str`                    | ✅     | profile YAML 的 sha256（64 位小写十六进制）        |
+| `decision`          | `Decision`               | ✅     | `PASS` / `FAIL` / `HOLD`                 |
+| `overall_score`     | `float`                  | ✅     | [0, 1]                                   |
+| `check_results`     | `list[CheckResult]`      | ✅     | ≥ 1 项；name 不可重复                          |
+| `backtest_metrics`  | `dict[str, float]`       | ⬜     | RQAlpha 真实回测的核心指标                        |
+| `validated_at`      | `datetime`               | ✅     | UTC                                      |
+| `validator_version` | `str`                    | ✅     | factor_validation 包版本（PEP440 风格 'x.y.z'） |
+| `notes`             | `str                     | None` | ⬜                                        |
 
 
 ---

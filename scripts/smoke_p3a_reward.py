@@ -109,9 +109,9 @@ def _check_python(path: Path) -> list[str]:
 
 
 def _check_rag() -> list[str]:
-    from rdagent_integration.project_quant_proposal import ProjectQlibQuantHypothesisGen
+    from factor_lab.adapters.quant_proposal import _PROJECT_FACTOR_RAG
 
-    rag = ProjectQlibQuantHypothesisGen._PROJECT_FACTOR_RAG
+    rag = _PROJECT_FACTOR_RAG
     must_contain = [
         "composite_score",
         "annualized_turnover",
@@ -130,7 +130,7 @@ def _check_monkey_patch() -> list[str]:
         import rdagent.scenarios.qlib.developer.feedback as feedback_mod
     except Exception as exc:
         return [f"cannot import rdagent feedback (need rdagent installed): {exc}"]
-    from rdagent_integration.patch_qlib_conda import _patch_feedback_important_metrics
+    from factor_lab.adapters.patch_qlib_conda import _patch_feedback_important_metrics
 
     _patch_feedback_important_metrics()
     extra = [

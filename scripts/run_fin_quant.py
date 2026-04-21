@@ -1,44 +1,19 @@
-"""
-Run RD-Agent fin_quant with:
-- qlib_zhengshi conda for Qlib qrun (see QLIB_RDAGENT_CONDA_ENV / patch_qlib_conda)
-- Project YAML templates under rdagent_overrides/ (provider_uri, csi500, SH000905)
+"""REMOVED (stage G.2) —— 请改用 ``python -m scripts.lab.run_rdagent_loop``。
 
-Usage (from repo root, conda env qlib_zhengshi activated):
+原实现自阶段 E 起已搬到 ``factor_lab.runners.rdagent_loop``；阶段 F 期间保留
+DeprecationWarning shim；阶段 G.2 起 import / 运行本脚本都会立刻抛 ``RuntimeError``，
+以强制外部 CI / 任务链更新命令。
 
-  python scripts/run_fin_quant.py --loop_n=1
+新命令::
 
-Or:
-
-  conda run -n qlib_zhengshi python scripts/run_fin_quant.py --loop_n=1
-
-Requires `.env` with LiteLLM / OpenAI-compatible settings (see `.env.example`).
+    python -m scripts.lab.run_rdagent_loop --loop_n=1
 """
 
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
+_MIGRATION_HINT = (
+    "scripts/run_fin_quant.py 已在阶段 G.2 下线；"
+    "请改用 `python -m scripts.lab.run_rdagent_loop`"
+)
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-os.chdir(ROOT)
-
-from dotenv import load_dotenv
-
-load_dotenv(ROOT / ".env")
-
-from rdagent_integration.patch_qlib_conda import apply_qlib_conda_env_patch, _patch_qlib_runner_env
-
-apply_qlib_conda_env_patch()
-
-from rdagent.app.qlib_rd_loop.quant import main
-
-# Hypothesis D/B: patch any stale references in runner modules (imported after patch)
-_patch_qlib_runner_env()
-
-if __name__ == "__main__":
-    import fire
-
-    fire.Fire(main)
+raise RuntimeError(_MIGRATION_HINT)

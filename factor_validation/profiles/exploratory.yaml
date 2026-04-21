@@ -1,0 +1,61 @@
+# ==============================================================================
+# ValidationProfile: exploratory
+# ==============================================================================
+# 用途：RD-Agent / 人工探索阶段的**宽松预筛**。只用于"把明显无用的候选拦在门外"，
+# 通过后**不允许**直接入 L3 —— 必须再过 strict profile。
+#
+# 典型链路：
+#   factor_lab 产出候选 → exploratory 预筛（秒级）→ PASS 的进 default 精验
+#
+# 阶段 D 变更：新增轻量级 long-short 回测 (``backtest``) 作为补充门槛，weight 从
+# ic/orthogonality 里挪出来。marginal / marginal_training 因依赖 baseline 预测 +
+# 重训 LGB，exploratory 阶段不启用。
+# ==============================================================================
+
+profile_name: exploratory
+description: "宽松 profile；RD-Agent 自动循环早期过滤用；通过后不可直接入 L3（需 strict 重验）"
+
+universe: csi300
+oos_window: ["2024-07-01", "2026-04-07"]
+benchmark: SH000300
+
+aggregation:
+  method: weighted_sum
+  pass_threshold: 0.40
+  fail_threshold: 0.20
+
+data_sources:
+  label_parquet: "factor_validation/data/oos_labels_all.parquet"
+  reference_factors_parquet: "factor_registry/parquet/factors_v1.parquet"
+  # exploratory 不启用 marginal，不需要 baseline_prediction_parquet
+
+checks:
+  coverage:
+    enabled: true
+    weight: 0.10
+    min_non_null_ratio: 0.70
+  ic:
+    enabled: true
+    weight: 0.45
+    min_rank_ic: 0.005
+    min_ic_ir: 0.10
+    allow_negative: true
+  orthogonality:
+    enabled: true
+    weight: 0.10
+    max_abs_corr: 0.80
+  turnover:
+    enabled: true
+    weight: 0.20
+    # (1 - cross_sectional_spearman) / 2；探索阶段只排除明显反转型
+    max_daily_rank_turnover: 0.55
+    min_rank_autocorr: 0.10
+  backtest:
+    enabled: true
+    weight: 0.15
+    quantile: 0.2               # 多空头各取 20% 分位
+    min_long_short_sharpe: 0.5  # 宽松：半个 Sharpe 就通过
+    max_drawdown: 0.60
+    min_annual_return: 0.0
+    min_win_ratio: 0.45
+    allow_negative: true

@@ -25,21 +25,21 @@ L1 / L2 之间禁止：
 ## 2. 字段速查
 
 
-| 字段            | 类型                                       | 是否必填 | 说明                                                             |
-| ------------- | ---------------------------------------- | ---- | -------------------------------------------------------------- |
-| `factor_id`   | `str`                                    | ✅    | 唯一 ID，格式 `<source>_<name>_<short_hash>`                        |
-| `name`        | `str`                                    | ✅    | 人类可读名，必须与 `values.parquet` 单列列名一致                              |
-| `source`      | `Literal["rdagent","manual","external"]` | ✅    | 候选来源                                                           |
-| `hypothesis`  | `str`                                    | ✅    | LLM 假设原文 / 设计动机；非空，≤4000 字                                     |
-| `formulation` | `str`                                    | ✅    | 数学公式 / pseudocode；非空，≤4000 字                                   |
-| `code_path`   | `Path`                                   | ✅    | `factor.py` 路径                                                 |
-| `values_path` | `Path`                                   | ✅    | `values.parquet` 路径                                            |
-| `universe`    | `str`                                    | ✅    | 适用股票池：`csi300` / `csi500` / `all` 等                            |
-| `date_range`  | `tuple[date, date]`                      | ✅    | 因子值覆盖的闭区间                                                      |
-| `lab_metrics` | `dict[str, float]`                       | ⬜    | L1 自报指标，**仅参考**；L2 必须重新计算                                      |
-| `parent_loop` | `int | None`                             | 条件   | RD-Agent loop index；`source='rdagent'` 时必填，`'manual'` 时必须 None |
-| `created_at`  | `datetime`                               | ✅    | UTC 时间戳                                                        |
-| `lab_run_id`  | `str`                                    | ✅    | 一次 lab run 的 UUID / 短串，便于审计                                    |
+| 字段            | 类型                                       | 是否必填  | 说明                                      |
+| ------------- | ---------------------------------------- | ----- | --------------------------------------- |
+| `factor_id`   | `str`                                    | ✅     | 唯一 ID，格式 `<source>_<name>_<short_hash>` |
+| `name`        | `str`                                    | ✅     | 人类可读名，必须与 `values.parquet` 单列列名一致       |
+| `source`      | `Literal["rdagent","manual","external"]` | ✅     | 候选来源                                    |
+| `hypothesis`  | `str`                                    | ✅     | LLM 假设原文 / 设计动机；非空，≤4000 字              |
+| `formulation` | `str`                                    | ✅     | 数学公式 / pseudocode；非空，≤4000 字            |
+| `code_path`   | `Path`                                   | ✅     | `factor.py` 路径                          |
+| `values_path` | `Path`                                   | ✅     | `values.parquet` 路径                     |
+| `universe`    | `str`                                    | ✅     | 适用股票池：`csi300` / `csi500` / `all` 等     |
+| `date_range`  | `tuple[date, date]`                      | ✅     | 因子值覆盖的闭区间                               |
+| `lab_metrics` | `dict[str, float]`                       | ⬜     | L1 自报指标，**仅参考**；L2 必须重新计算               |
+| `parent_loop` | `int                                     | None` | 条件                                      |
+| `created_at`  | `datetime`                               | ✅     | UTC 时间戳                                 |
+| `lab_run_id`  | `str`                                    | ✅     | 一次 lab run 的 UUID / 短串，便于审计             |
 
 
 ---

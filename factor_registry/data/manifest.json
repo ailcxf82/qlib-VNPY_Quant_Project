@@ -1,5 +1,81 @@
 {
   "schema_version": 1,
-  "last_updated_at": null,
-  "factors": []
+  "last_updated_at": "2026-04-20T06:39:15.855476+00:00",
+  "factors": [
+    {
+      "factor_id": "manual_RangeRatio_10D_bb147b539a",
+      "name": "RangeRatio_10D",
+      "status": "active",
+      "parquet_version": 1,
+      "parquet_column": "RangeRatio_10D",
+      "certificate_path": "certified\\manual_RangeRatio_10D_bb147b539a.json",
+      "registered_at": "2026-04-20T03:24:54.768901Z",
+      "retired_at": null,
+      "retire_reason": null,
+      "tags": [
+        "legacy",
+        "grandfathered"
+      ]
+    },
+    {
+      "factor_id": "manual_VolRatio_20D_7439285b70",
+      "name": "VolRatio_20D",
+      "status": "active",
+      "parquet_version": 1,
+      "parquet_column": "VolRatio_20D",
+      "certificate_path": "certified\\manual_VolRatio_20D_7439285b70.json",
+      "registered_at": "2026-04-20T03:24:54.768901Z",
+      "retired_at": null,
+      "retire_reason": null,
+      "tags": [
+        "legacy",
+        "grandfathered"
+      ]
+    },
+    {
+      "factor_id": "manual_VolRet_5D_11d70180fb",
+      "name": "VolRet_5D",
+      "status": "retired",
+      "parquet_version": 1,
+      "parquet_column": "VolRet_5D",
+      "certificate_path": "retired\\manual_VolRet_5D_11d70180fb.json",
+      "registered_at": "2026-04-20T03:24:54.768901Z",
+      "retired_at": "2026-04-20T06:39:15.850658Z",
+      "retire_reason": "oracle default v2 FAIL: VolRet_5D 低 IC (rank_ic=0.012, ic_ir=0.31); VolumeTrend_10D 与 RangeRatio_10D 高相关且 IC 更低 (rank_ic=0.030 vs 0.093), plan B 择一退役",
+      "tags": [
+        "legacy",
+        "grandfathered"
+      ]
+    },
+    {
+      "factor_id": "manual_VolumePriceTrend_10D_9f0859e4dc",
+      "name": "VolumePriceTrend_10D",
+      "status": "active",
+      "parquet_version": 1,
+      "parquet_column": "VolumePriceTrend_10D",
+      "certificate_path": "certified\\manual_VolumePriceTrend_10D_9f0859e4dc.json",
+      "registered_at": "2026-04-20T03:24:54.768901Z",
+      "retired_at": null,
+      "retire_reason": null,
+      "tags": [
+        "legacy",
+        "grandfathered"
+      ]
+    },
+    {
+      "factor_id": "manual_VolumeTrend_10D_5142b584ee",
+      "name": "VolumeTrend_10D",
+      "status": "retired",
+      "parquet_version": 1,
+      "parquet_column": "VolumeTrend_10D",
+      "certificate_path": "retired\\manual_VolumeTrend_10D_5142b584ee.json",
+      "registered_at": "2026-04-20T03:24:54.768901Z",
+      "retired_at": "2026-04-20T06:39:15.855476Z",
+      "retire_reason": "oracle default v2 FAIL: VolRet_5D 低 IC (rank_ic=0.012, ic_ir=0.31); VolumeTrend_10D 与 RangeRatio_10D 高相关且 IC 更低 (rank_ic=0.030 vs 0.093), plan B 择一退役",
+      "tags": [
+        "legacy",
+        "grandfathered"
+      ]
+    }
+  ]
 }

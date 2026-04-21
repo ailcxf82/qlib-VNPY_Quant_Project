@@ -1,0 +1,119 @@
+# 阶段 F.3：RD-Agent RAG 静态宪法 YAML 版
+#
+# 研究员扩展 encouraged / discouraged / columns / windows 等时直接改本文件，不用改代码。
+#
+# 结构：
+#   - version：schema 版本，不兼容升级需要 bump。
+#   - allowed_windows / allowed_primitives / forbidden_patterns：规则 1-4 的数据源。
+#   - columns：daily_pv.h5 的可用列表（规则 5）。
+#   - columns_nan_note：列里哪些有 NaN 的说明文本。
+#   - scoring：打分公式 + 优化目标 + 经验教训。
+#   - feature_universe：现有 lgb_short_cycle 的 32 列。
+#   - orthogonality_rules：6a/6b/6c 三条硬要求。
+#   - encouraged_families：高分期望的家族（用于 RAG 正向示范）。
+#   - discouraged_families：低分家族（用于 RAG 负向警告）。
+#   - naming_convention：因子命名规范。
+#
+# 兼容性：
+#   YAML 损坏 / 缺失 → 回退到 factor_lab/config/constitution.py 里的
+#   _FALLBACK_CONSTITUTION_TEXT（与本 YAML 的默认渲染输出保持 byte-for-byte 一致）。
+
+version: "1.0"
+
+allowed_windows: [5, 10, 20, 30, 60]
+
+allowed_primitives:
+  - pct_change
+  - shift
+  - rolling(W).mean/std/sum/min/max/corr
+  - rank
+  - clip
+
+forbidden_patterns:
+  - nested rolling correlations across many series
+  - loops
+  - '"10 pairs" patterns'
+
+columns:
+  Price/Volume: [$close, $open, $high, $low, $volume, $amount]
+  Liquidity:    [$turnover_rate, $turnover_rate_f, $volume_ratio]
+  Valuation:    [$pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio]
+  Quality:      [$roe, $roa, $q_profit_yoy, $q_eps]
+  Technical:    [$rsi12, $macd, $macd_dif, $kdj_k, $kdj_d, $atr]
+  Margin:       [$rzye, $rqye]
+
+columns_nan_note: |-
+  NOTE: $pe_ttm/$pb/$roe/$q_profit_yoy may have NaN for some instruments (quarterly data).
+        Always use .fillna(method='ffill') or rolling mean as fallback for fundamental columns.
+
+scoring:
+  formula: "1day.composite_score = 1.0*IR + 2.0*IC_IR - 0.5*log(1+annualized_turnover)"
+  optimization_targets:
+    - "IR  (information_ratio of excess_return_with_cost) \u2014 real backtest signal-to-noise"
+    - "IC_IR (Rank IC mean / IC std) \u2014 signal stability"
+    - "annualized_turnover \u2014 penalised; high-frequency switching hurts the score."
+  historical_lesson: |-
+    Empirical lesson from previous loops (csi300_RD_v2, 2025-11~2026-03):
+      Adding 5 short-cycle volume-price-reversal factors (RangeRatio_10D, VolRatio_20D,
+      VolumePriceTrend_10D, VolumeTrend_10D, VolRet_5D) raised LGB valid-IC from 0.148
+      to 0.226 BUT the realised Sharpe DROPPED from 3.59 to 1.69 because annualized
+      turnover almost doubled (4.7 -> 8.75) and the strategy beta collapsed from 1.50
+      to 0.90 (signals fought each other instead of stacking). DO NOT propose more
+      short-cycle volume-price-reversal factors; they are the failure family.
+
+feature_universe:
+  name: lgb_short_cycle
+  column_count: 32
+  groups:
+    Returns/Momentum: [RET1, MOM5, MOM10, MOM20, MOM1_5]
+    Volatility:       [VOL5, VOL10, VOL20]
+    Volume ratios:    [VRATIO5, VRATIO10, VRATIO20, VOLVOL]
+    Range:            [HLRANGE, HLRANGE5, HLRANGE10]
+    Liquidity:        [TURN, TURN_F, TURN_REL]
+    Valuation:        [PE_TTM, PB, PS_TTM, LOG_MV]
+    Quality:          [ROE, ROA, PROFIT_YOY]
+    Technical:        [RSI12, MACD, KDJ_DIFF, ATR]
+    Margin:           [MARGIN_L, MARGIN_S]
+
+orthogonality_rules:
+  - |-
+    6.a) New factor MUST satisfy |Spearman(new_factor, X)| <= 0.50 for every X above
+         (when X is a strict superset, prove orthogonality through transformation).
+  - |-
+    6.b) New factor's day-over-day cross-sectional rank auto-correlation MUST be
+         >= 0.60 (slow-moving) — this directly bounds turnover.
+  - |-
+    6.c) Avoid signals that primarily fire on the SAME day as a price jump; prefer
+         lagged / smoothed transformations.
+
+encouraged_families:
+  - id: a
+    text: "Quality persistence: rolling_mean($roe, 4 quarters) ranked vs sector"
+  - id: b
+    text: "Valuation mean-reversion (slow): ($pe_ttm - rolling_median($pe_ttm, 60)) / rolling_std($pe_ttm, 60)"
+  - id: c
+    text: "Margin financing trend: rolling_mean($rzye / $total_mv, 20) - rolling_mean($rzye / $total_mv, 60)"
+  - id: d
+    text: "Earnings revision strength: $q_profit_yoy minus its 4-quarter rolling median (use shift)"
+  - id: e
+    text: "Low-volatility quality: rank($roe) / (rank(VOL20) + 1)"
+  - id: f
+    text: "Long-horizon residual momentum: pct_change($close, 60) - beta * pct_change(benchmark, 60)"
+  - id: g
+    text: "Liquidity stability: 1 / rolling_std($turnover_rate / Mean($turnover_rate, 60), 20)"
+
+discouraged_families:
+  # 阶段 G.4：每条目可选 ``penalty`` 字段。
+  #   - 缺省 / penalty=.inf → 硬黑名单，渲染无额外注解（F 阶段行为）。
+  #   - penalty=-0.5 / -1.0 等具体数值 → 软降权：渲染追加「仍可尝试但需附加理由」。
+  # 默认这里三条都不带 penalty，保持和 _FALLBACK_CONSTITUTION_TEXT 的 byte-for-byte 一致。
+  - id: x
+    text: "Short-cycle volume-price reversals on W in {5, 10}"
+  - id: y
+    text: "Same-day volume spike + price reversal patterns"
+  - id: z
+    text: "Anything that ranks the universe with >50% weekly turnover"
+
+naming_convention: |-
+  7) Factor names must encode type and window, e.g. QualPersist_60D, ValueMR_60D,
+     MarginTrend_20D, EarnRev_4Q, LowVolQual_20D, ResidMom_60D, LiqStab_20D.

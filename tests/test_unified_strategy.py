@@ -10,7 +10,8 @@ Tests cover:
 """
 
 import unittest
-from unittest.mock import MagicMock,import pandas as pd
+from unittest.mock import MagicMock
+import pandas as pd
 
 from monitor.unified_strategy import (
     UnifiedStrategyBase,

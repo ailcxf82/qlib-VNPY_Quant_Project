@@ -1,0 +1,39 @@
+# 阶段 F.1：家族分类规则 YAML 版
+#
+# 解释：
+#   按顺序匹配，第一个命中即返回；全未命中统一归 "unknown"。
+#   pattern 是 Python re 正则，默认 re.IGNORECASE。
+#   研究员扩展新家族时**追加**到列表末尾（不要打乱顺序，保证回归稳定）。
+#
+# 契约约束（loader 会校验）：
+#   - label 非空、不含空白、不含路径分隔符
+#   - label 必须唯一（重复会 raise）
+#   - pattern 必须能被 re.compile
+#
+# 兼容性：
+#   若 YAML 损坏 / 缺失，aggregator 回退到 factor_lab/config/families.py 的
+#   DEFAULT_FAMILY_RULES（同一份默认值的 Python 副本）。
+#
+# 历史：
+#   - 2026-04-18 F.1 首版，从 factor_lab/feedback/aggregator.py 原 _FAMILY_RULES 抽出。
+
+version: "1.0"
+rules:
+  - label: volume_price_reversal
+    pattern: "(VolRev|VolRet|VolTwist|RangeRatio|VolumeTrend|VolRatio)"
+  - label: volume_price_momentum
+    pattern: "(VolumePriceTrend|VolPriceMom|VolMom)"
+  - label: quality_persist
+    pattern: "(QualPersist|ROEPersist|Quality)"
+  - label: value_mean_revert
+    pattern: "(ValueMR|ValueRev|PEMR|PBMR)"
+  - label: margin_trend
+    pattern: "(MarginTrend|MarginFlow|Rzye)"
+  - label: earnings_revision
+    pattern: "(EarnRev|EPSRev|ProfitRev)"
+  - label: residual_momentum
+    pattern: "(ResidMom|ResidualMom|BetaAdj)"
+  - label: liquidity_stability
+    pattern: "(LiqStab|LiqVol|TurnStab)"
+  - label: low_volatility
+    pattern: "(LowVol|LowRisk|LowBeta)"

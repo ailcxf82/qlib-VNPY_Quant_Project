@@ -298,14 +298,92 @@ class QlibFeaturePipeline:
     def _default_rdagent_parquet_path(self) -> Path:
         return _project_root / "git_ignore_folder" / "combined_factors_df.parquet"
 
+    def _try_load_from_registry(
+        self, feature_index: pd.MultiIndex
+    ) -> pd.DataFrame | None:
+        """阶段 B：优先通过 L3 ``ProductionFactorLoader`` 取因子。
+
+        返回 ``None`` 表示 L3 通路不可用（flag 关闭 / 未迁移 / 任何异常），
+        调用方应 fallback 到旧路径（``git_ignore_folder/combined_factors_df.parquet``）。
+
+        与旧路径 **数值完全等价** 的必要条件：``migrate_legacy_factors.py`` 把同一份
+        parquet 原样写入 ``factor_registry/parquet/factors_v<N>.parquet``；loader 按
+        active 记录取列后再 reindex 到 ``feature_index``，索引对齐后值不会变动。
+        """
+        cfg_path = _project_root / "config" / "factor_lab.yaml"
+        if not cfg_path.exists():
+            return None
+        try:
+            import yaml  # noqa: WPS433 延迟导入
+            with cfg_path.open("r", encoding="utf-8") as f:
+                raw_cfg = yaml.safe_load(f) or {}
+        except Exception as exc:
+            logger.warning("L3 loader: 读取 factor_lab.yaml 失败: %s（回退旧路径）", exc)
+            return None
+        if not (raw_cfg.get("flags") or {}).get("enabled", False):
+            return None
+
+        try:
+            # 延迟导入：避免测试隔离场景下触发 registry 目录副作用
+            from feature.production_factor_loader import ProductionFactorLoader  # noqa: WPS433
+            loader = ProductionFactorLoader.from_default_paths(
+                project_root=_project_root, config_path=cfg_path
+            )
+            cols = loader.list_active_columns()
+            if not cols:
+                logger.info("L3 loader: manifest 无 active 因子，回退旧路径")
+                return None
+            df = loader.load_active(align_index=feature_index)
+            if df is None or df.shape[1] == 0:
+                return None
+            logger.info(
+                "L3 loader: 取到 %d 个 active 因子 (version=%s): %s",
+                df.shape[1],
+                loader.resolve_version(),
+                list(df.columns)[:5],
+            )
+            return df
+        except Exception as exc:  # noqa: BLE001 — 任何异常都回退保持兼容
+            logger.warning("L3 loader 失败，回退旧路径：%s", exc)
+            return None
+
     def _maybe_merge_rdagent_parquet(self, feature_panel: pd.DataFrame) -> pd.DataFrame:
-        """若 active_feature_sets 含 rdagent_exported，则左连接 combined_factors_df.parquet 列到特征表。"""
+        """若 ``active_feature_sets`` 含 ``rdagent_exported``，则合并 L3 因子到特征表。
+
+        阶段 B 数据源优先级：
+
+        1. **L3 loader**：``config/factor_lab.yaml.flags.enabled=true`` 且 manifest 有
+           active 因子 → 通过 ``ProductionFactorLoader`` 读取。
+        2. **旧路径 fallback**：``git_ignore_folder/combined_factors_df.parquet``。
+           保持与 B 改造前 100% 行为等价——用于阶段 B 迁移脚本未跑时的过渡。
+        """
         self.rdagent_factor_columns = []
         feature_sets = self.feature_cfg.get("feature_sets", {}) or {}
         active_sets = self.feature_cfg.get("active_feature_sets", []) or []
         if "rdagent_exported" not in active_sets:
             return feature_panel
 
+        # ---- 优先路径：L3 Production Factor Loader ----------------------
+        extra = self._try_load_from_registry(feature_panel.index)
+        if extra is not None and extra.shape[1] > 0:
+            overlap = [c for c in extra.columns if c in feature_panel.columns]
+            if overlap:
+                logger.warning(
+                    "L3: 与 qlib 特征列名冲突，跳过 L3 侧列: %s", overlap[:10]
+                )
+                extra = extra.drop(columns=list(overlap))
+            if extra.shape[1] > 0:
+                out = pd.concat([feature_panel, extra], axis=1)
+                self.rdagent_factor_columns = list(extra.columns)
+                logger.info(
+                    "L3: 已合并 production 因子 %d 列，示例: %s",
+                    len(self.rdagent_factor_columns),
+                    self.rdagent_factor_columns[:5],
+                )
+                return out
+            logger.warning("L3: 所有列与 qlib 特征冲突，回退旧路径")
+
+        # ---- Fallback：旧 git_ignore_folder/combined_factors_df.parquet ----
         rd_cfg = self.feature_cfg.get("rdagent_parquet") or {}
         path_raw = rd_cfg.get("path") if isinstance(rd_cfg, dict) else None
         pq_path = Path(path_raw) if path_raw else self._default_rdagent_parquet_path()
@@ -352,7 +430,7 @@ class QlibFeaturePipeline:
         out = pd.concat([feature_panel, extra], axis=1)
         self.rdagent_factor_columns = list(extra.columns)
         logger.info(
-            "P0-1：已合并 RD-Agent 因子 %d 列（parquet=%s），示例: %s",
+            "P0-1：已合并 RD-Agent 因子 %d 列（parquet=%s, 旧路径），示例: %s",
             len(self.rdagent_factor_columns),
             pq_path,
             self.rdagent_factor_columns[:5],
