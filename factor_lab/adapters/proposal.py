@@ -129,6 +129,33 @@ def _strip_code_rules_from_history(trace: Trace) -> None:
                         pass
 
 
+_ALPHA158_AVOIDANCE_HINT = """
+======  IMPORTANT: Avoid Redundant Signals  ======
+The model already has 20 Alpha158 features as built-in baseline inputs. Proposing factors that
+merely replicate these signals adds noise and reduces IC_IR without adding incremental alpha.
+AVOID proposing factors similar to:
+  - Simple price momentum (ROC5/10/20/60) → already covered by CORR5/CORR10/CORR20/CORR60
+  - Close price residuals (RESI5/10) → already in Alpha158
+  - Price range / daily amplitude (KLEN, KLOW) → already in Alpha158
+  - Simple volume volatility (VSTD5) → already in Alpha158
+  - Short-term price std (STD5) → already in Alpha158
+  - Weighted volume-momentum average (WVMA5/60) → already in Alpha158
+  - Price-volume correlation (CORR5/CORR10/CORR20/CORR60, CORD5/CORD10/CORD60) → already in Alpha158
+
+FOCUS on signals NOT covered by Alpha158:
+  1. Overnight gap: open/prev_close - 1  (captures after-hours info, absent from Alpha158)
+  2. Margin financing momentum: ($rzye - shift_N($rzye)) / market_cap  (smart money flow)
+  3. Earnings quality spread: ROE - ROA  (financial leverage quality / asset efficiency)
+  4. Intraday amplitude trend: rolling trend of (high-low)/close  (intraday volatility direction)
+  5. Cross-sectional fundamental rank × technical rank interactions
+     e.g. low-PE STOCKS with positive momentum — value + momentum combination
+  6. Fundamental revision rate: quarter-over-quarter change in ROA or q_profit_yoy
+     (earnings surprise / revision signal)
+  7. Dividend yield stability: dv_ratio relative to its own historical mean (income consistency)
+======  END IMPORTANT  ======
+"""
+
+
 class ProjectQlibFactorHypothesisGen(QlibFactorHypothesisGen):
     """Patch point for ``FactorRDLoop`` (pure factor loop).
 
@@ -136,16 +163,23 @@ class ProjectQlibFactorHypothesisGen(QlibFactorHypothesisGen):
 
         QLIB_FACTOR_HYPOTHESIS_GEN=factor_lab.adapters.proposal.ProjectQlibFactorHypothesisGen
 
-    Applies two pre-processing steps before the upstream template renders:
+    Applies pre-processing steps before the upstream template renders:
     1. ``_reindex_trace_results``  — pads missing metric keys to avoid Jinja crash.
     2. ``_strip_code_rules_from_history`` — trims CODE RULES boilerplate from
        historical factor descriptions to prevent prompt size explosion.
+    3. Injects Alpha158 avoidance hint into the SCENARIO so the PROPOSER LLM
+       knows which signals are already covered and avoids redundant proposals.
     """
 
     def prepare_context(self, trace: Trace) -> Tuple[dict, bool]:
         _reindex_trace_results(trace)
         _strip_code_rules_from_history(trace)
-        return super().prepare_context(trace)
+        ctx, ok = super().prepare_context(trace)
+        # Inject the Alpha158 avoidance hint into the scenario so the hypothesis
+        # generator LLM knows what NOT to propose (avoid redundant factors).
+        if isinstance(ctx, dict):
+            ctx["scenario"] = str(ctx.get("scenario", "")) + _ALPHA158_AVOIDANCE_HINT
+        return ctx, ok
 
 
 class ProjectQlibFactorHypothesis2Experiment(QlibFactorHypothesis2Experiment):
@@ -167,14 +201,15 @@ You MUST generate code with the following fixed skeleton and behavior.
 5b) Preserve instrument index AS-IS from loaded dataframe.
     DO NOT manually split/rebuild/transform instrument strings.
 6) All columns may have NaN: coerce every column with `pd.to_numeric(..., errors="coerce")` before math.
-6b) Available columns in daily_pv.h5 (EXACT names):
-    Price/Volume: $close, $open, $high, $low, $volume, $amount
-    Liquidity:    $turnover_rate, $turnover_rate_f, $volume_ratio
-    Valuation:    $pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio
-    Quality:      $roe, $roa, $q_profit_yoy, $q_eps
-    Technical:    $rsi12, $macd, $macd_dif, $kdj_k, $kdj_d, $atr
-    Margin:       $rzye, $rqye
-    FORBIDDEN: $close_qfq, $open_qfq, $vol, $factor, $pe, $net_amount — do NOT exist.
+6b) Available columns in daily_pv.h5 (EXACT names — copy-paste them verbatim):
+    Price/Volume (raw):  $open, $close, $high, $low, $volume, $factor
+    Fwd-adjusted prices: $close_qfq, $open_qfq, $high_qfq, $low_qfq
+    Liquidity:           $vol, $turnover_rate, $turnover_rate_f, $volume_ratio
+    Technical (pre-calc):$rsi_qfq_12, $macd_qfq, $kdj_k_qfq, $kdj_d_qfq, $atr_qfq
+    Valuation:           $pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio
+    Quality:             $roe, $q_profit_yoy, $q_eps
+    Margin financing:    $rzye, $rqye
+    FORBIDDEN (do NOT exist): $rsi12, $macd, $kdj_k, $kdj_d, $atr, $roa, $amount, $pe, $net_amount
 
 [Computation rules]
 7) Compute factor with vectorized ops or `groupby(level="instrument").transform(...)`.
@@ -224,8 +259,8 @@ def _build_result(index: pd.MultiIndex, factor_name: str, values: pd.Series) -> 
 ------Project formula implementation rules (fix2)------
 1) Implement ONLY the hypothesis formulation; do not invent extra windows beyond one W in {5,10,20}.
 2) Data are sorted by MultiIndex; use `groupby(level="instrument", group_keys=False)` + `transform` for path-safe rolling/pct_change.
-3) Momentum sketch: `ret = df["$close"].groupby(level="instrument").transform(lambda s: s.pct_change(W))`.
-4) Volatility sketch: `r = df["$close"].groupby(level="instrument").transform(lambda s: s.pct_change()); v = r.groupby(level="instrument").transform(lambda s: s.rolling(W, min_periods=W).std())`.
+3) Momentum sketch: `ret = df["$close_qfq"].groupby(level="instrument").transform(lambda s: s.pct_change(W))`.
+4) Volatility sketch: `r = df["$close_qfq"].groupby(level="instrument").transform(lambda s: s.pct_change()); v = r.groupby(level="instrument").transform(lambda s: s.rolling(W, min_periods=W).std())`.
 5) Final step: `_build_result(df.index, factor_name, factor_series_aligned_to_df_index)`.
 6) If you accidentally produced a non-MultiIndex intermediate, DO NOT fix with `reorder_levels`; discard that path and recompute with `transform` so output series index stays aligned to `df.index`.
 
@@ -263,20 +298,21 @@ High-value targets NOT yet covered by Alpha158:
 
     _CODER_RULES = (
         "\n[CODE RULES - MUST FOLLOW]\n"
-        "0. Available columns in daily_pv.h5 (EXACT names only):\n"
-        "   Price/Volume: $close, $open, $high, $low, $volume, $amount\n"
-        "   Liquidity:    $turnover_rate, $turnover_rate_f, $volume_ratio\n"
-        "   Valuation:    $pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio\n"
-        "   Quality:      $roe, $roa, $q_profit_yoy, $q_eps\n"
-        "   Technical:    $rsi12, $macd, $macd_dif, $kdj_k, $kdj_d, $atr\n"
-        "   Margin:       $rzye, $rqye\n"
-        "   DO NOT use $close_qfq, $vol, $factor, $pe, $net_amount — they do NOT exist.\n"
+        "0. Available columns in daily_pv.h5 (EXACT names — copy verbatim):\n"
+        "   Raw OHLCV:           $open, $close, $high, $low, $volume, $factor\n"
+        "   Fwd-adj prices:      $close_qfq, $open_qfq, $high_qfq, $low_qfq\n"
+        "   Liquidity:           $vol, $turnover_rate, $turnover_rate_f, $volume_ratio\n"
+        "   Technical pre-calc:  $rsi_qfq_12, $macd_qfq, $kdj_k_qfq, $kdj_d_qfq, $atr_qfq\n"
+        "   Valuation:           $pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio\n"
+        "   Quality:             $roe, $q_profit_yoy, $q_eps\n"
+        "   Margin financing:    $rzye, $rqye\n"
+        "   FORBIDDEN (do NOT exist): $rsi12, $macd, $kdj_k, $kdj_d, $atr, $roa, $amount, $pe\n"
         "1. Load: df = pd.read_hdf('daily_pv.h5')  — NO HDFStore, NO h5py.\n"
         "2. Coerce all columns: for c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')\n"
         "3. For fundamental columns ($pe_ttm, $pb, $roe, etc.) that have NaN:\n"
         "   Use forward-fill within each instrument before computation:\n"
         "   df['$pe_ttm'] = df['$pe_ttm'].groupby(level='instrument').transform(lambda s: s.ffill())\n"
-        "4. Compute via: series = df['$close'].groupby(level='instrument').transform(lambda s: ...)\n"
+        "4. Compute via: series = df['$close_qfq'].groupby(level='instrument').transform(lambda s: ...)\n"
         "5. Save: result = pd.DataFrame({'FACTOR_NAME': series.astype('float64')}, index=df.index)\n"
         "         result.to_hdf('result.h5', key='data', mode='w', format='table')\n"
         "6. NO dropna() on the panel. NaN rows are allowed. Result must have same len as df.\n"

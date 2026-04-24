@@ -86,6 +86,21 @@ data_handler_config: &data_handler_config
                     # during handler setup and silently NaN-s every backtest metric.
                     config: "combined_factors_df.parquet"
 
+    infer_processors:
+        # Align with conf_baseline.yaml: normalise & fill NaN so fundamental
+        # features ($pe_ttm, $roe, $roa …) are consistent across time.
+        # Without these, NaN-heavy fundamentals inflate IC variance → lower
+        # IC_IR → composite never beats SOTA even if user factors are good.
+        - class: RobustZScoreNorm
+          kwargs:
+              fields_group: feature
+              clip_outlier: true
+              fit_start_time: 2022-01-01
+              fit_end_time: 2024-06-30
+        - class: Fillna
+          kwargs:
+              fields_group: feature
+
     learn_processors:
         - class: DropnaLabel
         - class: CSRankNorm
@@ -119,20 +134,21 @@ task:
         class: LGBModel
         module_path: qlib.contrib.model.gbdt
         kwargs:
-            # Balanced config for mixed fundamental+technical features
-            # Slower learning rate with more trees to capture complex interactions
+            # Aligned to conf_baseline.yaml so composite scores are comparable.
+            # Stronger regularisation prevents overfitting when ~36 features
+            # (33 base + 3 user) are present; fewer trees keep IC_IR stable.
             loss: mse
-            colsample_bytree: 0.72
+            colsample_bytree: 0.75
             learning_rate: 0.05
-            subsample: 0.8
-            lambda_l1: 50.0
-            lambda_l2: 100.0
+            subsample: 0.85
+            lambda_l1: 80.0
+            lambda_l2: 200.0
             max_depth: 6
             num_leaves: 63
             num_threads: 20
-            n_estimators: 500
+            n_estimators: 400
             early_stopping_rounds: 50
-            min_child_samples: 50
+            min_child_samples: 60
     dataset:
         class: DatasetH
         module_path: qlib.data.dataset

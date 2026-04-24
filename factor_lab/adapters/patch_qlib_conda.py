@@ -714,6 +714,25 @@ def apply_qlib_conda_env_patch() -> None:
     # Stage I: cap LLM-proposed model training n_epochs so GRU qrun never hits
     # RD-Agent's 3600s hard-timeout (opt-in via FACTOR_LAB_MAX_N_EPOCHS).
     _patch_cap_n_epochs()
+    # Cap CoSTEER evo loops so coding step stays under ~20 min.
+    _patch_costeer_max_loop()
+
+
+def _patch_costeer_max_loop() -> None:
+    """Cap CoSTEER evo-loop count via env FACTOR_LAB_COSTEER_MAX_LOOP (default 4).
+
+    The CoSTEER default is max_loop=10 — 10 evolution rounds × 3 factors ×
+    execution time = 90+ minutes per coding step. With our large daily_pv.h5
+    (181 MB / 6.8 M rows) each execution takes ~60 s, pushing the coding step
+    to 90 min. Lowering max_loop to 4 keeps coding under ~25 minutes.
+    """
+    try:
+        import os
+        from rdagent.components.coder.factor_coder.config import FACTOR_COSTEER_SETTINGS
+        limit = int(os.environ.get("FACTOR_LAB_COSTEER_MAX_LOOP", "4"))
+        object.__setattr__(FACTOR_COSTEER_SETTINGS, "max_loop", limit)
+    except Exception:
+        pass
 
 
 def _patch_qlib_runner_env() -> None:
