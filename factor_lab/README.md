@@ -46,10 +46,10 @@ G.4 `rag_constitution.yaml` 的 `discouraged_families` 支持可选 `penalty` �
 （`.inf`=硬黑、具体数值=软降权并渲染"需附加理由"），默认仍 byte-for-byte 兼容 F。
 详见 `docs/STAGE_G_REPORT.md`。
 - 阶段 H：**已完成** H.1 —— `ProjectQlibQuantHypothesisGen.prepare_context` 自动推导
-  `retrieval_query`（优先级：`ctx['RETRIEVAL_QUERY']` > trace 语义字段 > RAG 末行），
-  G.3 检索从"需手工传参"升级为"默认在线"。配套落地 DEBUG 观测日志、类级回滚开关
-  `auto_retrieval_enabled`、异常兜底，以及 5 层测试分层策略
-  （`docs/STAGE_H_TEST_STRATEGY.md`）。已用真实 DeepSeek 跑通 hypothesis-only dry loop，
-  LLM 实际读懂并规避 `discouraged_families`，详见 `docs/STAGE_H_LIVE_LOOP_LOG.md`。
-  报告见 `docs/STAGE_H_REPORT.md`。
+`retrieval_query`（优先级：`ctx['RETRIEVAL_QUERY']` > trace 语义字段 > RAG 末行），
+G.3 检索从"需手工传参"升级为"默认在线"。配套落地 DEBUG 观测日志、类级回滚开关
+`auto_retrieval_enabled`、异常兜底，以及 5 层测试分层策略
+（`docs/STAGE_H_TEST_STRATEGY.md`）。已用真实 DeepSeek 跑通 hypothesis-only dry loop，
+LLM 实际读懂并规避 `discouraged_families`，详见 `docs/STAGE_H_LIVE_LOOP_LOG.md`。
+报告见 `docs/STAGE_H_REPORT.md`。
 

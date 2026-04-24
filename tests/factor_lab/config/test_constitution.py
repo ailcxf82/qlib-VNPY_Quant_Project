@@ -131,11 +131,30 @@ def test_get_then_reload_cycle(tmp_path: Path) -> None:
         # F.3 新增 —— 确认 YAML 里的 encouraged/discouraged 条目渲染到了文本
         "(a) Quality persistence",
         "(x) Short-cycle volume-price reversals",
+        # I.2 新增 —— reference implementation 段头 + 3 个关键骨架片段
+        "------Reference implementation (copy this skeleton",
+        "groupby(level=\"instrument\").transform",
+        "EDIT 1: window in {5,10,20,30,60}",
+        "YourFactorName_%dD",
     ],
 )
 def test_rendered_text_contains_required_markers(marker: str) -> None:
     text = load_constitution_text()
     assert marker in text, f"静态宪法缺关键词: {marker!r}"
+
+
+def test_renderer_requires_reference_implementation(tmp_path: Path) -> None:
+    """I.2：缺 reference_implementation 时 YAML 必须被拒（回退到 fallback）。"""
+    import yaml
+
+    cfg = yaml.safe_load(open("factor_lab/config/rag_constitution.yaml", encoding="utf-8"))
+    cfg.pop("reference_implementation", None)
+    with pytest.raises(ValueError, match="reference_implementation"):
+        render_constitution(cfg)
+
+    cfg["reference_implementation"] = "   \n  "  # 全空白也要拒
+    with pytest.raises(ValueError, match="reference_implementation"):
+        render_constitution(cfg)
 
 
 # ---------------------------------------------------------- integration: RAG

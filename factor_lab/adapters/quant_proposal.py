@@ -380,7 +380,60 @@ class ProjectQlibQuantHypothesisGen(QlibQuantHypothesisGen):
     #: （不自动传 query；compose_project_rag 不会注入 G.3 段）。
     auto_retrieval_enabled: bool = True
 
+    #: RD-Agent ``scenarios/qlib/prompts.yaml`` 的 ``hypothesis_and_feedback``
+    #: / ``last_hypothesis_and_feedback`` / ``sota_hypothesis_and_feedback`` 三
+    #: 个模板硬编码 ``experiment.result.loc[[...]]``。当我们的
+    #: ``conf_combined_factors.yaml`` 只产出 ``with_cost`` 版本指标时，
+    #: jinja StrictUndefined 会把 pandas KeyError 重写为 UndefinedError，整
+    #: 个 direct_exp_gen 崩溃。此列表用于在 super().prepare_context 前做
+    #: reindex，把缺失索引安全补成 NaN。
+    _TEMPLATE_REQUIRED_KEYS: tuple[str, ...] = (
+        "IC",
+        "1day.excess_return_without_cost.annualized_return",
+        "1day.excess_return_without_cost.max_drawdown",
+    )
+
+    @classmethod
+    def _reindex_trace_results(cls, trace: Trace) -> None:
+        """Ensure every historical experiment.result contains the 3 keys.
+
+        Side-effect: rewrites ``experiment.result`` in place to a reindexed
+        pandas Series. Keys that did not exist are filled with ``NaN`` — the
+        Jinja template will then print them as ``NaN`` instead of raising.
+        Non-Series / None results are left untouched.
+        """
+        try:
+            import pandas as pd
+        except Exception:  # noqa: BLE001
+            return
+
+        hist = getattr(trace, "hist", None)
+        if not isinstance(hist, list):
+            return
+
+        required = list(cls._TEMPLATE_REQUIRED_KEYS)
+        for pair in hist:
+            try:
+                exp = pair[0]
+            except Exception:  # noqa: BLE001
+                continue
+            result = getattr(exp, "result", None)
+            if not isinstance(result, pd.Series):
+                continue
+            missing = [k for k in required if k not in result.index]
+            if not missing:
+                continue
+            combined_index = list(result.index) + missing
+            try:
+                exp.result = result.reindex(combined_index)
+            except Exception:  # noqa: BLE001
+                # Defensive: never let the reindex itself break the loop.
+                continue
+
     def prepare_context(self, trace: Trace) -> Tuple[dict, bool]:
+        # Must run BEFORE super() — upstream template consumes trace.hist
+        # directly via Jinja StrictUndefined and will crash on missing keys.
+        self._reindex_trace_results(trace)
         ctx, ok = super().prepare_context(trace)
         if ok and isinstance(ctx, dict):
             base = str(ctx.get("RAG") or "")

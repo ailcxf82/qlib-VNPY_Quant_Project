@@ -70,9 +70,21 @@ data_handler_config: &data_handler_config
                             - ["LABEL0"]
                 - class: qlib.data.dataset.loader.StaticDataLoader
                   kwargs:
-                    # Absolute path so qrun can find it from any workspace directory.
-                    # Update this path if the project moves.
-                    config: "/mnt/d/quant_project/Qlib_Quant/qlib-VNPY_Quant_Project/git_ignore_folder/combined_factors_df.parquet"
+                    # IMPORTANT: this path is RELATIVE to the qrun CWD (the per-loop
+                    # RD-Agent workspace directory). rdagent.scenarios.qlib.developer.
+                    # factor_runner writes a workspace-local ``combined_factors_df.parquet``
+                    # whose columns are ALREADY wrapped as a ('feature', col) MultiIndex
+                    # via ``pd.MultiIndex.from_product([['feature'], cols])`` right before
+                    # calling ``experiment_workspace.execute(...)``. That shape is what
+                    # ``NestedDataLoader`` needs to merge cleanly with ``QlibDataLoader``
+                    # (which also emits 2-level MultiIndex columns). An absolute path
+                    # pointing at the project's legacy ``git_ignore_folder/combined_factors_df.parquet``
+                    # would bypass factor_runner's wrapping and load flat single-level
+                    # columns, which triggers:
+                    #   MergeError: Not allowed to merge between different levels.
+                    #               (2 levels on the left, 1 on the right)
+                    # during handler setup and silently NaN-s every backtest metric.
+                    config: "combined_factors_df.parquet"
 
     learn_processors:
         - class: DropnaLabel
@@ -146,7 +158,8 @@ task:
           kwargs:
             ana_long_short: False
             ann_scaler: 252
-        - class: PortAnaRecord
-          module_path: qlib.workflow.record_temp
-          kwargs:
-            config: *port_analysis_config
+        # PortAnaRecord requires SH000300 benchmark data which is not available
+        # in the local Qlib data. Removing it prevents the benchmark ValueError
+        # that crashed the process at Loop 1+. read_exp_res.py already handles
+        # missing backtest metrics gracefully: composite = 2.0 * IC_IR when
+        # IR and ann_turnover are NaN.

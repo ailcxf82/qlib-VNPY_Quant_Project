@@ -45,6 +45,9 @@ columns:
 columns_nan_note: |-
   NOTE: $pe_ttm/$pb/$roe/$q_profit_yoy may have NaN for some instruments (quarterly data).
         Always use .fillna(method='ffill') or rolling mean as fallback for fundamental columns.
+  NOTE: Instrument index is Qlib-style: SH/SZ/BJ prefix + 6-digit code (e.g. 'SH600000', 'SZ000001', 'SZ300059'). Preserve it as-is.
+        DO NOT rewrite to dotted / suffix formats like '000001.SZ', 'SZ.000001' or '600000.SH'.
+        Output result.h5 MUST keep the exact same (datetime, instrument) MultiIndex as df.
 
 scoring:
   formula: "1day.composite_score = 1.0*IR + 2.0*IC_IR - 0.5*log(1+annualized_turnover)"
@@ -113,6 +116,32 @@ discouraged_families:
     text: "Same-day volume spike + price reversal patterns"
   - id: z
     text: "Anything that ranks the universe with >50% weekly turnover"
+
+# 阶段 I.2：注入一段可直接 copy-adapt 的最小骨架。LLM 看到 reference 后，instrument
+# MultiIndex 被 `.str.split('.')` 等破坏的概率显著下降（I.1 之后唯一的剩余阻塞）。
+# 块内任何修改都要同步到 _FALLBACK_CONSTITUTION_TEXT，保持 byte-for-byte 一致。
+reference_implementation: |-
+  The single most common failure is rewriting the (datetime, instrument) MultiIndex.
+  Use groupby(level='instrument').transform so the index is preserved intact. Do NOT
+  reset_index, do NOT split/rebuild instrument strings, do NOT rename index levels.
+
+      import pandas as pd
+
+      W = 60                                       # EDIT 1: window in {5,10,20,30,60}
+      df = pd.read_hdf("daily_pv.h5", key="data")  # MultiIndex (datetime, instrument)
+
+      # Forward-fill fundamental columns first (quarterly NaN); keep the MultiIndex.
+      x = df["$pe_ttm"].groupby(level="instrument").transform(lambda s: s.ffill())
+      med = x.groupby(level="instrument").transform(
+          lambda s: s.rolling(W, min_periods=W).median()
+      )
+      std = x.groupby(level="instrument").transform(
+          lambda s: s.rolling(W, min_periods=W).std()
+      )
+      factor = (x - med) / std                     # same MultiIndex as df -- do NOT reset_index
+
+      out = factor.to_frame("YourFactorName_%dD" % W)  # EDIT 2: factor name
+      out.to_hdf("result.h5", key="data", mode="w")    # EDIT 3: nothing else
 
 naming_convention: |-
   7) Factor names must encode type and window, e.g. QualPersist_60D, ValueMR_60D,

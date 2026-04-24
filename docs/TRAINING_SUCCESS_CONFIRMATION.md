@@ -7,16 +7,14 @@
 ### ✅ 已确认的日志：
 
 1. **"标签已转换为排名"** ✅
-   - 说明：特征管线已成功执行 Rank 转换
-   - 位置：`feature/qlib_feature_pipeline.py` 的 `build()` 方法
-
+  - 说明：特征管线已成功执行 Rank 转换
+  - 位置：`feature/qlib_feature_pipeline.py` 的 `build()` 方法
 2. **"标签值统计"** ✅
-   - 说明：训练器已检查标签值范围
-   - 位置：`trainer/trainer.py` 的 `train()` 方法
-
+  - 说明：训练器已检查标签值范围
+  - 位置：`trainer/trainer.py` 的 `train()` 方法
 3. **"训练使用 Rank"** ✅
-   - 说明：训练已使用转换后的标签
-   - 位置：`trainer/trainer.py` 的 `train()` 方法
+  - 说明：训练已使用转换后的标签
+  - 位置：`trainer/trainer.py` 的 `train()` 方法
 
 **结论**：✅ **训练已成功使用 Rank 转换配置**
 
@@ -25,6 +23,7 @@
 ### 警告说明
 
 你看到的警告：
+
 ```
 warning: in the working copy of 'config/data.yaml', LF will be replaced by CRLF
 ```
@@ -34,6 +33,7 @@ warning: in the working copy of 'config/data.yaml', LF will be replaced by CRLF
 ### 已处理
 
 已创建 `.gitattributes` 文件并配置 Git：
+
 - ✅ 统一使用 LF（Unix 风格）行尾符
 - ✅ 禁用自动 CRLF 转换
 - ✅ 这些警告不会再出现
@@ -69,6 +69,7 @@ python run_predict.py --config config/pipeline.yaml --tag auto
 ```
 
 **预期结果**：
+
 - 预测值应该在 [0, 1] 范围内
 - 策略在快速上涨期间应该表现更好
 
@@ -83,6 +84,7 @@ INFO - 标签值统计: min=0.000000, max=1.000000, mean=0.500000
 ```
 
 **请告诉我**：
+
 - min 值是多少？
 - max 值是多少？
 - mean 值是多少？
@@ -102,6 +104,7 @@ python scripts/check_prediction_source.py
 ```
 
 **预期**：
+
 - 预测值应该在 [0, 1] 范围内
 - 模型 Tag 和预测 Tag 应该匹配
 
@@ -112,6 +115,7 @@ python run_backtest.py --config config/pipeline.yaml
 ```
 
 **预期改进**：
+
 - 策略在快速上涨期间应该能更好地捕捉趋势
 - 回测曲线应该更接近基准
 
@@ -149,5 +153,3 @@ git config core.autocrlf false
 ```
 
 然后这些警告就会消失。
-
-

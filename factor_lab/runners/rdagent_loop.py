@@ -1,19 +1,40 @@
 """factor_lab.runners.rdagent_loop
 
-RD-Agent `fin_quant` 循环的本项目入口。阶段 E 从 ``scripts/run_fin_quant.py`` 搬进
+RD-Agent 循环的本项目入口。阶段 E 从 ``scripts/run_fin_quant.py`` 搬进
 ``factor_lab.runners``，让 scripts 层回归"薄壳"，便于重用（也让本循环成为 L1 正式
 对外出口的一部分）。
 
+自 阶段 I：支持 ``mode`` 参数切换底层 RD-Agent 工作流
+
+    * ``mode="quant"``（默认，向后兼容）
+      走 ``rdagent.app.qlib_rd_loop.quant.main``，即 RD-Agent 原生的
+      ``QuantRDLoop``：每轮由 LLM 自行决定是做 Factor 实验还是 Model 实验。
+      适合「全链路稳定性冒烟」+「模型调参」场景。
+
+    * ``mode="factor"``
+      走 ``rdagent.app.qlib_rd_loop.factor.main``，即 RD-Agent 的
+      ``FactorRDLoop``：**只做 Factor 实验**，用 LightGBM 固定基线评分，
+      禁用所有 Model 假设。适合「快速迭代因子库」场景——单轮 ~7 min，
+      不会被 60 min 级别的 GRU 训练拖慢。
+
 使用方式：
 
-    # 从 CLI：
+    # 混合模式 1 轮（等同阶段 E / H 的旧行为）：
     python -m scripts.lab.run_rdagent_loop --loop_n=1
-    # 或旧路径（shim，仍可工作）：
-    python scripts/run_fin_quant.py --loop_n=1
 
-    # 从 Python：
+    # 纯 factor 模式 10 轮：
+    python -m scripts.lab.run_rdagent_loop --mode=factor --loop_n=10
+
+    # Python API：
     from factor_lab.runners.rdagent_loop import run_rdagent_loop
-    run_rdagent_loop(loop_n=1)
+    run_rdagent_loop(loop_n=10, mode="factor")
+
+环境变量（同时配合补丁 ``_patch_cap_n_epochs``）：
+    * ``FACTOR_LAB_MAX_N_EPOCHS``: 上限 LLM 给神经网络模型提议的 n_epochs，
+      防止 qrun 命中 RD-Agent 内置 3600s 硬超时。仅在 ``mode="quant"`` 生效。
+      未设置或 ``<=0`` 时不裁剪。
+    * ``RUNNING_TIMEOUT_PERIOD``: 透传给 RD-Agent 的 qrun 超时（秒）。
+      默认 3600。写到 launcher 脚本里即可。
 """
 
 from __future__ import annotations
@@ -22,12 +43,13 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-# 项目根 = 本文件 parents[2]（factor_lab/runners/rdagent_loop.py → root）
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+_SUPPORTED_MODES = ("quant", "factor")
 
 
 def _bootstrap_env() -> None:
@@ -59,11 +81,45 @@ def _apply_patches() -> None:
     _patch_qlib_runner_env()
 
 
-def run_rdagent_loop(*args: Any, **kwargs: Any) -> Any:
-    """执行 RD-Agent 的 ``rdagent.app.qlib_rd_loop.quant.main``，转交所有参数。"""
+def _resolve_entry(mode: str):
+    """按 ``mode`` 返回 RD-Agent 的 ``main`` 入口函数。"""
+    if mode == "quant":
+        from rdagent.app.qlib_rd_loop.quant import main as _main
+        return _main
+    if mode == "factor":
+        from rdagent.app.qlib_rd_loop.factor import main as _main
+        return _main
+    raise ValueError(
+        f"run_rdagent_loop: unsupported mode={mode!r}. "
+        f"Expected one of {_SUPPORTED_MODES}."
+    )
+
+
+def run_rdagent_loop(
+    *args: Any,
+    mode: Literal["quant", "factor"] = "quant",
+    **kwargs: Any,
+) -> Any:
+    """执行 RD-Agent 循环；``mode`` 控制底层走 Quant/Factor 两种 workflow 之一。
+
+    Parameters
+    ----------
+    mode:
+        * ``"quant"``（默认）: Factor + Model 混合循环（RD-Agent 原生 QuantRDLoop）。
+        * ``"factor"``: 纯 Factor 循环（RD-Agent 原生 FactorRDLoop），无 Model 假设。
+    *args, **kwargs:
+        透传给底层 ``main`` 函数。支持的 kwargs 包括 ``loop_n``、``step_n``、
+        ``path``、``all_duration``、``checkout`` 等，详见 RD-Agent 同名模块。
+    """
     _bootstrap_env()
     _apply_patches()
 
-    from rdagent.app.qlib_rd_loop.quant import main
+    if mode not in _SUPPORTED_MODES:
+        raise ValueError(
+            f"run_rdagent_loop: unsupported mode={mode!r}. "
+            f"Expected one of {_SUPPORTED_MODES}."
+        )
+    logger.info("run_rdagent_loop: mode=%s args=%s kwargs=%s", mode, args, kwargs)
 
-    return main(*args, **kwargs)
+    entry = _resolve_entry(mode)
+    return entry(*args, **kwargs)

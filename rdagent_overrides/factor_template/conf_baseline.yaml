@@ -134,7 +134,5 @@ task:
           kwargs:
             ana_long_short: False
             ann_scaler: 252
-        - class: PortAnaRecord
-          module_path: qlib.workflow.record_temp
-          kwargs:
-            config: *port_analysis_config
+        # PortAnaRecord removed: SH000300 benchmark not available locally.
+        # read_exp_res.py computes composite = 2.0 * IC_IR when IR/turnover are NaN.

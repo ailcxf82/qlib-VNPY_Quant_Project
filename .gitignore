@@ -4359,6 +4359,8 @@ debug-f559e7.log
 
 # RD-Agent
 .env
+.env.wsl
+.env.*.local
 
 git_ignore_folder/factor_implementation_source_data/daily_pv.h5
 rdagent_overrides/model_template/__pycache__/read_exp_res.cpython-311.pyc

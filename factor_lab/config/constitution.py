@@ -108,6 +108,12 @@ def render_constitution(cfg: dict[str, Any]) -> str:
     if not naming:
         raise ValueError("naming_convention 缺失")
 
+    # 阶段 I.2：必填，保证 YAML 渲染输出与 _FALLBACK_CONSTITUTION_TEXT byte-parity。
+    ref_impl = cfg.get("reference_implementation")
+    if not isinstance(ref_impl, str) or not ref_impl.strip():
+        raise ValueError("reference_implementation 缺失")
+    ref_lines = _as_str_lines(ref_impl, "reference_implementation")
+
     # --- 渲染 -------------------------------------------------------------
     lines: list[str] = []
     lines.append("")  # 开头空行与原硬编码保持一致
@@ -185,6 +191,13 @@ def render_constitution(cfg: dict[str, Any]) -> str:
                     "explicit justification of how this proposal differs]"
                 )
         lines.append(line)
+
+    lines.append("")
+    lines.append(
+        "------Reference implementation (copy this skeleton; only edit the 3 marked lines)------"
+    )
+    for rl in ref_lines:
+        lines.append(rl)
 
     lines.append("")
     for line in naming.split("\n"):
@@ -282,6 +295,9 @@ _FALLBACK_CONSTITUTION_TEXT = """
    Margin:       $rzye, $rqye
    NOTE: $pe_ttm/$pb/$roe/$q_profit_yoy may have NaN for some instruments (quarterly data).
          Always use .fillna(method='ffill') or rolling mean as fallback for fundamental columns.
+   NOTE: Instrument index is Qlib-style: SH/SZ/BJ prefix + 6-digit code (e.g. 'SH600000', 'SZ000001', 'SZ300059'). Preserve it as-is.
+         DO NOT rewrite to dotted / suffix formats like '000001.SZ', 'SZ.000001' or '600000.SH'.
+         Output result.h5 MUST keep the exact same (datetime, instrument) MultiIndex as df.
 
 ------Reward / objective (P3a, mandatory reading)------
 You are scored by `1day.composite_score = 1.0*IR + 2.0*IC_IR - 0.5*log(1+annualized_turnover)`.
@@ -332,6 +348,29 @@ Hard requirement (mandatory):
    (x) Short-cycle volume-price reversals on W in {5, 10}
    (y) Same-day volume spike + price reversal patterns
    (z) Anything that ranks the universe with >50% weekly turnover
+
+------Reference implementation (copy this skeleton; only edit the 3 marked lines)------
+The single most common failure is rewriting the (datetime, instrument) MultiIndex.
+Use groupby(level='instrument').transform so the index is preserved intact. Do NOT
+reset_index, do NOT split/rebuild instrument strings, do NOT rename index levels.
+
+    import pandas as pd
+
+    W = 60                                       # EDIT 1: window in {5,10,20,30,60}
+    df = pd.read_hdf("daily_pv.h5", key="data")  # MultiIndex (datetime, instrument)
+
+    # Forward-fill fundamental columns first (quarterly NaN); keep the MultiIndex.
+    x = df["$pe_ttm"].groupby(level="instrument").transform(lambda s: s.ffill())
+    med = x.groupby(level="instrument").transform(
+        lambda s: s.rolling(W, min_periods=W).median()
+    )
+    std = x.groupby(level="instrument").transform(
+        lambda s: s.rolling(W, min_periods=W).std()
+    )
+    factor = (x - med) / std                     # same MultiIndex as df -- do NOT reset_index
+
+    out = factor.to_frame("YourFactorName_%dD" % W)  # EDIT 2: factor name
+    out.to_hdf("result.h5", key="data", mode="w")    # EDIT 3: nothing else
 
 7) Factor names must encode type and window, e.g. QualPersist_60D, ValueMR_60D,
    MarginTrend_20D, EarnRev_4Q, LowVolQual_20D, ResidMom_60D, LiqStab_20D.
