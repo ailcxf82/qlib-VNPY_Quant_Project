@@ -131,15 +131,37 @@ def _patch_inject_code_utf8() -> None:
                 if file_path.suffix in (".py", ".yaml", ".md"):
                     relative_path = file_path.relative_to(folder_path)
                     try:
-                        text = file_path.read_text(encoding="utf-8")
+                        # utf-8-sig strips a leading BOM (\ufeff) automatically,
+                        # preventing GBK write failures on Windows when inject_files
+                        # calls write_text() without an explicit encoding.
+                        text = file_path.read_text(encoding="utf-8-sig")
                     except UnicodeDecodeError:
-                        # defensive fallback: template shouldn't have mojibake,
-                        # but if it does, don't kill the whole loop — log-and-skip
-                        text = file_path.read_text(encoding="utf-8", errors="replace")
+                        text = file_path.read_text(encoding="utf-8-sig", errors="replace")
                     self.inject_files(**{str(relative_path): text})
 
         _safe_inject_code_from_folder.__factor_lab_utf8_patched__ = True  # type: ignore[attr-defined]
         FBWorkspace.inject_code_from_folder = _safe_inject_code_from_folder  # type: ignore[method-assign]
+
+        # Also patch inject_files so every workspace file is written UTF-8.
+        # Without this, write_text(v) uses the system locale (GBK on Windows),
+        # and qrun inside WSL fails to read them as UTF-8.
+        _orig_inject = FBWorkspace.inject_files
+        if not getattr(_orig_inject, "__factor_lab_utf8_write_patched__", False):
+            def _utf8_inject_files(self, **files: str) -> None:  # type: ignore[override]
+                self.prepare()
+                for k, v in files.items():
+                    target_file_path = self.workspace_path / k
+                    if v == self.DEL_KEY:
+                        if target_file_path.exists():
+                            target_file_path.unlink()
+                        self.file_dict.pop(k, None)
+                    else:
+                        self.file_dict[k] = v
+                        target_file_path.parent.mkdir(parents=True, exist_ok=True)
+                        target_file_path.write_text(v, encoding="utf-8")  # explicit UTF-8
+
+            _utf8_inject_files.__factor_lab_utf8_write_patched__ = True  # type: ignore[attr-defined]
+            FBWorkspace.inject_files = _utf8_inject_files  # type: ignore[method-assign]
     except Exception:
         pass
 
@@ -400,16 +422,115 @@ def _patch_local_env_entry_python() -> None:
             return
 
         py_exec = f"{_RDAGENT_ENV_BIN}/python"
+        qrun_exec = f"{_RDAGENT_ENV_BIN}/qrun"
         py_pattern = re.compile(r"(^|\s)python(\s+)")
+        qrun_pattern = re.compile(r"(^|\s)qrun(\s+)")
 
         def _rewrite_entry(entry: str) -> str:
-            return py_pattern.sub(lambda m: f"{m.group(1)}{py_exec}{m.group(2)}", entry, count=1)
+            entry = py_pattern.sub(lambda m: f"{m.group(1)}{py_exec}{m.group(2)}", entry, count=1)
+            entry = qrun_pattern.sub(lambda m: f"{m.group(1)}{qrun_exec}{m.group(2)}", entry, count=1)
+            return entry
+
+        def _win_path_to_wsl(win_path: str) -> str:
+            """Convert a Windows path like D:\\foo\\bar to /mnt/d/foo/bar."""
+            import re as _re
+            p = win_path.replace("\\", "/")
+            p = _re.sub(r"^([A-Za-z]):/", lambda m: f"/mnt/{m.group(1).lower()}/", p)
+            return p
 
         def _wrapped_run(self, entry=None, local_path=None, env=None, running_extra_volume=None, **kwargs):  # type: ignore[override]
+            import json as _json, platform as _pl, time as _t, subprocess as _sp, os as _os
+            from pathlib import Path as _Path
+            from rich.console import Console as _Console
+            from rich.rule import Rule as _Rule
+            from rich.table import Table as _Table
+
             resolved = entry if entry is not None else getattr(self.conf, "default_entry", None)
-            if isinstance(resolved, str) and "python " in resolved:
+
+            # #region agent log fc2594
+            open("debug-fc2594.log", "a", encoding="utf-8").write(_json.dumps({
+                "sessionId": "fc2594", "timestamp": int(_t.time()*1000),
+                "hypothesisId": "H-D", "location": "patch_qlib_conda.py:_wrapped_run",
+                "message": "local_env_run_called",
+                "data": {"entry": str(resolved), "cwd": str(local_path), "platform": _pl.system()}
+            }) + "\n")
+            # #endregion
+
+            if isinstance(resolved, str) and ("python " in resolved or " qrun " in resolved or resolved.lstrip().startswith("qrun ")):
                 resolved = _rewrite_entry(resolved)
-            return local_run(
+
+            # ── WSL execution path ──────────────────────────────────────────────────
+            # On Windows, /bin/sh commands must run inside WSL.
+            # We bypass local_run entirely because Popen(shell=True) + WSL returns
+            # err=None from communicate(), crashing LocalEnv._run.
+            if (
+                _pl.system() == "Windows"
+                and isinstance(resolved, str)
+                and resolved.startswith("/bin/sh")
+                and local_path is not None
+            ):
+                wsl_cwd = _win_path_to_wsl(str(local_path))
+
+                # Build volume symlink commands for WSL (/tmp/full → wsl-mapped path)
+                vol_cmds: list[str] = []
+                for lp, rp in (running_extra_volume or {}).items():
+                    wsl_real = _win_path_to_wsl(str(rp))
+                    vol_cmds.append(f"rm -f {lp} && mkdir -p $(dirname {lp}) && ln -sfn {wsl_real} {lp}")
+                extra_vols = getattr(self.conf, "extra_volumes", None) or {}
+                if extra_vols:
+                    cache_key = "/tmp/sample" if any("/sample/" in k for k in extra_vols) else "/tmp/full"
+                    wsl_cache_target = _win_path_to_wsl(str(local_path)) + "/workspace_cache"
+                    vol_cmds.append(f"rm -f {cache_key} && mkdir -p $(dirname {cache_key}) && ln -sfn {wsl_cache_target} {cache_key}")
+
+                vol_setup = " && ".join(vol_cmds) + " && " if vol_cmds else ""
+                # Prepend PYTHONPATH so AI-generated model.py in workspace is importable
+                bash_cmd = f"{vol_setup}cd {wsl_cwd} && export PYTHONPATH={wsl_cwd}:$PYTHONPATH && {resolved}"
+
+                # #region agent log fc2594
+                open("debug-fc2594.log", "a", encoding="utf-8").write(_json.dumps({
+                    "sessionId": "fc2594", "timestamp": int(_t.time()*1000),
+                    "hypothesisId": "H-WSL2", "location": "patch_qlib_conda.py:wsl_direct",
+                    "message": "wsl_direct_exec",
+                    "data": {"bash_cmd": bash_cmd[:400], "wsl_cwd": wsl_cwd}
+                }) + "\n")
+                # #endregion
+
+                _con = _Console()
+                _con.print(_Rule("[bold green]LocalEnv Logs Begin[/bold green]", style="dark_orange"))
+                _tbl = _Table(title="Run Info", show_header=False)
+                _tbl.add_column("Key", style="bold cyan")
+                _tbl.add_column("Value", style="bold magenta")
+                _tbl.add_row("Entry (WSL)", bash_cmd[:200])
+                _tbl.add_row("Local Path", str(local_path))
+                _con.print(_tbl)
+
+                proc = _sp.Popen(
+                    [r"C:\Windows\System32\wsl.exe", "-d", "Ubuntu", "--", "bash", "-lc", bash_cmd],
+                    cwd=str(local_path),
+                    stdout=_sp.PIPE,
+                    stderr=_sp.STDOUT,   # merge stderr→stdout to avoid err=None
+                    encoding="utf-8",    # WSL outputs UTF-8, not GBK
+                    errors="replace",    # don't crash on un-decodable bytes
+                    env=_os.environ.copy(),
+                )
+                out, _ = proc.communicate()
+                out = out or ""
+                _con.print(out, end="", markup=False)
+                _con.print(_Rule("[bold green]LocalEnv Logs End[/bold green]", style="dark_orange"))
+
+                # #region agent log fc2594
+                open("debug-fc2594.log", "a", encoding="utf-8").write(_json.dumps({
+                    "sessionId": "fc2594", "timestamp": int(_t.time()*1000),
+                    "hypothesisId": "H-WSL2", "location": "patch_qlib_conda.py:wsl_direct",
+                    "message": "wsl_direct_returned",
+                    "data": {"return_code": proc.returncode, "stdout_tail": out[-600:]}
+                }) + "\n")
+                # #endregion
+
+                return out, proc.returncode
+            # ── end WSL path ────────────────────────────────────────────────────────
+
+            result = local_run(
                 self,
                 entry=resolved,
                 local_path=local_path,
@@ -417,6 +538,21 @@ def _patch_local_env_entry_python() -> None:
                 running_extra_volume=running_extra_volume if running_extra_volume is not None else {},
                 **kwargs,
             )
+            # #region agent log fc2594
+            _rc  = result[1] if isinstance(result, tuple) else getattr(result, "return_code", "?")
+            _out = result[0] if isinstance(result, tuple) else getattr(result, "stdout", "")
+            open("debug-fc2594.log", "a", encoding="utf-8").write(_json.dumps({
+                "sessionId": "fc2594", "timestamp": int(_t.time()*1000),
+                "hypothesisId": "H-I", "location": "patch_qlib_conda.py:_wrapped_run",
+                "message": "local_run_returned",
+                "data": {
+                    "entry_snippet": str(resolved)[:120],
+                    "return_code": _rc,
+                    "stdout_tail": str(_out)[-400:],
+                }
+            }) + "\n")
+            # #endregion
+            return result
 
         _wrapped_run.__factor_lab_local_entry_patched__ = True  # type: ignore[attr-defined]
         env_mod.LocalEnv._run = _wrapped_run  # type: ignore[method-assign]
@@ -716,6 +852,65 @@ def apply_qlib_conda_env_patch() -> None:
     _patch_cap_n_epochs()
     # Cap CoSTEER evo loops so coding step stays under ~20 min.
     _patch_costeer_max_loop()
+    # Windows/Linux cross-platform: remap PosixPath in pkl cache → PurePosixPath.
+    _patch_pickle_cache_posixpath()
+    # numpy 2.x compat: ret.pkl from WSL uses numpy._core; Windows may have numpy 1.x.
+    _patch_workspace_numpy_pkl_compat()
+
+
+def _patch_pickle_cache_posixpath() -> None:
+    """Patch rdagent's cache_wrapper so PosixPath pkl files created in WSL/Linux
+    can be loaded transparently on Windows by remapping PosixPath → PurePosixPath.
+
+    Root cause: pickle cache files written in WSL embed pathlib.PosixPath objects;
+    Windows Python cannot instantiate PosixPath, raising NotImplementedError.
+    Fix: replace pickle.load in rdagent.core.utils with a safe loader that falls
+    back to a custom Unpickler mapping PosixPath → PurePosixPath on failure.
+    """
+    try:
+        import io
+        import pathlib
+        import pickle as _pickle
+        import rdagent.core.utils as _rdu
+
+        class _PosixSafeUnpickler(_pickle.Unpickler):
+            """Replace PosixPath with PurePosixPath so Windows can load Linux pkl files."""
+            def find_class(self, module, name):
+                if module == "pathlib" and name == "PosixPath":
+                    return pathlib.PurePosixPath
+                return super().find_class(module, name)
+
+        def _safe_load(f):
+            data = f.read()
+            try:
+                return _pickle.loads(data)
+            except NotImplementedError:
+                return _PosixSafeUnpickler(io.BytesIO(data)).load()
+
+        _rdu_pickle = _pickle
+
+        class _SafePickleModule:
+            @staticmethod
+            def load(f):
+                return _safe_load(f)
+
+            @staticmethod
+            def dump(obj, f, *a, **kw):
+                return _rdu_pickle.dump(obj, f, *a, **kw)
+
+            @staticmethod
+            def dumps(obj, *a, **kw):
+                return _rdu_pickle.dumps(obj, *a, **kw)
+
+            @staticmethod
+            def loads(data, *a, **kw):
+                return _rdu_pickle.loads(data, *a, **kw)
+
+        _rdu.pickle = _SafePickleModule  # type: ignore[attr-defined]
+
+    except Exception as _e:
+        import logging
+        logging.getLogger(__name__).warning("_patch_pickle_cache_posixpath failed: %s", _e)
 
 
 def _patch_costeer_max_loop() -> None:
@@ -742,3 +937,67 @@ def _patch_qlib_runner_env() -> None:
         ws_mod.QlibCondaConf = env_mod.QlibCondaConf  # type: ignore[attr-defined]
     except Exception:
         pass
+
+
+def _patch_workspace_numpy_pkl_compat() -> None:
+    """Patch workspace.execute so ret.pkl written by WSL numpy 2.x can be
+    read by a Windows environment with numpy 1.x (or different 2.x build).
+
+    Root cause: numpy 2.x moved internals to numpy._core.*; when the pkl is
+    loaded on a system where only numpy.core.* exists the unpickler raises
+    ModuleNotFoundError: No module named 'numpy._core.numeric'.
+    Fix: wrap pd.read_pickle with a custom unpickler that remaps the module
+    path before instantiating objects.
+    """
+    try:
+        import io
+        import pickle as _pkl
+        import rdagent.scenarios.qlib.experiment.workspace as ws_mod
+
+        _NUMPY_REMAP = {
+            "numpy._core.numeric": "numpy.core.numeric",
+            "numpy._core.multiarray": "numpy.core.multiarray",
+            "numpy._core.umath": "numpy.core.umath",
+            "numpy._core.fromnumeric": "numpy.core.fromnumeric",
+            "numpy._core._methods": "numpy.core._methods",
+            "numpy._core.arrayprint": "numpy.core.arrayprint",
+        }
+        # Reverse map for numpy 1.x → 2.x
+        _NUMPY_REMAP.update({v: k for k, v in _NUMPY_REMAP.items()})
+
+        class _NumpyCompatUnpickler(_pkl.Unpickler):
+            def find_class(self, module, name):
+                module = _NUMPY_REMAP.get(module, module)
+                # Also handle pathlib cross-platform
+                import pathlib
+                if module == "pathlib" and name == "PosixPath":
+                    return pathlib.PurePosixPath
+                return super().find_class(module, name)
+
+        def _compat_read_pickle(path):
+            with open(path, "rb") as f:
+                data = f.read()
+            try:
+                return _pkl.loads(data)
+            except Exception:
+                return _NumpyCompatUnpickler(io.BytesIO(data)).load()
+
+        orig_execute = ws_mod.QlibFBWorkspace.execute
+        if getattr(orig_execute, "__numpy_compat_patched__", False):
+            return
+
+        import pandas as _pd
+
+        def _patched_execute(self, *args, **kwargs):
+            orig_read_pickle = _pd.read_pickle
+            _pd.read_pickle = _compat_read_pickle  # type: ignore[assignment]
+            try:
+                return orig_execute(self, *args, **kwargs)
+            finally:
+                _pd.read_pickle = orig_read_pickle  # type: ignore[assignment]
+
+        _patched_execute.__numpy_compat_patched__ = True  # type: ignore[attr-defined]
+        ws_mod.QlibFBWorkspace.execute = _patched_execute  # type: ignore[method-assign]
+    except Exception as _e:
+        import logging
+        logging.getLogger(__name__).warning("_patch_workspace_numpy_pkl_compat failed: %s", _e)

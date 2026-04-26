@@ -97,7 +97,8 @@ def _resolve_entry(mode: str):
 
 def run_rdagent_loop(
     *args: Any,
-    mode: Literal["quant", "factor"] = "quant",
+    mode: Literal["quant", "factor"] = "factor",
+    loop_n: int = 10,
     **kwargs: Any,
 ) -> Any:
     """执行 RD-Agent 循环；``mode`` 控制底层走 Quant/Factor 两种 workflow 之一。
@@ -105,10 +106,12 @@ def run_rdagent_loop(
     Parameters
     ----------
     mode:
-        * ``"quant"``（默认）: Factor + Model 混合循环（RD-Agent 原生 QuantRDLoop）。
-        * ``"factor"``: 纯 Factor 循环（RD-Agent 原生 FactorRDLoop），无 Model 假设。
+        * ``"factor"``（默认）: 纯 Factor 循环，速度快，无模型训练。
+        * ``"quant"``: Factor + Model 混合循环（RD-Agent 原生 QuantRDLoop）。
+    loop_n:
+        循环轮数，默认 10。传 ``None`` 则无限运行（需手动 Ctrl+C）。
     *args, **kwargs:
-        透传给底层 ``main`` 函数。支持的 kwargs 包括 ``loop_n``、``step_n``、
+        透传给底层 ``main`` 函数。支持的 kwargs 包括 ``step_n``、
         ``path``、``all_duration``、``checkout`` 等，详见 RD-Agent 同名模块。
     """
     _bootstrap_env()
@@ -119,7 +122,7 @@ def run_rdagent_loop(
             f"run_rdagent_loop: unsupported mode={mode!r}. "
             f"Expected one of {_SUPPORTED_MODES}."
         )
-    logger.info("run_rdagent_loop: mode=%s args=%s kwargs=%s", mode, args, kwargs)
+    logger.info("run_rdagent_loop: mode=%s loop_n=%s args=%s kwargs=%s", mode, loop_n, args, kwargs)
 
     entry = _resolve_entry(mode)
-    return entry(*args, **kwargs)
+    return entry(*args, loop_n=loop_n, **kwargs)

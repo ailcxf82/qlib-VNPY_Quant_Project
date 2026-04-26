@@ -25,6 +25,16 @@ class ProjectQlibFactorExperiment(QlibFactorExperiment):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.experiment_workspace = QlibFBWorkspace(template_folder_path=_FACTOR_TPL)
+        # #region agent log fc2594
+        import json as _j, time as _t
+        _wp = self.experiment_workspace.workspace_path
+        open("debug-fc2594.log","a",encoding="utf-8").write(_j.dumps({
+            "sessionId":"fc2594","timestamp":int(_t.time()*1000),
+            "hypothesisId":"H-E","location":"experiments.py:ProjectQlibFactorExperiment.__init__",
+            "message":"workspace_created",
+            "data":{"workspace_path":str(_wp),"exists":_wp.exists()}
+        })+"\n")
+        # #endregion
 
 
 class ProjectQlibModelExperiment(QlibModelExperiment):

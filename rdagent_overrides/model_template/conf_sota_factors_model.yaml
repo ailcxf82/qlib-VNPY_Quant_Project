@@ -7,7 +7,7 @@ benchmark: &benchmark SH000300
 
 data_handler_config: &data_handler_config
     start_time: 2022-01-01
-    end_time: 2025-10-31
+    end_time: 2026-04-23
     instruments: *market
     data_loader:
         class: NestedDataLoader
@@ -42,7 +42,7 @@ data_handler_config: &data_handler_config
               fields_group: feature
               clip_outlier: true
               fit_start_time: 2022-01-01
-              fit_end_time: 2024-06-30
+              fit_end_time: 2025-06-30
         - class: Fillna
           kwargs:
               fields_group: feature
@@ -61,8 +61,8 @@ port_analysis_config: &port_analysis_config
             topk: 50
             n_drop: 5
     backtest:
-        start_time: 2025-01-01
-        end_time: 2025-10-31
+        start_time: 2026-01-01
+        end_time: 2026-04-23
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -99,9 +99,9 @@ task:
                 module_path: qlib.contrib.data.handler
                 kwargs: *data_handler_config
             segments:
-                train: [2022-01-01, 2024-06-30]
-                valid: [2024-07-01, 2024-12-31]
-                test: [2025-01-01, 2025-10-31]
+                train: [2022-01-01, 2025-06-30]
+                valid: [2025-07-01, 2025-12-31]
+                test: [2026-01-01, 2026-04-23]
             {% if step_len %}step_len: {{ step_len }}{% endif %}
     record: 
         - class: SignalRecord
