@@ -2,7 +2,7 @@
 A+B：刷新 combined_factors_df.parquet 的时间/股票覆盖到主工程训练窗口。
 
 做法：
-1. 从项目的 qlib_data（D:/qlib_data/qlib_data）按 csi500+csi300 读 OHLCV/基本面，
+1. 从项目的 qlib_data（D:/qlib_data/qlib_data）按目标股票池读 OHLCV/基本面，
    按 RD-Agent schema（$close/$open/.../$rsi12/$macd）构造一份 in-memory daily_pv。
 2. monkey-patch pandas，把 `pd.read_hdf('daily_pv.h5')` 拦截为返回上述 in-memory df；
    把 `DataFrame.to_hdf(..., 'result.h5', ...)` 拦截为内存捕获，不落盘。
@@ -292,7 +292,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Refresh combined_factors_df.parquet coverage")
     ap.add_argument("--start", default="2020-01-01")
     ap.add_argument("--end", default="2026-04-07")
-    ap.add_argument("--instruments", default="csi500,csi300")
+    ap.add_argument("--instruments", default="csi500")
     ap.add_argument("--ic-threshold", type=float, default=0.02,
                     help="松模式：仅按 |IC| 过滤")
     ap.add_argument("--max-nan-ratio", type=float, default=0.50)

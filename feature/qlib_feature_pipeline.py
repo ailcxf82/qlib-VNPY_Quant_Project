@@ -12,6 +12,8 @@ import logging
 import os
 import sys
 import re
+import json
+import time
 from pathlib import Path
 from typing import Dict, Tuple, Any, Union, List
 
@@ -28,6 +30,23 @@ if str(_project_root) not in sys.path:
 from utils import load_yaml_config
 
 logger = logging.getLogger(__name__)
+
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
+    payload = {
+        "sessionId": "78b9cb",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open("debug-78b9cb.log", "a", encoding="utf-8") as fp:
+            fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 # 尝试导入 158 因子相关模块
 try:
@@ -347,6 +366,19 @@ class QlibFeaturePipeline:
             logger.warning("L3 loader 失败，回退旧路径：%s", exc)
             return None
 
+    def _load_production_quality_gate(self) -> dict[str, Any]:
+        cfg_path = _project_root / "config" / "factor_lab.yaml"
+        if not cfg_path.exists():
+            return {}
+        try:
+            import yaml  # noqa: WPS433 延迟导入
+            with cfg_path.open("r", encoding="utf-8") as f:
+                raw_cfg = yaml.safe_load(f) or {}
+            return ((raw_cfg.get("registry") or {}).get("quality_gate") or {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取 production 因子质量阈值失败，跳过质量门控：%s", exc)
+            return {}
+
     def _maybe_merge_rdagent_parquet(self, feature_panel: pd.DataFrame) -> pd.DataFrame:
         """若 ``active_feature_sets`` 含 ``rdagent_exported``，则合并 L3 因子到特征表。
 
@@ -375,6 +407,20 @@ class QlibFeaturePipeline:
             if extra.shape[1] > 0:
                 out = pd.concat([feature_panel, extra], axis=1)
                 self.rdagent_factor_columns = list(extra.columns)
+                # #region agent log
+                _agent_debug_log(
+                    "pre-fix",
+                    "H5",
+                    "feature/qlib_feature_pipeline.py:_maybe_merge_rdagent_parquet:l3_merge",
+                    "rdagent columns merged from l3",
+                    {
+                        "extra_cols_count": len(extra.columns),
+                        "extra_col_type_sample": [type(c).__name__ for c in list(extra.columns)[:5]],
+                        "extra_cols_sample": [repr(c) for c in list(extra.columns)[:5]],
+                        "out_cols_count": len(out.columns),
+                    },
+                )
+                # #endregion
                 logger.info(
                     "L3: 已合并 production 因子 %d 列，示例: %s",
                     len(self.rdagent_factor_columns),
@@ -406,6 +452,55 @@ class QlibFeaturePipeline:
         if not isinstance(extra.index, pd.MultiIndex) or "datetime" not in extra.index.names:
             logger.error("P0-1：parquet 索引需为 MultiIndex(datetime, instrument)，实际=%s", type(extra.index))
             return feature_panel
+        overlap_rows = None
+        feature_date_min = None
+        feature_date_max = None
+        extra_date_min = None
+        extra_date_max = None
+        # #region agent log
+        try:
+            fp_idx = feature_panel.index
+            ex_idx = extra.index
+            fp_dates = fp_idx.get_level_values("datetime")
+            ex_dates = ex_idx.get_level_values("datetime")
+            fp_inst = fp_idx.get_level_values("instrument")
+            ex_inst = ex_idx.get_level_values("instrument")
+            overlap_idx = fp_idx.intersection(ex_idx)
+            overlap_rows = int(len(overlap_idx))
+            feature_date_min = str(fp_dates.min()) if len(fp_dates) else None
+            feature_date_max = str(fp_dates.max()) if len(fp_dates) else None
+            extra_date_min = str(ex_dates.min()) if len(ex_dates) else None
+            extra_date_max = str(ex_dates.max()) if len(ex_dates) else None
+            overlap_inst = pd.Index(fp_inst).intersection(pd.Index(ex_inst))
+            _agent_debug_log(
+                "pre-fix",
+                "H10",
+                "feature/qlib_feature_pipeline.py:_maybe_merge_rdagent_parquet:index_overlap",
+                "index overlap diagnostics before reindex",
+                {
+                    "feature_rows": int(len(fp_idx)),
+                    "extra_rows": int(len(ex_idx)),
+                    "overlap_rows": int(len(overlap_idx)),
+                    "feature_date_min": str(fp_dates.min()) if len(fp_dates) else None,
+                    "feature_date_max": str(fp_dates.max()) if len(fp_dates) else None,
+                    "extra_date_min": str(ex_dates.min()) if len(ex_dates) else None,
+                    "extra_date_max": str(ex_dates.max()) if len(ex_dates) else None,
+                    "feature_instrument_sample": [str(x) for x in list(pd.Index(fp_inst).unique()[:5])],
+                    "extra_instrument_sample": [str(x) for x in list(pd.Index(ex_inst).unique()[:5])],
+                    "overlap_instrument_count": int(len(overlap_inst)),
+                },
+            )
+        except Exception:
+            pass
+        # #endregion
+        if overlap_rows == 0:
+            raise ValueError(
+                "rdagent_exported 数据与当前训练样本无任何索引交集："
+                f"feature日期范围=[{feature_date_min},{feature_date_max}]，"
+                f"rdagent日期范围=[{extra_date_min},{extra_date_max}]。"
+                "请先刷新 RD-Agent parquet（例如运行 scripts/refresh_rdagent_parquet.py），"
+                "或调整 data.start_time/end_time 到 parquet 覆盖区间。"
+            )
 
         # 可选：仅用 feature_sets.rdagent_exported 中列出的列名过滤（非表达式）
         want = feature_sets.get("rdagent_exported")
@@ -418,6 +513,45 @@ class QlibFeaturePipeline:
 
         extra = extra[use_cols]
         extra = extra.reindex(feature_panel.index)
+        quality_gate = self._load_production_quality_gate()
+        min_cov_raw = quality_gate.get("min_align_coverage_pct")
+        if min_cov_raw is not None and extra.shape[1] > 0:
+            try:
+                min_cov = float(min_cov_raw)
+            except (TypeError, ValueError):
+                logger.warning("忽略非法 min_align_coverage_pct=%r", min_cov_raw)
+            else:
+                coverage = extra.notna().mean().mul(100.0)
+                low_cols = coverage[coverage < min_cov].sort_values()
+                if len(low_cols) > 0:
+                    logger.warning(
+                        "P0-1：旧路径 parquet 中 %d 列对齐覆盖率低于 %.2f%%，将跳过；Top10=%s",
+                        len(low_cols),
+                        min_cov,
+                        {str(k): round(float(v), 2) for k, v in low_cols.head(10).items()},
+                    )
+                    extra = extra.drop(columns=list(low_cols.index))
+                    if extra.shape[1] == 0:
+                        logger.warning("P0-1：旧路径 RD-Agent 因子全部低覆盖，跳过合并")
+                        return feature_panel
+        # #region agent log
+        try:
+            _nonnull = extra.notna().sum().to_dict()
+            _agent_debug_log(
+                "pre-fix",
+                "H8",
+                "feature/qlib_feature_pipeline.py:_maybe_merge_rdagent_parquet:after_reindex",
+                "rdagent non-null stats after reindex",
+                {
+                    "rows": int(len(extra)),
+                    "cols": int(extra.shape[1]),
+                    "non_null_sample": {repr(k): int(v) for k, v in list(_nonnull.items())[:5]},
+                    "all_zero_non_null_cols": int(sum(1 for v in _nonnull.values() if int(v) == 0)),
+                },
+            )
+        except Exception:
+            pass
+        # #endregion
         overlap = [c for c in extra.columns if c in feature_panel.columns]
         if overlap:
             logger.warning("P0-1：parquet 与 qlib 特征列名冲突，跳过 parquet 侧列: %s", overlap[:10])
@@ -429,6 +563,20 @@ class QlibFeaturePipeline:
 
         out = pd.concat([feature_panel, extra], axis=1)
         self.rdagent_factor_columns = list(extra.columns)
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H5",
+            "feature/qlib_feature_pipeline.py:_maybe_merge_rdagent_parquet:fallback_merge",
+            "rdagent columns merged from fallback parquet",
+            {
+                "extra_cols_count": len(extra.columns),
+                "extra_col_type_sample": [type(c).__name__ for c in list(extra.columns)[:5]],
+                "extra_cols_sample": [repr(c) for c in list(extra.columns)[:5]],
+                "out_cols_count": len(out.columns),
+            },
+        )
+        # #endregion
         logger.info(
             "P0-1：已合并 RD-Agent 因子 %d 列（parquet=%s, 旧路径），示例: %s",
             len(self.rdagent_factor_columns),
@@ -575,6 +723,20 @@ class QlibFeaturePipeline:
 
         feature_panel = self._normalize_index(feature_panel)
         feature_panel = self._maybe_merge_rdagent_parquet(feature_panel)
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H6",
+            "feature/qlib_feature_pipeline.py:build:after_merge",
+            "feature panel columns after merge",
+            {
+                "feature_panel_cols_count": len(feature_panel.columns),
+                "feature_panel_col_type_sample": [type(c).__name__ for c in list(feature_panel.columns)[:8]],
+                "feature_panel_cols_sample": [repr(c) for c in list(feature_panel.columns)[-8:]],
+                "rdagent_factor_columns_count": len(self.rdagent_factor_columns),
+            },
+        )
+        # #endregion
         if include_label and label_series is not None:
             label_series = self._normalize_index(label_series)
 
@@ -621,6 +783,20 @@ class QlibFeaturePipeline:
             # 详细诊断：检查哪些列全为 NaN
             nan_by_col = combined.isnull().sum()
             all_nan_cols = nan_by_col[nan_by_col == len(combined)].index.tolist()
+            # #region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "H9",
+                "feature/qlib_feature_pipeline.py:build:all_nan_cols",
+                "all-NaN columns detected before cleanup",
+                {
+                    "combined_rows": int(len(combined)),
+                    "all_nan_cols_count": int(len(all_nan_cols)),
+                    "all_nan_cols_sample": [repr(c) for c in all_nan_cols[:10]],
+                    "rdagent_all_nan_count": int(sum(1 for c in all_nan_cols if c in self.rdagent_factor_columns)),
+                },
+            )
+            # #endregion
             if all_nan_cols:
                 logger.warning("以下 %d 个特征全为 NaN（可能表达式不可用）: %s", 
                              len(all_nan_cols), all_nan_cols[:10])  # 只显示前10个
@@ -750,6 +926,20 @@ class QlibFeaturePipeline:
         
         features = combined.drop(columns=["label"])
         label = combined["label"]
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H7",
+            "feature/qlib_feature_pipeline.py:build:final_features",
+            "final feature columns after cleanup",
+            {
+                "final_feature_cols_count": len(features.columns),
+                "final_feature_col_type_sample": [type(c).__name__ for c in list(features.columns)[:8]],
+                "final_feature_cols_tail_sample": [repr(c) for c in list(features.columns)[-8:]],
+                "rdagent_cols_survive_count": int(sum(1 for c in self.rdagent_factor_columns if c in features.columns)),
+            },
+        )
+        # #endregion
         
         logger.info("最终特征数据量: %d 行，%d 列", len(features), len(features.columns))
         logger.info("最终标签数据量: %d 行", len(label))

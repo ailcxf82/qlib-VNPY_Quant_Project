@@ -72,6 +72,13 @@ def parse_args():
     p.add_argument("--pred-csi300", type=str, default=None, help="CSI300 预测文件（csv，含 datetime/instrument/final），不传则自动选 data/predictions 下最新文件")
     p.add_argument("--industry", type=str, default=None, help="行业映射文件（可选，暂未强制使用）")
     p.add_argument("--strategy", type=str, default="backtest/msa/rqalpha_msa_strategy.py", help="MSA 策略脚本路径")
+    p.add_argument(
+        "--strategy-mode",
+        type=str,
+        default="dual",
+        choices=["dual", "csi300_only"],
+        help="MSA 运行模式：dual=CSI101+CSI300；csi300_only=仅 CSI300 单策略",
+    )
     # allocations
     p.add_argument("--alloc1", type=float, default=0.5, help="策略1（csi101）资金占比")
     p.add_argument("--alloc2", type=float, default=0.5, help="策略2（csi300）资金占比")
@@ -98,10 +105,12 @@ def main():
     # 工作目录固定为项目根目录，避免相对路径解析错误
     os.chdir(_PROJECT_ROOT)
 
-    pred_csi101 = _resolve_path(args.pred_csi101) or _find_latest_prediction("csi101")
+    pred_csi101 = None
+    if args.strategy_mode == "dual":
+        pred_csi101 = _resolve_path(args.pred_csi101) or _find_latest_prediction("csi101")
     pred_csi300 = _resolve_path(args.pred_csi300) or _find_latest_prediction("csi300")
 
-    if not os.path.exists(pred_csi101):
+    if pred_csi101 is not None and not os.path.exists(pred_csi101):
         raise FileNotFoundError(f"csi101 预测文件不存在: {pred_csi101}")
     if not os.path.exists(pred_csi300):
         raise FileNotFoundError(f"csi300 预测文件不存在: {pred_csi300}")
@@ -121,7 +130,12 @@ def main():
         )
     logging.info("MSA 回测周期（来自 %s）: %s ~ %s", args.rqalpha_config, start_date, end_date)
 
-    cv["pred_csi101"] = pred_csi101
+    if args.strategy_mode == "dual":
+        cv["msa_active_pools"] = ["csi101", "csi300"]
+        cv["pred_csi101"] = pred_csi101
+    else:
+        cv["msa_active_pools"] = ["csi300"]
+        cv.pop("pred_csi101", None)
     cv["pred_csi300"] = pred_csi300
     cv["alloc_strategy1"] = args.alloc1
     cv["alloc_strategy2"] = args.alloc2
@@ -161,12 +175,15 @@ def main():
         logging.info("准备启动 RQAlpha 回测框架")
         logging.info("临时配置文件: %s", tmp.name)
         logging.info("策略脚本: %s", _resolve_path(args.strategy) or args.strategy)
-        logging.info("预测文件 (csi101): %s", pred_csi101)
+        logging.info("运行模式: %s", args.strategy_mode)
+        if pred_csi101 is not None:
+            logging.info("预测文件 (csi101): %s", pred_csi101)
         logging.info("预测文件 (csi300): %s", pred_csi300)
         logging.info("=" * 80)
+        prediction_path = pred_csi101 if pred_csi101 is not None else pred_csi300
         _run_single(
             rqalpha_config_path=tmp.name,
-            prediction_path=pred_csi101,
+            prediction_path=prediction_path,
             industry_path=args.industry,
             strategy_path=_resolve_path(args.strategy) or args.strategy,
         )

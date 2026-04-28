@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SubStrategyConfig:
     name: str
+    pool: str
     allocation: float
     pred_path: str
     topk_pred: int
@@ -141,14 +142,36 @@ def _build_equal_weight_portfolio(codes: List[str], total_weight: float) -> Dict
     return {c: w for c in codes}
 
 
+def _parse_active_pools(cv: Dict) -> List[str]:
+    raw = cv.get("msa_active_pools")
+    if raw is None:
+        return ["csi101", "csi300"]
+    if isinstance(raw, str):
+        pools = [p.strip().lower() for p in raw.split(",")]
+    else:
+        try:
+            pools = [str(p).strip().lower() for p in raw]
+        except TypeError:
+            pools = []
+    pools = [p for p in pools if p]
+    invalid = [p for p in pools if p not in {"csi101", "csi300"}]
+    if invalid:
+        raise ValueError(f"MSA: msa_active_pools 包含不支持的股票池: {invalid}")
+    if not pools:
+        raise ValueError("MSA: msa_active_pools 不能为空")
+    return pools
+
+
 def init(context):
     cv = _load_context_vars(context)
 
-    # 必填：两份预测文件
+    active_pools = _parse_active_pools(cv)
     pred_csi101 = cv.get("pred_csi101")
     pred_csi300 = cv.get("pred_csi300")
-    if not pred_csi101 or not pred_csi300:
-        raise ValueError("MSA 策略需要在 extra.context_vars 中提供 pred_csi101 与 pred_csi300 两个预测文件路径")
+    if "csi101" in active_pools and not pred_csi101:
+        raise ValueError("MSA 策略启用 csi101 时需要在 extra.context_vars 中提供 pred_csi101")
+    if "csi300" in active_pools and not pred_csi300:
+        raise ValueError("MSA 策略启用 csi300 时需要在 extra.context_vars 中提供 pred_csi300")
 
     def _resolve(p: str) -> str:
         p = str(p).strip()
@@ -159,12 +182,14 @@ def init(context):
             return p
         return os.path.join(_PROJECT_ROOT, p)
 
-    pred_csi101 = _resolve(pred_csi101)
-    pred_csi300 = _resolve(pred_csi300)
-    if not os.path.exists(pred_csi101):
-        raise FileNotFoundError(f"MSA: csi101 预测文件不存在: {pred_csi101}")
-    if not os.path.exists(pred_csi300):
-        raise FileNotFoundError(f"MSA: csi300 预测文件不存在: {pred_csi300}")
+    pred_paths = {}
+    if pred_csi101:
+        pred_paths["csi101"] = _resolve(pred_csi101)
+    if pred_csi300:
+        pred_paths["csi300"] = _resolve(pred_csi300)
+    for pool in active_pools:
+        if not os.path.exists(pred_paths[pool]):
+            raise FileNotFoundError(f"MSA: {pool} 预测文件不存在: {pred_paths[pool]}")
 
     # 资金分配（默认 50/50）
     alloc1 = _safe_float(cv.get("alloc_strategy1", 0.5), 0.5)
@@ -173,47 +198,64 @@ def init(context):
     alloc1, alloc2 = (alloc1 / s, alloc2 / s) if s > 0 else (0.5, 0.5)
 
     # 子策略参数（默认值按策略文件描述）
-    s1 = SubStrategyConfig(
-        name="small_cap_csi101",
-        allocation=alloc1,
-        pred_path=str(pred_csi101),
-        topk_pred=int(cv.get("s1_topk_pred", 20)),
-        target_holdings=int(cv.get("s1_target_holdings", 6)),
-        rebalance_interval_days=int(cv.get("s1_rebalance_interval_days", 5)),
-        max_per_industry=int(cv.get("s1_max_per_industry", 2)),
-        filter_cfg=FilterConfig(
-            exclude_kcb_bj=True,
-            exclude_st=True,
-            min_list_days=int(cv.get("s1_min_list_days", 360)),
-            pb_min=None,
-            pb_max=None,
-            exclude_recent_limitup_days=0,
-        ),
-    )
+    sub_strategies: List[SubStrategyConfig] = []
+    if "csi101" in active_pools:
+        sub_strategies.append(
+            SubStrategyConfig(
+                name="small_cap_csi101",
+                pool="csi101",
+                allocation=alloc1,
+                pred_path=str(pred_paths["csi101"]),
+                topk_pred=int(cv.get("s1_topk_pred", 20)),
+                target_holdings=int(cv.get("s1_target_holdings", 6)),
+                rebalance_interval_days=int(cv.get("s1_rebalance_interval_days", 5)),
+                max_per_industry=int(cv.get("s1_max_per_industry", 2)),
+                filter_cfg=FilterConfig(
+                    exclude_kcb_bj=True,
+                    exclude_st=True,
+                    min_list_days=int(cv.get("s1_min_list_days", 360)),
+                    pb_min=None,
+                    pb_max=None,
+                    exclude_recent_limitup_days=0,
+                ),
+            )
+        )
 
     # 策略2：默认加 PB (0,1) 与近5日涨停过滤
-    s2 = SubStrategyConfig(
-        name="value_csi300",
-        allocation=alloc2,
-        pred_path=str(pred_csi300),
-        topk_pred=int(cv.get("s2_topk_pred", 20)),
-        target_holdings=int(cv.get("s2_target_holdings", 4)),  # 你文档里写 Top2，但又写“保持4只”，这里默认4，可配置为2
-        rebalance_interval_days=int(cv.get("s2_rebalance_interval_days", 5)),
-        max_per_industry=int(cv.get("s2_max_per_industry", 2)),
-        filter_cfg=FilterConfig(
-            exclude_kcb_bj=True,
-            exclude_st=True,
-            min_list_days=int(cv.get("s2_min_list_days", 360)),
-            pb_min=float(cv.get("s2_pb_min", 0.0)),
-            pb_max=float(cv.get("s2_pb_max", 1.0)),
-            exclude_recent_limitup_days=int(cv.get("s2_exclude_recent_limitup_days", 5)),
-        ),
-    )
+    if "csi300" in active_pools:
+        sub_strategies.append(
+            SubStrategyConfig(
+                name="value_csi300",
+                pool="csi300",
+                allocation=alloc2,
+                pred_path=str(pred_paths["csi300"]),
+                topk_pred=int(cv.get("s2_topk_pred", 20)),
+                target_holdings=int(cv.get("s2_target_holdings", 4)),  # 你文档里写 Top2，但又写“保持4只”，这里默认4，可配置为2
+                rebalance_interval_days=int(cv.get("s2_rebalance_interval_days", 5)),
+                max_per_industry=int(cv.get("s2_max_per_industry", 2)),
+                filter_cfg=FilterConfig(
+                    exclude_kcb_bj=True,
+                    exclude_st=True,
+                    min_list_days=int(cv.get("s2_min_list_days", 360)),
+                    pb_min=float(cv.get("s2_pb_min", 0.0)),
+                    pb_max=float(cv.get("s2_pb_max", 1.0)),
+                    exclude_recent_limitup_days=int(cv.get("s2_exclude_recent_limitup_days", 5)),
+                ),
+            )
+        )
 
-    context.sub_strategies = [s1, s2]
+    alloc_sum = sum(max(0.0, s.allocation) for s in sub_strategies)
+    if alloc_sum <= 0:
+        equal_alloc = 1.0 / len(sub_strategies)
+        for sub in sub_strategies:
+            sub.allocation = equal_alloc
+    else:
+        for sub in sub_strategies:
+            sub.allocation = max(0.0, sub.allocation) / alloc_sum
+
+    context.sub_strategies = sub_strategies
     context.pred_books: Dict[str, PredictionBook] = {
-        "csi101": load_prediction_csv(s1.pred_path),
-        "csi300": load_prediction_csv(s2.pred_path),
+        sub.pool: load_prediction_csv(sub.pred_path) for sub in sub_strategies
     }
 
     # 诊断：预测信号日期范围 vs 回测配置日期范围（帮助排查“全程无交易导致净值水平线”）
@@ -269,8 +311,9 @@ def init(context):
         except Exception:
             pass
 
-    logger.info("MSA 初始化完成：alloc策略1=%.2f, alloc策略2=%.2f, drawdown_stop=%.2f%%",
-                s1.allocation, s2.allocation, context.drawdown_stop * 100)
+    alloc_msg = ", ".join(f"{sub.pool}={sub.allocation:.2f}" for sub in context.sub_strategies)
+    logger.info("MSA 初始化完成：active_pools=%s, allocations=(%s), drawdown_stop=%.2f%%",
+                active_pools, alloc_msg, context.drawdown_stop * 100)
 
 
 def before_trading(context):
@@ -319,7 +362,7 @@ def _build_target_weights(context, today: pd.Timestamp) -> Dict[str, float]:
     # 组合层：按 allocation 分配权重，每个子策略内部等权
     target: Dict[str, float] = {}
     for sub in context.sub_strategies:
-        book = context.pred_books["csi101"] if "csi101" in sub.name else context.pred_books["csi300"]
+        book = context.pred_books[sub.pool]
         picks = _select_for_substrategy(context, sub, today, book)
         sub_w = _build_equal_weight_portfolio(picks, sub.allocation)
         for code, w in sub_w.items():

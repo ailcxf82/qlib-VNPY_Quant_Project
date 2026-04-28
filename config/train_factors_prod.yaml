@@ -20,8 +20,8 @@ qlib_init:
     provider_uri: "D:/qlib_data/qlib_data"   # Windows 本地路径
     region: cn
 
-market: &market all
-benchmark: &benchmark SH000300
+market: &market csi500
+benchmark: &benchmark SH000905
 
 data_handler_config: &data_handler_config
     start_time: 2022-01-01

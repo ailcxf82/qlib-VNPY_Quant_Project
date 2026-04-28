@@ -21,8 +21,9 @@ model_features:
   # P0-1 v2（2026-04-19 重启）：旧 14 因子版被回测确认负贡献并已诊断（见 docs/P0-1_RUN_GUIDE.md §10）。
   # 当前 parquet 已通过 refresh_rdagent_parquet.py --oos-cutoff 2024-12-31 严格重筛 →
   # 5 个 OOS IC>0、|corr_vs_lgb|≤0.7、内部去冗余≤0.7 的因子。
-  # 临时启用做对照回测：若 csi300/csi500 任一项指标弱于基线，立即改回 "lgb_short_cycle"。
-  lgb: ["lgb_short_cycle", "rdagent_exported"]
+  # 若 csi300/csi500 任一项指标弱于基线，改回 "lgb_short_cycle"。
+  # lgb: ["lgb_short_cycle", "rdagent_exported"]
+  lgb: ["rdagent_exported"]
 
 # GRU 超参：若此处为 dict，会优先覆盖 gru_config；
 # 现在设为 null，表示使用 config/model_gru.yaml

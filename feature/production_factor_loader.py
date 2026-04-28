@@ -59,10 +59,14 @@ class ProductionFactorLoader:
         registry: FactorRegistry,
         store: ParquetStore,
         parquet_version: int | None = None,
+        min_align_coverage_pct: float | None = None,
+        stale_warn_days: int | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self._explicit_version = parquet_version
+        self.min_align_coverage_pct = min_align_coverage_pct
+        self.stale_warn_days = stale_warn_days
 
     # ------------------------------------------------------------------ factory
 
@@ -79,10 +83,17 @@ class ProductionFactorLoader:
         cfg_path = Path(config_path).resolve() if config_path else _DEFAULT_CONFIG
 
         reg_dir, parquet_dir, cfg_version = _parse_factor_lab_config(cfg_path, root)
+        min_align_coverage_pct, stale_warn_days = _parse_quality_gate_config(cfg_path)
         registry = FactorRegistry(reg_dir)
         store = ParquetStore(parquet_dir)
         version = parquet_version if parquet_version is not None else cfg_version
-        return cls(registry=registry, store=store, parquet_version=version)
+        return cls(
+            registry=registry,
+            store=store,
+            parquet_version=version,
+            min_align_coverage_pct=min_align_coverage_pct,
+            stale_warn_days=stale_warn_days,
+        )
 
     # ----------------------------------------------------------------- version
 
@@ -162,8 +173,76 @@ class ProductionFactorLoader:
         # 强制按 cols 顺序输出，避免 parquet 内列序漂移影响下游特征顺序
         df = df.loc[:, cols]
         if align_index is not None:
+            raw_index = df.index
             df = df.reindex(align_index)
+            df = self._apply_alignment_quality_gate(
+                raw_index=raw_index,
+                aligned=df,
+                align_index=align_index,
+                version=version,
+            )
         return df
+
+    def _apply_alignment_quality_gate(
+        self,
+        *,
+        raw_index: pd.Index,
+        aligned: pd.DataFrame,
+        align_index: pd.MultiIndex,
+        version: int,
+    ) -> pd.DataFrame:
+        """记录并应用 production 因子与当前样本索引的对齐质量门控。"""
+        if aligned.empty or not isinstance(raw_index, pd.MultiIndex):
+            return aligned
+        if "datetime" not in raw_index.names or "datetime" not in align_index.names:
+            return aligned
+
+        raw_dt = pd.to_datetime(raw_index.get_level_values("datetime"))
+        align_dt = pd.to_datetime(align_index.get_level_values("datetime"))
+        raw_min = raw_dt.min()
+        raw_max = raw_dt.max()
+        align_min = align_dt.min()
+        align_max = align_dt.max()
+        coverage = aligned.notna().mean().mul(100.0)
+        min_cov = float(coverage.min()) if len(coverage) else 0.0
+        median_cov = float(coverage.median()) if len(coverage) else 0.0
+
+        logger.info(
+            "L3 loader: v%d 对齐诊断 factor_dt=[%s, %s], sample_dt=[%s, %s], "
+            "cols=%d, min_coverage=%.2f%%, median_coverage=%.2f%%",
+            version,
+            raw_min.date(),
+            raw_max.date(),
+            align_min.date(),
+            align_max.date(),
+            aligned.shape[1],
+            min_cov,
+            median_cov,
+        )
+
+        if self.min_align_coverage_pct is not None and min_cov < self.min_align_coverage_pct:
+            low = coverage[coverage < self.min_align_coverage_pct].sort_values().head(10)
+            logger.warning(
+                "L3 loader: %d 个 production 因子对齐覆盖率低于 %.2f%%，将跳过这些列；Top10=%s",
+                int((coverage < self.min_align_coverage_pct).sum()),
+                self.min_align_coverage_pct,
+                {str(k): round(float(v), 2) for k, v in low.items()},
+            )
+            keep_cols = coverage[coverage >= self.min_align_coverage_pct].index.tolist()
+            aligned = aligned.loc[:, keep_cols]
+
+        if self.stale_warn_days is not None:
+            stale_days = int((align_max.normalize() - raw_max.normalize()).days)
+            if stale_days > self.stale_warn_days:
+                logger.warning(
+                    "L3 loader: production 因子最大日期 %s 早于样本最大日期 %s 共 %d 天，"
+                    "超过 stale_warn_days=%d；建议刷新 RDAgent parquet/registry。",
+                    raw_max.date(),
+                    align_max.date(),
+                    stale_days,
+                    self.stale_warn_days,
+                )
+        return aligned
 
     def load_columns(
         self,
@@ -217,6 +296,34 @@ def _parse_factor_lab_config(
                 f"factor_lab.yaml registry.current_parquet_version 必须为整数: {version!r}"
             ) from exc
     return data_dir, parquet_dir, version
+
+
+def _parse_quality_gate_config(cfg_path: Path) -> tuple[float | None, int | None]:
+    """解析 production 因子加载诊断阈值；缺失时返回禁用态。"""
+    if not cfg_path.exists():
+        return None, None
+    with cfg_path.open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    quality = ((cfg.get("registry") or {}).get("quality_gate") or {})
+
+    min_cov_raw = quality.get("min_align_coverage_pct")
+    stale_raw = quality.get("stale_warn_days")
+
+    min_cov: float | None
+    stale_days: int | None
+    try:
+        min_cov = float(min_cov_raw) if min_cov_raw is not None else None
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"factor_lab.yaml registry.quality_gate.min_align_coverage_pct 必须为数字: {min_cov_raw!r}"
+        ) from exc
+    try:
+        stale_days = int(stale_raw) if stale_raw is not None else None
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"factor_lab.yaml registry.quality_gate.stale_warn_days 必须为整数: {stale_raw!r}"
+        ) from exc
+    return min_cov, stale_days
 
 
 def _abs(path_like: str | Path, project_root: Path) -> Path:

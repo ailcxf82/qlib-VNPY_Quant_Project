@@ -24,13 +24,13 @@ def parse_args():
     parser.add_argument(
         "--start",
         type=str,
-        default=os.environ.get("RUN_PRED_START", "2025-11-01"),
+        default=os.environ.get("RUN_PRED_START", "2025-12-01"),
         help="预测起始日期，默认 2024-11-01，可通过环境变量 RUN_PRED_START 覆盖",
     )
     parser.add_argument(
         "--end",
         type=str,
-        default=os.environ.get("RUN_PRED_END", "2026-04-07"),
+        default=os.environ.get("RUN_PRED_END", "2026-04-27"),
         help="预测结束日期，默认 2026-01-23，可通过环境变量 RUN_PRED_END 覆盖",
     )
     parser.add_argument(
@@ -83,7 +83,8 @@ def _infer_latest_from_models(model_dir: str) -> str:
 def _latest_tag(log_path: str, model_dir: str) -> str:
     if os.path.exists(log_path):
         df = pd.read_csv(log_path)
-        latest = df.iloc[-1]["valid_end"].replace("-", "")
+        last_valid_end = str(df.iloc[-1]["valid_end"])
+        latest = last_valid_end.replace("-", "")
         return latest
     logging.warning("未找到训练日志 %s，将根据模型目录推断最新 tag", log_path)
     return _infer_latest_from_models(model_dir)
@@ -102,7 +103,7 @@ def main():
     
     logger = logging.getLogger(__name__)
     logger.info("检测到 %d 个股票池: %s", len(instrument_pools), instrument_pools)
-    logger.info("预测请求日期范围: %s 到 %s（RUN_PRED_START/RUN_PRED_END 或命令行参数）", args.start, args.end)
+    logger.info("预测请求日期范围: %s 到 %s（RUN_PRED_START/RUN_PRED_END 或命令行参数，将覆盖 yaml end_time）", args.start, args.end)
     
     # 在循环开始前，保存原始的基础路径（避免在循环中被修改）
     import copy
@@ -138,8 +139,16 @@ def main():
         import yaml
         
         # 创建临时数据配置文件
-        temp_data_config = pool_data_cfg.copy()
+        temp_data_config = copy.deepcopy(pool_data_cfg)
         temp_data_config["data"]["instruments"] = pool_name
+        # 用命令行/环境变量的 --end 覆盖 yaml 里的 end_time，确保预测可以取到最新数据
+        temp_data_config["data"]["end_time"] = args.end
+        # start_time 向前留足 GRU 历史窗口缓冲（~180 个交易日）
+        pred_start_ts = pd.Timestamp(args.start)
+        data_start_ts = pd.Timestamp(str(pool_data_cfg["data"].get("start_time", args.start)))
+        # 取两者较早值，保证原有训练 start_time 不被收窄
+        effective_start = min(pred_start_ts - pd.Timedelta(days=270), data_start_ts)
+        temp_data_config["data"]["start_time"] = effective_start.strftime("%Y-%m-%d")
         
         temp_data_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
         yaml.dump(temp_data_config, temp_data_file, allow_unicode=True, default_flow_style=False)
@@ -171,12 +180,21 @@ def main():
         else:
             temp_pipeline_config["paths"]["model_dir"] = os.path.join(pool_base_model_dir, f"{pool_name}_models")
 
-        # 日志目录同理：若基目录已有 training_metrics.csv，直接复用
+        # 日志目录优先级：
+        # 1) 若存在 {base}/{pool}_logs/training_metrics.csv，优先使用同池日志（避免误读全局旧日志）
+        # 2) 否则若 base 目录自身有 training_metrics.csv，则复用 base
+        # 3) 否则使用 {base}/{pool}_logs
+        pool_specific_log_dir = os.path.join(pool_base_log_dir, f"{pool_name}_logs")
+        has_pool_specific_log = os.path.exists(os.path.join(pool_specific_log_dir, "training_metrics.csv"))
         has_direct_log = os.path.exists(os.path.join(pool_base_log_dir, "training_metrics.csv"))
-        if pool_base_log_dir.endswith(f"{pool_name}_logs") or has_direct_log:
+        if pool_base_log_dir.endswith(f"{pool_name}_logs") or has_pool_specific_log:
+            temp_pipeline_config["paths"]["log_dir"] = (
+                pool_base_log_dir if pool_base_log_dir.endswith(f"{pool_name}_logs") else pool_specific_log_dir
+            )
+        elif has_direct_log:
             temp_pipeline_config["paths"]["log_dir"] = pool_base_log_dir
         else:
-            temp_pipeline_config["paths"]["log_dir"] = os.path.join(pool_base_log_dir, f"{pool_name}_logs")
+            temp_pipeline_config["paths"]["log_dir"] = pool_specific_log_dir
         # 预测文件夹保持统一，但文件名会包含股票池信息
         
         temp_pipeline_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
@@ -185,8 +203,9 @@ def main():
         
         try:
             # 加载对应的日志和模型
-            log_path = os.path.join(temp_pipeline_config["paths"]["log_dir"], "training_metrics.csv")
             model_dir = temp_pipeline_config["paths"]["model_dir"]
+            log_dir = temp_pipeline_config["paths"]["log_dir"]
+            log_path = os.path.join(log_dir, "training_metrics.csv")
             
             # 检查模型目录是否存在
             if not os.path.exists(model_dir):
@@ -196,6 +215,18 @@ def main():
             
             try:
                 tag = _latest_tag(log_path, model_dir) if args.tag == "auto" else args.tag
+                # 若日志推导出的 tag 在模型目录不存在，则回退到模型目录推断，避免“日志与模型不同步”导致加载失败
+                if args.tag == "auto":
+                    lgb_candidate = os.path.join(model_dir, f"{tag}_lgb.txt")
+                    if not os.path.exists(lgb_candidate):
+                        fallback_tag = _infer_latest_from_models(model_dir)
+                        logger.warning(
+                            "股票池 %s: 日志推导 tag=%s 但模型不存在，回退为模型目录最新 tag=%s",
+                            pool_name,
+                            tag,
+                            fallback_tag,
+                        )
+                        tag = fallback_tag
             except FileNotFoundError as e:
                 logger.error("股票池 %s 无法找到模型或日志: %s", pool_name, e)
                 logger.error("请先运行训练为股票池 %s 生成模型", pool_name)

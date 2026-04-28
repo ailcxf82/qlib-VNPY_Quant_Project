@@ -31,7 +31,7 @@ import re
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import NamedTuple
+from typing import Iterable, NamedTuple
 
 # ── 项目根 ─────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +69,23 @@ class DateWindow(NamedTuple):
             "  fit_end   : " + fmt(self.fit_end) + "（标准化器拟合截止）",
         ]
         return "\n".join(lines)
+
+
+class FileUpdateResult(NamedTuple):
+    path: Path
+    rel_path: str
+    diffs: list[str]
+    missing: bool = False
+
+
+class DataWindowUpdateResult(NamedTuple):
+    window: DateWindow
+    files: list[FileUpdateResult]
+    dry_run: bool
+
+    @property
+    def changed_count(self) -> int:
+        return sum(1 for item in self.files if item.diffs)
 
 
 def fmt(d: date) -> str:
@@ -155,6 +172,57 @@ def update_file(path: Path, w: DateWindow, dry_run: bool) -> list[str]:
     return diffs
 
 
+def apply_data_window(
+    data_end: date,
+    *,
+    dry_run: bool = False,
+    root: Path = ROOT,
+    target_files: Iterable[str] = TARGET_FILES,
+) -> DataWindowUpdateResult:
+    """Apply the derived data window to all configured target files."""
+    w = calc_window(data_end)
+    results: list[FileUpdateResult] = []
+    for rel in target_files:
+        path = root / rel
+        if not path.exists():
+            results.append(FileUpdateResult(path=path, rel_path=rel, diffs=[], missing=True))
+            continue
+        diffs = update_file(path, w, dry_run)
+        results.append(FileUpdateResult(path=path, rel_path=rel, diffs=diffs, missing=False))
+    return DataWindowUpdateResult(window=w, files=results, dry_run=dry_run)
+
+
+def print_update_result(result: DataWindowUpdateResult) -> None:
+    print()
+    print("=" * 60)
+    print("  数据窗口更新" + ("（DRY-RUN，不写文件）" if result.dry_run else ""))
+    print("=" * 60)
+    print(result.window.show())
+    print()
+
+    for item in result.files:
+        if item.missing:
+            print(f"  [跳过] {item.rel_path}（文件不存在）")
+            continue
+        if item.diffs:
+            tag = "[预览]" if result.dry_run else "[已更新]"
+            print(f"  {tag} {item.rel_path}")
+            for d in item.diffs:
+                print(d)
+        else:
+            print(f"  [无变化] {item.rel_path}")
+
+    print()
+    if result.dry_run:
+        print(f"共 {result.changed_count} 个文件需要更新（dry-run，未写入）。")
+    else:
+        print(f"共 {result.changed_count} 个文件已更新完毕。")
+        if result.changed_count > 0:
+            print("现在可以直接启动循环：")
+            print("  .\\scripts\\lab\\run_loop.ps1 -Mode factor -LoopN 10")
+    print()
+
+
 # ── 自动探测最新交易日 ──────────────────────────────────────────────────────
 def auto_detect_data_end() -> date:
     """从 Qlib 本地数据目录探测最新有数据的交易日。"""
@@ -207,40 +275,7 @@ def main() -> None:
             print(f"[错误] 日期格式不正确：{args.data_end}，请用 YYYY-MM-DD。")
             sys.exit(1)
 
-    w = calc_window(data_end)
-
-    print()
-    print("=" * 60)
-    print("  数据窗口更新" + ("（DRY-RUN，不写文件）" if args.dry_run else ""))
-    print("=" * 60)
-    print(w.show())
-    print()
-
-    changed = 0
-    for rel in TARGET_FILES:
-        path = ROOT / rel
-        if not path.exists():
-            print(f"  [跳过] {rel}（文件不存在）")
-            continue
-        diffs = update_file(path, w, args.dry_run)
-        if diffs:
-            tag = "[预览]" if args.dry_run else "[已更新]"
-            print(f"  {tag} {rel}")
-            for d in diffs:
-                print(d)
-            changed += 1
-        else:
-            print(f"  [无变化] {rel}")
-
-    print()
-    if args.dry_run:
-        print(f"共 {changed} 个文件需要更新（dry-run，未写入）。")
-    else:
-        print(f"共 {changed} 个文件已更新完毕。")
-        if changed > 0:
-            print("现在可以直接启动循环：")
-            print("  .\\scripts\\lab\\run_loop.ps1 -Mode factor -LoopN 10")
-    print()
+    print_update_result(apply_data_window(data_end, dry_run=args.dry_run))
 
 
 if __name__ == "__main__":

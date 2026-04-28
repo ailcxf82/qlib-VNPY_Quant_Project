@@ -19,9 +19,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-_FACTOR_ID_PATTERN = re.compile(r"^[a-z0-9]+_[A-Za-z0-9_]{1,64}_[0-9a-f]{8,16}$")
+_FACTOR_ID_PATTERN = re.compile(r"^[a-z0-9]+_[A-Za-z0-9_]{1,96}$")
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 
@@ -33,7 +33,7 @@ class ProductionStatus(str, Enum):
 class ProductionFactorRecord(BaseModel):
     """manifest.json 中的单条因子记录（不可变）。"""
 
-    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(frozen=True, extra="allow", str_strip_whitespace=True)
 
     factor_id: str = Field(..., description="与 C1 / C2 中的 factor_id 一致")
     name: str = Field(..., description="parquet 列名 == 此 name")
@@ -58,6 +58,21 @@ class ProductionFactorRecord(BaseModel):
         default_factory=list,
         description="标签：例如 ['quality', 'long_cycle']，便于检索与分组",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_manifest_compat(cls, data: Any) -> Any:
+        """兼容早期 manifest：RD-Agent 记录曾使用 factor_name 和额外统计字段。"""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if "name" not in out and out.get("factor_name"):
+            out["name"] = out["factor_name"]
+        if "parquet_column" not in out and out.get("name"):
+            out["parquet_column"] = out["name"]
+        if "certificate_path" not in out and out.get("factor_id"):
+            out["certificate_path"] = f"certified/{out['factor_id']}.json"
+        return out
 
     @field_validator("factor_id")
     @classmethod
@@ -96,9 +111,9 @@ class ProductionFactorRecord(BaseModel):
                     "status=active 时 retired_at 与 retire_reason 必须为 None"
                 )
         else:  # RETIRED
-            if self.retired_at is None or self.retire_reason is None:
+            if self.retired_at is None:
                 raise ValueError(
-                    "status=retired 时 retired_at 与 retire_reason 必须给出"
+                    "status=retired 时 retired_at 必须给出"
                 )
 
         # parquet_column 必须等于 name

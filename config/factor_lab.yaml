@@ -19,11 +19,11 @@ lab:
   rdagent:
     enabled: true
     loop_n: 2                      # 每次跑多少轮
-    universe: csi300               # 候选因子的目标股票池
+    universe: csi500               # 候选因子的目标股票池
     time_window:                   # 因子值计算/训练用的时间窗
       start: "2022-01-01"
-      end: "2026-04-23"
-    benchmark: SH000300
+      end: "2026-04-27"
+    benchmark: SH000905
 
   # LLM 反馈用的 composite_score 公式（仅 L1 内部 reward；不作为准入依据）
   reward:
@@ -57,7 +57,12 @@ registry:
   parquet_dir: "factor_registry/parquet"
 
   # 当前 production 因子集版本（写入 parquet/factors_v<N>.parquet）
-  current_parquet_version: 2
+  current_parquet_version: 7
+
+  # 生产因子加载质量阈值
+  quality_gate:
+    min_align_coverage_pct: 80.0           # 与当前样本索引对齐后低于该覆盖率的列会被跳过
+    stale_warn_days: 120                   # 因子最大日期早于样本最大日期超过 N 天则告警
 
   # 退役策略
   retire:

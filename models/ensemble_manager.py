@@ -5,8 +5,10 @@ Qlib 多模型协同封装：负责统一训练/预测接口，并通过 qlib �
 from __future__ import annotations
 
 from collections import OrderedDict
+import json
 import logging
 import os
+import time
 from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
@@ -18,6 +20,24 @@ from utils import load_yaml_config
 from models.weighted_ensemble import ICIRWeightedAverageAdapter, MetaLearnerAdapter
 
 logger = logging.getLogger(__name__)
+_DEBUG_LOG_PATH = "debug-78b9cb.log"
+
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
+    payload = {
+        "sessionId": "78b9cb",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fp:
+            fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 class _QlibAverageAdapter:
@@ -317,6 +337,20 @@ class EnsembleModelManager:
         key = str(name).strip()
         merged = dict(self._feature_sets)
         merged[key] = list(columns or [])
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H1",
+            "models/ensemble_manager.py:update_feature_set",
+            "runtime feature set updated",
+            {
+                "feature_set_name": key,
+                "columns_count": len(merged[key]),
+                "columns_sample": [repr(c) for c in merged[key][:5]],
+                "column_type_sample": [type(c).__name__ for c in merged[key][:5]],
+            },
+        )
+        # #endregion
         self._feature_sets = merged
         logger.info("已更新 feature_sets[%s]，列数=%d", key, len(merged[key]))
 
@@ -329,6 +363,22 @@ class EnsembleModelManager:
             missing_mode = "compat"
         model_key = str(model_name).strip().lower()
         spec = self._model_features.get(model_key)
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H2",
+            "models/ensemble_manager.py:_resolve_feature_cols:entry",
+            "resolve feature cols entry",
+            {
+                "model_name": model_name,
+                "spec_type": type(spec).__name__ if spec is not None else "None",
+                "spec_preview": repr(spec)[:300],
+                "all_cols_count": len(all_cols),
+                "all_cols_sample": [repr(c) for c in all_cols[:5]],
+                "all_col_type_sample": [type(c).__name__ for c in all_cols[:5]],
+            },
+        )
+        # #endregion
         if spec is None:
             raise ValueError(
                 f"model_features 已配置，但未包含模型 {model_name}。"
@@ -359,13 +409,12 @@ class EnsembleModelManager:
                 keys = [str(x).strip() for x in raw]
                 if keys and all(k in self._feature_sets for k in keys):
                     cols = []
-                    seen: set[str] = set()
+                    seen: set[object] = set()
                     for k in keys:
                         for c in self._feature_sets.get(k) or []:
-                            sc = str(c)
-                            if sc not in seen:
-                                seen.add(sc)
-                                cols.append(sc)
+                            if c not in seen:
+                                seen.add(c)
+                                cols.append(c)
                 else:
                     cols = raw
             else:
@@ -377,6 +426,23 @@ class EnsembleModelManager:
         missing = [c for c in cols if c not in all_cols]
         if missing:
             available = [c for c in cols if c in all_cols]
+            # #region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "H3",
+                "models/ensemble_manager.py:_resolve_feature_cols:missing_check",
+                "feature missing check",
+                {
+                    "model_name": model_name,
+                    "missing_count": len(missing),
+                    "available_count": len(available),
+                    "missing_sample": [repr(c) for c in missing[:5]],
+                    "available_sample": [repr(c) for c in available[:5]],
+                    "resolved_cols_sample": [repr(c) for c in cols[:5]],
+                    "resolved_col_type_sample": [type(c).__name__ for c in cols[:5]],
+                },
+            )
+            # #endregion
             # strict：任何缺失直接中断（用于发现数据/表达式问题）
             if missing_mode == "strict":
                 raise ValueError(f"模型 {model_name} 特征缺失（strict）: {missing[:10]}")
@@ -408,6 +474,21 @@ class EnsembleModelManager:
         cols = self._resolve_feature_cols(model_name, list(df.columns))
         if not cols:
             return df
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H4",
+            "models/ensemble_manager.py:_select_features",
+            "select feature columns",
+            {
+                "model_name": model_name,
+                "df_cols_count": len(df.columns),
+                "selected_cols_count": len(cols),
+                "df_cols_sample": [repr(c) for c in list(df.columns)[:5]],
+                "selected_cols_sample": [repr(c) for c in cols[:5]],
+            },
+        )
+        # #endregion
         selected = df.loc[:, cols]
         # 仅首次打印，避免日志过多
         log_key = f"{model_name}__select"

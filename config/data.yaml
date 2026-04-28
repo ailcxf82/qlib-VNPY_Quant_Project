@@ -2,9 +2,9 @@ qlib:
   provider_uri: D:/qlib_data/qlib_data
   region: cn
 data:
-  instruments: csi500,csi300
-  start_time: '2025-10-01'
-  end_time: '2026-04-07'
+  instruments: csi500
+  start_time: '2025-11-01'
+  end_time: '2026-04-27'
   freq: day
   missing_value_strategy: auto
   use_alpha158: false

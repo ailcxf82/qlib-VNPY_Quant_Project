@@ -20,4 +20,7 @@
     # 国内
     "513130.XSHG",  # 恒生科技
 
-    python run_backtest.py --use-rqalpha --full-invested
+```
+python run_backtest.py --use-rqalpha --full-invested
+```
+

@@ -2,13 +2,13 @@
     provider_uri: "/mnt/d/qlib_data/qlib_data"
     region: cn
 
-market: &market all
+market: &market csi500
 # P3a: switched to a real index benchmark so excess_return_with_cost is meaningful.
-benchmark: &benchmark SH000300
+benchmark: &benchmark SH000905
 
 data_handler_config: &data_handler_config
     start_time: 2022-01-01
-    end_time: 2026-04-23
+    end_time: 2026-04-27
     instruments: *market
     data_loader:
         class: NestedDataLoader
@@ -118,7 +118,7 @@ port_analysis_config: &port_analysis_config
     backtest:
         # 数据更新至 2026-04-23，test/backtest 窗口同步推进至 2026-Q1~Q2。
         start_time: 2026-01-01
-        end_time: 2026-04-23
+        end_time: 2026-04-27
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -160,7 +160,7 @@ task:
                 # 数据更新至 2026-04-23，窗口整体后移一年。
                 train: [2022-01-01, 2025-06-30]
                 valid: [2025-07-01, 2025-12-31]
-                test: [2026-01-01, 2026-04-23]
+                test: [2026-01-01, 2026-04-27]
     record:
         - class: SignalRecord
           module_path: qlib.workflow.record_temp
@@ -172,7 +172,7 @@ task:
           kwargs:
             ana_long_short: False
             ann_scaler: 252
-        # PortAnaRecord requires SH000300 benchmark data which is not available
+        # PortAnaRecord requires benchmark data which may be unavailable
         # in the local Qlib data. Removing it prevents the benchmark ValueError
         # that crashed the process at Loop 1+. read_exp_res.py already handles
         # missing backtest metrics gracefully: composite = 2.0 * IC_IR when

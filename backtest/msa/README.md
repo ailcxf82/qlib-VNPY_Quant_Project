@@ -42,7 +42,5 @@ python backtest/msa/run_msa_backtest.py ^
 
 python backtest/msa/run_msa_backtest.py --rqalpha-config config/rqalpha_config.yaml
 
-python backtest/msa/run_msa_backtest.py ^
-  --rqalpha-config config/rqalpha_config.yaml ^
-  --pred-csi300 data/predictions/pred_csi300.csv ^
+python backtest/msa/run_msa_backtest.py  --rqalpha-config config/rqalpha_config.yaml --pred-csi300 data/predictions/pred_csi300.csv ^
   --pred-csi101 data/predictions/pred_csi101.csv
