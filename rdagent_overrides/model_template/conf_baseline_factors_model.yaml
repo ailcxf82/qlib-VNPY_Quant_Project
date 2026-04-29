@@ -1,7 +1,7 @@
 ﻿qlib_init:
     provider_uri: "/mnt/d/qlib_data/qlib_data"
     region: cn
-market: &market csi500
+market: &market all
 benchmark: &benchmark SH000905
 data_handler_config: &data_handler_config
     start_time: 2022-01-01

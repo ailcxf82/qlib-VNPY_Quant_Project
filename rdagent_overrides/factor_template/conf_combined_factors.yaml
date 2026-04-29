@@ -2,8 +2,10 @@
     provider_uri: "/mnt/d/qlib_data/qlib_data"
     region: cn
 
-market: &market csi500
-# P3a: switched to a real index benchmark so excess_return_with_cost is meaningful.
+market: &market all
+# P3a: keep market=all so RDAgent factor eval uses the full A-share universe
+# (csi500 instrument files may be absent in the rdagent conda Qlib data,
+#  causing "Empty data from dataset" at model fit time).
 benchmark: &benchmark SH000905
 
 data_handler_config: &data_handler_config

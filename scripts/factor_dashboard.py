@@ -12,18 +12,23 @@
 """
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import yaml
 
 # ─── 路径常量 ───────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
 WS_BASE = ROOT / "git_ignore_folder" / "RD-Agent_workspace"
 PROD_PARQUET = ROOT / "git_ignore_folder" / "combined_factors_df.parquet"
 CONF_COMBINED = ROOT / "rdagent_overrides" / "factor_template" / "conf_combined_factors.yaml"
+FACTOR_LAB_CFG = ROOT / "config" / "factor_lab.yaml"
+REGISTRY_MANIFEST = ROOT / "factor_registry" / "data" / "manifest.json"
+REGISTRY_PARQUET_DIR = ROOT / "factor_registry" / "parquet"
 
 # ─── 页面配置 ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -131,8 +136,50 @@ def load_experiments() -> pd.DataFrame:
 
 @st.cache_data(ttl=30)
 def load_production_factors() -> dict:
+    # 优先使用 L3 registry（当前 production 真实口径）
+    if REGISTRY_MANIFEST.exists() and FACTOR_LAB_CFG.exists():
+        try:
+            mf = json.loads(REGISTRY_MANIFEST.read_text(encoding="utf-8"))
+            cfg = yaml.safe_load(FACTOR_LAB_CFG.read_text(encoding="utf-8")) or {}
+            cur_ver = int((cfg.get("registry") or {}).get("current_parquet_version", 0))
+            active = [
+                r for r in mf.get("factors", [])
+                if isinstance(r, dict)
+                and r.get("status") == "active"
+                and int(r.get("parquet_version", -1)) == cur_ver
+            ]
+            factors = [str(r.get("parquet_column") or r.get("name") or r.get("factor_name")) for r in active]
+            date_min = None
+            date_max = None
+            if active:
+                mins = [r.get("date_min") for r in active if r.get("date_min")]
+                maxs = [r.get("date_max") for r in active if r.get("date_max")]
+                date_min = min(mins) if mins else None
+                date_max = max(maxs) if maxs else None
+            pq = REGISTRY_PARQUET_DIR / f"factors_v{cur_ver}.parquet"
+            shape = None
+            try:
+                if pq.exists():
+                    df = pd.read_parquet(pq, columns=factors or None)
+                    shape = df.shape
+            except Exception:
+                # 可能缺 pyarrow，忽略 shape，仅展示 manifest 信息
+                pass
+            return {
+                "factors": factors,
+                "shape": shape,
+                "date_range": f"{date_min} → {date_max}" if date_min and date_max else "N/A",
+                "source": "registry",
+                "version": cur_ver,
+                "workspace_ids": sorted(set(str(r.get("workspace_id", "")) for r in active if r.get("workspace_id"))),
+                "parquet_path": str(pq),
+            }
+        except Exception:
+            pass
+
+    # fallback：旧 combined_factors_df.parquet 口径
     if not PROD_PARQUET.exists():
-        return {"factors": [], "shape": None, "date_range": "N/A"}
+        return {"factors": [], "shape": None, "date_range": "N/A", "source": "legacy"}
     try:
         df = pd.read_parquet(PROD_PARQUET)
         lvl = df.columns.get_level_values(-1) if df.columns.nlevels > 1 else df.columns
@@ -142,9 +189,13 @@ def load_production_factors() -> dict:
             "factors": factors,
             "shape": df.shape,
             "date_range": f"{dates.min().date()} → {dates.max().date()}",
+            "source": "legacy",
+            "version": None,
+            "workspace_ids": [],
+            "parquet_path": str(PROD_PARQUET),
         }
     except Exception as e:
-        return {"factors": [], "shape": None, "date_range": f"错误: {e}"}
+        return {"factors": [], "shape": None, "date_range": f"错误: {e}", "source": "legacy"}
 
 
 # ─── 帮助函数 ───────────────────────────────────────────────────────────────
@@ -440,6 +491,9 @@ with tab_production:
     st.subheader("🏭 当前生产因子状态")
     col1, col2 = st.columns(2)
     with col1:
+        st.metric("数据来源", "L3 Registry" if prod.get("source") == "registry" else "Legacy Parquet")
+        if prod.get("version"):
+            st.metric("生产版本", f"v{prod['version']}")
         st.metric("生产因子数量", len(prod["factors"]))
         st.metric("数据日期范围", prod["date_range"])
         if prod["shape"]:
@@ -451,6 +505,10 @@ with tab_production:
                 st.markdown(f'<span class="tag">{f}</span>', unsafe_allow_html=True)
         else:
             st.warning("无法读取生产因子。")
+        if prod.get("workspace_ids"):
+            st.caption(f"workspace_ids: {', '.join(prod['workspace_ids'])}")
+        if prod.get("parquet_path"):
+            st.caption(f"parquet: {prod['parquet_path']}")
 
     st.divider()
     st.subheader("📈 TOP-10 最优实验（可直接应用）")

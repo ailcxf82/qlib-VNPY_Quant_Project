@@ -57,7 +57,7 @@ registry:
   parquet_dir: "factor_registry/parquet"
 
   # 当前 production 因子集版本（写入 parquet/factors_v<N>.parquet）
-  current_parquet_version: 7
+  current_parquet_version: 10
 
   # 生产因子加载质量阈值
   quality_gate:
