@@ -22,7 +22,7 @@ lab:
     universe: csi500               # 候选因子的目标股票池
     time_window:                   # 因子值计算/训练用的时间窗
       start: "2022-01-01"
-      end: "2026-04-27"
+      end: "2026-04-30"
     benchmark: SH000905
 
   # LLM 反馈用的 composite_score 公式（仅 L1 内部 reward；不作为准入依据）
@@ -57,7 +57,20 @@ registry:
   parquet_dir: "factor_registry/parquet"
 
   # 当前 production 因子集版本（写入 parquet/factors_v<N>.parquet）
-  current_parquet_version: 10
+  current_parquet_version: 14
+
+  # ---------------------------------------------------------------------------
+  # 统一入口：refresh_rdagent_parquet.py 输出 ↔ register_rdagent_factors 输入
+  # ---------------------------------------------------------------------------
+  # ``scripts/refresh_rdagent_parquet.py`` 写入下列 parquet（全池重算 + 筛选因子）。
+  # ``python scripts/register_rdagent_factors.py --from-refresh`` 默认读此文件注册 L3，
+  # 避免误用某个 RD-Agent workspace 内仍是旧日期窗口的 combined_factors_df.parquet。
+  refresh_combined_parquet: "git_ignore_folder/combined_factors_df.parquet"
+  refresh_summary_json: "git_ignore_folder/combined_factors_df.json"
+  # 刷新脚本的默认时间窗（命令行 --start/--end 可覆盖）；end 建议与 lab.rdagent.time_window.end 对齐
+  refresh_time_window:
+    start: "2020-01-01"
+    end: "2026-04-30"
 
   # 生产因子加载质量阈值
   quality_gate:

@@ -297,18 +297,21 @@ feat_minute[(date, instrument)] = ndarray(240, 6)
 
 #### 3.5.2 改造点（与现有 daily RD-Agent 的差异）
 
-| 维度 | 现有 daily RD-Agent | HF-RDAgent（新增） |
-|------|---------------------|---------------------|
-| `qlib_init.provider_uri` | `/mnt/d/qlib_data/qlib_data` | `{"day": "...", "1min": "/mnt/d/qlib_data/qlib_data_1min"}` |
-| 因子计算频率 | `freq="day"` | **`freq="1min"`**（计算）+ 收盘聚合 → `freq="day"`（评估） |
-| 因子模板目录 | `rdagent_overrides/factor_template/` | **新增 `rdagent_overrides/intraday_factor_template/`** |
-| LLM prompt 算子字典 | `Mean/Std/Ref/Slope/...` 常规算子 | **扩充：`OpenAuction/CloseAuction/AmReturn/PmReturn/VWAPDev/RealizedVar/...`** |
-| 评估 horizon | T+1 收益 | T+1 收益（与日频对齐，确保可融合） |
-| 评估指标 | daily Rank IC + composite_score | daily Rank IC + composite_score（**完全一致**） |
-| 落地 parquet | `git_ignore_folder/combined_factors_df.parquet` | **`git_ignore_folder/combined_intraday_factors.parquet`** |
-| 消费方 | LGB | **daily GRU（方案 A）+ HiGRU 拼接分支 + LGB（可选）** |
+
+| 维度                       | 现有 daily RD-Agent                               | HF-RDAgent（新增）                                                              |
+| ------------------------ | ----------------------------------------------- | --------------------------------------------------------------------------- |
+| `qlib_init.provider_uri` | `/mnt/d/qlib_data/qlib_data`                    | `{"day": "...", "1min": "/mnt/d/qlib_data/qlib_data_1min"}`                 |
+| 因子计算频率                   | `freq="day"`                                    | `**freq="1min"`**（计算）+ 收盘聚合 → `freq="day"`（评估）                              |
+| 因子模板目录                   | `rdagent_overrides/factor_template/`            | **新增 `rdagent_overrides/intraday_factor_template/`**                        |
+| LLM prompt 算子字典          | `Mean/Std/Ref/Slope/...` 常规算子                   | **扩充：`OpenAuction/CloseAuction/AmReturn/PmReturn/VWAPDev/RealizedVar/...`** |
+| 评估 horizon               | T+1 收益                                          | T+1 收益（与日频对齐，确保可融合）                                                         |
+| 评估指标                     | daily Rank IC + composite_score                 | daily Rank IC + composite_score（**完全一致**）                                   |
+| 落地 parquet               | `git_ignore_folder/combined_factors_df.parquet` | `**git_ignore_folder/combined_intraday_factors.parquet`**                   |
+| 消费方                      | LGB                                             | **daily GRU（方案 A）+ HiGRU 拼接分支 + LGB（可选）**                                   |
+
 
 **关键设计决策**：保持评估指标 100% 一致（daily Rank IC），这样：
+
 1. 现有 promotion 门槛、quality gate、registry 流程**完全不需要改动**
 2. 日内因子和日频因子可以**同台 PK**，无需为日内单独维护一套阈值
 3. 因子产出后直接进入与日频因子相同的 L3 registry（version 体系不变）
@@ -447,6 +450,7 @@ combined_factors_df.parquet      combined_intraday_factors.parquet
 ```
 
 **资源隔离**：
+
 - 两个 RD-Agent 共用 LLM 配额（按 token 计费），但分别使用独立 conda env：
   - 现有 `rdagent` env → daily
   - 新增 `rdagent_hf` env（克隆 + 装多频 qlib）→ HF
@@ -454,40 +458,46 @@ combined_factors_df.parquet      combined_intraday_factors.parquet
 
 #### 3.5.6 与方案 A/B 的关系（重点）
 
-| 对接方 | 作用 | HF-RDAgent 的价值 |
-|--------|------|---------------------|
-| **方案 A** (daily GRU + 日内统计) | HF-RDAgent **直接产出** 25-50 维日内统计因子 | ⭐⭐⭐⭐⭐ 完全替代手工日内特征 |
-| **方案 B** (HiGRU) | HiGRU 的"日频拼接分支"消费 HF-RDAgent 因子 | ⭐⭐⭐⭐ 给 HiGRU 提供额外语义化日内 alpha |
-| **LGB** | LGB 直接消费日内因子（横截面） | ⭐⭐⭐⭐ LGB 在日内上的能力被解锁 |
+
+| 对接方                         | 作用                                | HF-RDAgent 的价值               |
+| --------------------------- | --------------------------------- | ---------------------------- |
+| **方案 A** (daily GRU + 日内统计) | HF-RDAgent **直接产出** 25-50 维日内统计因子 | ⭐⭐⭐⭐⭐ 完全替代手工日内特征             |
+| **方案 B** (HiGRU)            | HiGRU 的"日频拼接分支"消费 HF-RDAgent 因子   | ⭐⭐⭐⭐ 给 HiGRU 提供额外语义化日内 alpha |
+| **LGB**                     | LGB 直接消费日内因子（横截面）                 | ⭐⭐⭐⭐ LGB 在日内上的能力被解锁          |
+
 
 **核心论点**：HF-RDAgent 实际上让"高频数据 → GRU"变成了"高频数据 → 三家共享"，**ROI 从 +10% IC 提升到 +20%~+30%**。
 
 #### 3.5.7 行动清单（HF-RDAgent 子阶段）
 
-| ID | 动作 | 文件 |
-|----|------|------|
-| P3-RD-1 | 复制 `rdagent_overrides/factor_template/` → `intraday_factor_template/` | 新增目录 |
-| P3-RD-2 | 改 `intraday_factor_template/conf_combined_factors.yaml`：`provider_uri` 加 1min 路径、`freq="1min"`、加日内时段过滤 | 改造 |
-| P3-RD-3 | 注册 Qlib 自定义算子：`Slc/SlcRange/AmRet/PmRet/RealizedVar/BipowerVar/...` | `feature/qlib_hf_operators.py`（新增） |
-| P3-RD-4 | 编写 HF prompt 模板：日内算子字典 + 因子语义示例 | `rdagent_overrides/intraday_factor_template/prompt_intraday.md`（新增） |
-| P3-RD-5 | `scripts/lab/run_rdagent_loop.py` 增加 `--mode intraday` 选项 | 改造 |
-| P3-RD-6 | `scripts/lab/prepare_rdagent_data.py` 升级支持双 parquet 同步 | 改造 |
-| P3-RD-7 | `feature/qlib_hf_pipeline.py` 增加 `intraday_rdagent` 特征源分支（消费 `combined_intraday_factors.parquet`） | 改造 |
-| P3-RD-8 | L3 registry schema 增加 `source: daily \| intraday` 字段 | `factor_registry/schema.py` 改造 |
-| P3-RD-9 | `factor_dashboard.py` 增加 "日内因子" 子页 | 改造 |
-| P3-RD-10 | 跑 5 轮 HF-RDAgent loop，验证至少 5 个日内因子通过门槛 | （执行） |
+
+| ID       | 动作                                                                                                     | 文件                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| P3-RD-1  | 复制 `rdagent_overrides/factor_template/` → `intraday_factor_template/`                                  | 新增目录                                                                |
+| P3-RD-2  | 改 `intraday_factor_template/conf_combined_factors.yaml`：`provider_uri` 加 1min 路径、`freq="1min"`、加日内时段过滤 | 改造                                                                  |
+| P3-RD-3  | 注册 Qlib 自定义算子：`Slc/SlcRange/AmRet/PmRet/RealizedVar/BipowerVar/...`                                    | `feature/qlib_hf_operators.py`（新增）                                  |
+| P3-RD-4  | 编写 HF prompt 模板：日内算子字典 + 因子语义示例                                                                        | `rdagent_overrides/intraday_factor_template/prompt_intraday.md`（新增） |
+| P3-RD-5  | `scripts/lab/run_rdagent_loop.py` 增加 `--mode intraday` 选项                                              | 改造                                                                  |
+| P3-RD-6  | `scripts/lab/prepare_rdagent_data.py` 升级支持双 parquet 同步                                                 | 改造                                                                  |
+| P3-RD-7  | `feature/qlib_hf_pipeline.py` 增加 `intraday_rdagent` 特征源分支（消费 `combined_intraday_factors.parquet`）      | 改造                                                                  |
+| P3-RD-8  | L3 registry schema 增加 `source: daily                                                                   | intraday` 字段                                                        |
+| P3-RD-9  | `factor_dashboard.py` 增加 "日内因子" 子页                                                                     | 改造                                                                  |
+| P3-RD-10 | 跑 5 轮 HF-RDAgent loop，验证至少 5 个日内因子通过门槛                                                                 | （执行）                                                                |
+
 
 **预计时间**：2-3 周（与 Phase 3 主线并行可压到 1 周）
 
 #### 3.5.8 风险与缓解
 
-| 风险 | 缓解 |
-|------|------|
-| 1min Qlib 数据加载慢，单次 qrun 耗时翻 10x | 给 HF-RDAgent 单独的轻量评估窗口（仅 1 年训练，对比 daily 的 4 年） |
-| LLM 生成的日内表达式语法错误率高 | 在 prompt 中提供 5-10 个 verified 表达式样例 + 严格的语法校验环节 |
-| 日内因子换手率高 → composite_score 被 turnover 惩罚 | 复用现有 composite_score 公式，让 RDAgent 自动避开高换手因子 |
-| 日内因子与日频因子高度相关，融合无增益 | 在 promotion 门槛中增加 `\|corr_with_daily_factors\| < 0.7` 检查 |
-| HF-RDAgent 与 daily RD-Agent 抢 GPU/LLM 配额 | 错峰运行（HF 跑夜班，daily 跑日班） |
+
+| 风险                                       | 缓解                                             |
+| ---------------------------------------- | ---------------------------------------------- |
+| 1min Qlib 数据加载慢，单次 qrun 耗时翻 10x          | 给 HF-RDAgent 单独的轻量评估窗口（仅 1 年训练，对比 daily 的 4 年） |
+| LLM 生成的日内表达式语法错误率高                       | 在 prompt 中提供 5-10 个 verified 表达式样例 + 严格的语法校验环节 |
+| 日内因子换手率高 → composite_score 被 turnover 惩罚 | 复用现有 composite_score 公式，让 RDAgent 自动避开高换手因子    |
+| 日内因子与日频因子高度相关，融合无增益                      | 在 promotion 门槛中增加 `                            |
+| HF-RDAgent 与 daily RD-Agent 抢 GPU/LLM 配额 | 错峰运行（HF 跑夜班，daily 跑日班）                         |
+
 
 ---
 
@@ -699,46 +709,47 @@ model:
 ### 3.10 Phase 3 行动清单
 
 
-| ID                         | 动作                                                        | 文件                                   | 预计时间  |
-| -------------------------- | --------------------------------------------------------- | ------------------------------------ | ----- |
-| **3.1 数据基础**               |                                                           |                                      |       |
-| P3-1                       | 申请 Tushare Pro 5000 积分                                    | （非代码）                                | 1 天   |
-| P3-2                       | `scripts/fetch_minute_bars.py` 拉取脚本                       | 新增                                   | 2 天   |
-| P3-3                       | `scripts/dump_qlib_minute.py` Qlib bin 转换                 | 新增                                   | 3 天   |
-| P3-4                       | `feature/qlib_hf_pipeline.py` 多频 Loader                   | 新增                                   | 3 天   |
-| P3-5                       | 1min 数据完整性 sanity check 报告                                | `data/hf/data_quality_report.md`（新增） | 1 天   |
-| **3.2 HF-RDAgent（推荐与 3.3 并行）** |                                                       |                                      |       |
-| P3-RD-1                    | 复制并改造 `rdagent_overrides/intraday_factor_template/`     | 新增目录                                 | 1 天   |
-| P3-RD-2                    | 注册 Qlib 自定义算子（`Slc/AmRet/RealizedVar/...`）             | `feature/qlib_hf_operators.py`（新增）   | 3 天   |
-| P3-RD-3                    | 编写 HF prompt 模板（日内算子字典 + 5-10 个 verified 表达式样例）          | `intraday_factor_template/prompt_intraday.md`（新增） | 2 天   |
-| P3-RD-4                    | `run_rdagent_loop.py` 增加 `--mode intraday` 选项            | 改造                                   | 1 天   |
-| P3-RD-5                    | `prepare_rdagent_data.py` 升级支持双 parquet 同步               | 改造                                   | 1 天   |
-| P3-RD-6                    | L3 registry schema 增加 `source: daily \| intraday` 字段     | `factor_registry/schema.py` 改造        | 0.5 天 |
-| P3-RD-7                    | 跑 5 轮 HF-RDAgent loop，验证至少 5 个日内因子通过门槛                  | （执行）                                 | 3 天   |
-| P3-RD-8                    | HF-RDAgent 验收：`combined_intraday_factors.parquet` 含 ≥ 20 个因子 | （报告）                                | 0.5 天 |
-| **3.3 方案 A：日内统计**          |                                                           |                                      |       |
-| P3-6                       | 在 `feature/qlib_feature_pipeline.py` 增加 `intraday_rdagent` 特征源分支（消费 HF-RDAgent parquet） | 改造                                   | 2 天   |
-| P3-7                       | 重训现有 daily GRU（输入维度扩展 30→50~70），验证 IC 提升                  | （配置）                                 | 1 天   |
-| P3-8                       | A 验收：valid IC ≥ 当前 + 0.005（注：因有 HF-RDAgent 增益，门槛比纯手工高）    | （报告）                                 | 0.5 天 |
-| **3.4 方案 B：HiGRU**         |                                                           |                                      |       |
-| P3-9                       | `datasets/hf_sequence_builder.py` 多层级序列构建器                | 新增                                   | 3 天   |
-| P3-10                      | `models/hf_gru_model.py` HiGRU 实现                         | 新增                                   | 5 天   |
-| P3-11                      | `config/model_hf_gru.yaml` 超参配置                           | 新增                                   | 0.5 天 |
-| P3-12                      | `model_registry.py` 注册 `"hf_gru"`                         | 改造                                   | 0.5 天 |
-| P3-13                      | `pipeline.yaml.base_models` 扩到包含 `hf_gru`                 | 改造                                   | 0.5 天 |
-| P3-14                      | `meta_oof_builder` 增加 `pred_hf_gru` 列                     | 改造（已 Phase 2 通用化）                    | 0.5 天 |
-| P3-15                      | `_load_ic_histories` 增加 `ic_hf_gru` 读取                    | 改造                                   | 0.5 天 |
-| P3-16                      | 滚动训练 6 个月数据，输出 OOF + valid 指标                             | （执行）                                 | 2-3 天 |
-| P3-17                      | B 验收：HF-GRU 单模型 IC ≥ daily GRU + 0.005，组合 ICIR ≥ 当前 + 10% | （报告）                                 | 1 天   |
-| **3.5 监控与可视化**             |                                                           |                                      |       |
-| P3-18                      | `scripts/factor_dashboard.py` 增加 HF-GRU 状态卡 + 日内因子子页      | 改造                                   | 1.5 天 |
-| P3-19                      | 高频数据健康监控（每日凌晨自动跑 sanity check）                            | `scripts/hf_data_health.py`（新增）      | 1 天   |
-| **3.6 实盘对接（可选 Phase 3.4）** |                                                           |                                      |       |
-| P3-20                      | VNPY 接 CTP 实时 1min → 写入 Qlib bin（增量）                      | `scripts/vnpy_minute_writer.py`（新增）  | 5 天   |
-| P3-21                      | 实盘 14:57 推理触发 → 订单生成                                      | `live/hf_inference_runner.py`（新增）    | 5 天   |
+| ID                             | 动作                                                                                      | 文件                                                | 预计时间                           |
+| ------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------ |
+| **3.1 数据基础**                   |                                                                                         |                                                   |                                |
+| P3-1                           | 申请 Tushare Pro 5000 积分                                                                  | （非代码）                                             | 1 天                            |
+| P3-2                           | `scripts/fetch_minute_bars.py` 拉取脚本                                                     | 新增                                                | 2 天                            |
+| P3-3                           | `scripts/dump_qlib_minute.py` Qlib bin 转换                                               | 新增                                                | 3 天                            |
+| P3-4                           | `feature/qlib_hf_pipeline.py` 多频 Loader                                                 | 新增                                                | 3 天                            |
+| P3-5                           | 1min 数据完整性 sanity check 报告                                                              | `data/hf/data_quality_report.md`（新增）              | 1 天                            |
+| **3.2 HF-RDAgent（推荐与 3.3 并行）** |                                                                                         |                                                   |                                |
+| P3-RD-1                        | 复制并改造 `rdagent_overrides/intraday_factor_template/`                                     | 新增目录                                              | 1 天                            |
+| P3-RD-2                        | 注册 Qlib 自定义算子（`Slc/AmRet/RealizedVar/...`）                                              | `feature/qlib_hf_operators.py`（新增）                | 3 天                            |
+| P3-RD-3                        | 编写 HF prompt 模板（日内算子字典 + 5-10 个 verified 表达式样例）                                         | `intraday_factor_template/prompt_intraday.md`（新增） | 2 天                            |
+| P3-RD-4                        | `run_rdagent_loop.py` 增加 `--mode intraday` 选项                                           | 改造                                                | 1 天                            |
+| P3-RD-5                        | `prepare_rdagent_data.py` 升级支持双 parquet 同步                                              | 改造                                                | 1 天                            |
+| P3-RD-6                        | L3 registry schema 增加 `source: daily                                                    | intraday` 字段                                      | `factor_registry/schema.py` 改造 |
+| P3-RD-7                        | 跑 5 轮 HF-RDAgent loop，验证至少 5 个日内因子通过门槛                                                  | （执行）                                              | 3 天                            |
+| P3-RD-8                        | HF-RDAgent 验收：`combined_intraday_factors.parquet` 含 ≥ 20 个因子                            | （报告）                                              | 0.5 天                          |
+| **3.3 方案 A：日内统计**              |                                                                                         |                                                   |                                |
+| P3-6                           | 在 `feature/qlib_feature_pipeline.py` 增加 `intraday_rdagent` 特征源分支（消费 HF-RDAgent parquet） | 改造                                                | 2 天                            |
+| P3-7                           | 重训现有 daily GRU（输入维度扩展 30→50~70），验证 IC 提升                                                | （配置）                                              | 1 天                            |
+| P3-8                           | A 验收：valid IC ≥ 当前 + 0.005（注：因有 HF-RDAgent 增益，门槛比纯手工高）                                  | （报告）                                              | 0.5 天                          |
+| **3.4 方案 B：HiGRU**             |                                                                                         |                                                   |                                |
+| P3-9                           | `datasets/hf_sequence_builder.py` 多层级序列构建器                                              | 新增                                                | 3 天                            |
+| P3-10                          | `models/hf_gru_model.py` HiGRU 实现                                                       | 新增                                                | 5 天                            |
+| P3-11                          | `config/model_hf_gru.yaml` 超参配置                                                         | 新增                                                | 0.5 天                          |
+| P3-12                          | `model_registry.py` 注册 `"hf_gru"`                                                       | 改造                                                | 0.5 天                          |
+| P3-13                          | `pipeline.yaml.base_models` 扩到包含 `hf_gru`                                               | 改造                                                | 0.5 天                          |
+| P3-14                          | `meta_oof_builder` 增加 `pred_hf_gru` 列                                                   | 改造（已 Phase 2 通用化）                                 | 0.5 天                          |
+| P3-15                          | `_load_ic_histories` 增加 `ic_hf_gru` 读取                                                  | 改造                                                | 0.5 天                          |
+| P3-16                          | 滚动训练 6 个月数据，输出 OOF + valid 指标                                                           | （执行）                                              | 2-3 天                          |
+| P3-17                          | B 验收：HF-GRU 单模型 IC ≥ daily GRU + 0.005，组合 ICIR ≥ 当前 + 10%                               | （报告）                                              | 1 天                            |
+| **3.5 监控与可视化**                 |                                                                                         |                                                   |                                |
+| P3-18                          | `scripts/factor_dashboard.py` 增加 HF-GRU 状态卡 + 日内因子子页                                    | 改造                                                | 1.5 天                          |
+| P3-19                          | 高频数据健康监控（每日凌晨自动跑 sanity check）                                                          | `scripts/hf_data_health.py`（新增）                   | 1 天                            |
+| **3.6 实盘对接（可选 Phase 3.4）**     |                                                                                         |                                                   |                                |
+| P3-20                          | VNPY 接 CTP 实时 1min → 写入 Qlib bin（增量）                                                    | `scripts/vnpy_minute_writer.py`（新增）               | 5 天                            |
+| P3-21                          | 实盘 14:57 推理触发 → 订单生成                                                                    | `live/hf_inference_runner.py`（新增）                 | 5 天                            |
 
 
 **总时间估算**：
+
 - 数据基础（P3-1 ~ P3-5）约 1.5 周
 - HF-RDAgent（P3-RD-1 ~ P3-RD-8）约 2 周（**可与方案 A/B 并行**）
 - 方案 A（P3-6 ~ P3-8）约 0.5 周
@@ -778,17 +789,17 @@ model:
 ## 4. 总体时间线
 
 
-| 周           | Phase           | 主要交付                                       | 累计成果                                       |
-| ----------- | --------------- | ------------------------------------------ | ------------------------------------------ |
-| W1          | Phase 1         | P1-1 ~ P1-6 完成；GRU 真正参与最终加权                | GRU 在融合中权重稳定在 [10%, 50%]                   |
-| W2-W4       | Phase 2         | PatchTST 引入；3 模型组合上线                       | base_models = ["lgb","gru","patchtst"]     |
-| W5-W6       | Phase 3.1       | 1min 数据接入（拉取 + Qlib bin + Loader）          | 1min 数据可被 `D.features(...,freq="1min")` 读取  |
-| W6-W7       | **Phase 3.2**   | **HF-RDAgent 启动 → 自动产出日内因子**（与 3.3 并行）    | `combined_intraday_factors.parquet` 含 ≥ 20 因子 |
-| W7          | Phase 3.3       | 方案 A：daily GRU 消费日内因子（含 HF-RDAgent 产出）    | daily GRU IC ↑                             |
-| W8-W10      | Phase 3.4       | HiGRU 完整训练 + 上线                            | HF-GRU 进入 base_models                      |
-| W11         | 收尾              | Dashboard 集成 + 报告                          | 4 模型组合稳定运行                                 |
-| W12-W13（可选） | Phase 3.5       | 双流 + 路由器（方案 C）                             | 雄心方案                                       |
-| W14-W15（可选） | Phase 3.6       | VNPY 实盘对接                                  | HF-GRU 上实盘                                 |
+| 周           | Phase         | 主要交付                                   | 累计成果                                          |
+| ----------- | ------------- | -------------------------------------- | --------------------------------------------- |
+| W1          | Phase 1       | P1-1 ~ P1-6 完成；GRU 真正参与最终加权            | GRU 在融合中权重稳定在 [10%, 50%]                      |
+| W2-W4       | Phase 2       | PatchTST 引入；3 模型组合上线                   | base_models = ["lgb","gru","patchtst"]        |
+| W5-W6       | Phase 3.1     | 1min 数据接入（拉取 + Qlib bin + Loader）      | 1min 数据可被 `D.features(...,freq="1min")` 读取    |
+| W6-W7       | **Phase 3.2** | **HF-RDAgent 启动 → 自动产出日内因子**（与 3.3 并行） | `combined_intraday_factors.parquet` 含 ≥ 20 因子 |
+| W7          | Phase 3.3     | 方案 A：daily GRU 消费日内因子（含 HF-RDAgent 产出） | daily GRU IC ↑                                |
+| W8-W10      | Phase 3.4     | HiGRU 完整训练 + 上线                        | HF-GRU 进入 base_models                         |
+| W11         | 收尾            | Dashboard 集成 + 报告                      | 4 模型组合稳定运行                                    |
+| W12-W13（可选） | Phase 3.5     | 双流 + 路由器（方案 C）                         | 雄心方案                                          |
+| W14-W15（可选） | Phase 3.6     | VNPY 实盘对接                              | HF-GRU 上实盘                                    |
 
 
 **核心节点**：

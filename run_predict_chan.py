@@ -124,17 +124,31 @@ def read_stock_codes_from_csv(csv_path: str) -> List[str]:
 
 
 def _load_ic_histories(log_path: str) -> Dict[str, pd.Series]:
-    """加载历史 IC 数据（用于动态权重计算）"""
+    """加载历史 IC 数据（用于动态权重计算）
+
+    注意 (Phase 1 P1-1)：必须显式包含 `gru` 键，否则下游
+    `RankICDynamicWeighter.blend(...)` 会以 ``weights.get("gru", 0.0)``
+    把 GRU 预测乘 0，等同于 GRU 不参与最终融合。"""
     if not os.path.exists(log_path):
         today = pd.Timestamp.today()
         base = pd.Series([0.1], index=[today])
-        return {"lgb": base, "mlp": base, "stack": base, "qlib_ensemble": base}
+        return {
+            "lgb": base,
+            "gru": base,
+            "mlp": base,
+            "stack": base,
+            "qlib_ensemble": base,
+        }
     df = pd.read_csv(log_path, parse_dates=["valid_end"])
     histories = {
         "lgb": pd.Series(df["ic_lgb"].values, index=df["valid_end"]),
         "mlp": pd.Series(df["ic_mlp"].values, index=df["valid_end"]),
         "stack": pd.Series(df["ic_stack"].values, index=df["valid_end"]),
     }
+    if "ic_gru" in df.columns:
+        histories["gru"] = pd.Series(df["ic_gru"].values, index=df["valid_end"])
+    else:
+        histories["gru"] = histories["lgb"]
     if "ic_qlib_ensemble" in df.columns:
         histories["qlib_ensemble"] = pd.Series(df["ic_qlib_ensemble"].values, index=df["valid_end"])
     else:

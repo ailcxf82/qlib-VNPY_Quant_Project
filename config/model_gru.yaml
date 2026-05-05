@@ -3,21 +3,38 @@ model:
   # 序列长度：GRU输入的时间步长
   # - 较长(40-60)：能捕获更长期的历史依赖，但训练慢
   # - 较短(5-20)：训练快，适合捕获短期模式
-  # - 当前值5：轻量级，适合快速迭代
-  seq_len: 20
+  # - 当前值40（Phase 1 P1-4）：与 Qlib 官方 GRU baseline 对齐，覆盖约 2 个月
+  seq_len: 40
 
   # ==================== 网络结构 ====================
   # 隐藏层大小：控制模型容量和表达能力
   # - 较大值(64-256)：更强的非线性拟合能力，但容易过拟合，训练慢
   # - 较小值(16-32)：泛化能力强，训练快，适合小数据集
-  # - 当前值32：调参实验1-1
+  # - 当前值64
   hidden_size: 64
 
   # GRU层数：控制网络深度
   # - 2-3层：能学习更复杂的时序模式，但梯度问题风险增加
   # - 1层：简单有效，梯度传播稳定，适合大多数场景
-  # - 当前值1：调参实验1-1
-  num_layers: 1
+  # - 当前值2（Phase 1 P1-4）：与 Qlib 官方 GRU baseline 对齐
+  num_layers: 2
+
+  # 是否使用双向 GRU
+  # - true：拼接前向 + 后向 hidden，输出维度翻倍；增强对窗口内时序结构的建模
+  # - false：单向（默认 RNN 行为）
+  # - 当前值 true（Phase 1 P1-4）
+  # 注意：seq_len 内的"未来"仍是过去 T 日数据，窗口外不接触，无信息泄露
+  bidirectional: true
+
+  # ==================== 输入归一化（Phase 1 P1-6）====================
+  # per-instrument 时序 z-score：仅对 GRU 输入做，不影响 LGB 等其他模型
+  # - true：fit 阶段对每只股票的每列特征独立计算时序 mean/std，
+  #         predict 阶段沿用同样的 stats（未见 instrument 自动 fallback 到 global）
+  # - false：保持原有"全样本 z-score"行为
+  # - 当前值 true（Phase 1 P1-6 默认开启）
+  # 动机：A 股不同股票特征量纲差异大，统一 z-score 会让小盘股信号被
+  #       大盘股淹没；per-instrument 可让每只股票的输入更稳定。
+  per_instrument_norm: true
 
   # ==================== 注意力机制 ====================
   # 注意力类型：增强时序建模能力
@@ -105,11 +122,16 @@ model:
   # - "mse"：均方误差，对称惩罚正负误差
   # - "weighted_mse"：加权MSE，可设置正负样本权重
   # - "asymmetric_mse"：非对称MSE，对上涨/下跌预测误差不同惩罚
-  # - 当前值"asymmetric_mse"：优化投资目标，惩罚低估正向收益
-  loss: "asymmetric_mse"
+  # - "listmle"（Phase 1 P1-5 默认）：listwise 排序极大似然，直接对齐 RankIC
+  # - "weighted_rank_mse"：alpha*MSE + (1-alpha)*soft_rank_mse（兜底）
+  # - 当前值 "listmle"：将 GRU 训练目标对齐到下游 RankIC 评估指标
+  loss: "listmle"
 
-  # 损失函数参数（仅对weighted_mse/asymmetric_mse生效）
-  # w_positive: 正样本权重，w_negative: 负样本权重
-  # gamma: 非对称惩罚系数，>1表示对低估正向收益的惩罚倍数
+  # 损失函数参数：
+  # - asymmetric_mse: gamma 惩罚倍数
+  # - weighted_mse: w_positive / w_negative 权重
+  # - listmle: eps（数值稳定项，通常无需调整）
+  # - weighted_rank_mse: alpha（点估计权重，0~1，越小越偏排序）
   loss_params:
     gamma: 2.5
+    alpha: 0.3

@@ -5,7 +5,7 @@ market: &market all
 benchmark: &benchmark SH000905
 data_handler_config: &data_handler_config
     start_time: 2022-01-01
-    end_time: 2026-04-27
+    end_time: 2026-04-30
     fit_start_time: 2022-01-01
     fit_end_time: 2025-06-30
     instruments: *market
@@ -41,7 +41,7 @@ port_analysis_config: &port_analysis_config
             n_drop: 5
     backtest:
         start_time: 2026-01-01
-        end_time: 2026-04-27
+        end_time: 2026-04-30
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -80,7 +80,7 @@ task:
             segments:
                 train: [2022-01-01, 2025-06-30]
                 valid: [2025-07-01, 2025-12-31]
-                test: [2026-01-01, 2026-04-27]
+                test: [2026-01-01, 2026-04-30]
             {% if step_len %}step_len: {{ step_len }}{% endif %}
     record: 
         - class: SignalRecord

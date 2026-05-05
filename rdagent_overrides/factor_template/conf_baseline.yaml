@@ -7,7 +7,7 @@ benchmark: &benchmark SH000905
 
 data_handler_config: &data_handler_config
     start_time: 2022-01-01
-    end_time: 2026-04-27
+    end_time: 2026-04-30
     instruments: *market
     data_loader:
         class: qlib.data.dataset.loader.QlibDataLoader
@@ -82,7 +82,7 @@ port_analysis_config: &port_analysis_config
             n_drop: 5
     backtest:
         start_time: 2026-01-01
-        end_time: 2026-04-27
+        end_time: 2026-04-30
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -122,7 +122,7 @@ task:
             segments:
                 train: [2022-01-01, 2025-06-30]
                 valid: [2025-07-01, 2025-12-31]
-                test: [2026-01-01, 2026-04-27]
+                test: [2026-01-01, 2026-04-30]
     record:
         - class: SignalRecord
           module_path: qlib.workflow.record_temp

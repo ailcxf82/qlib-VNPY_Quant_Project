@@ -28,41 +28,56 @@ logger = logging.getLogger(__name__)
 
 
 class _GRUNet(nn.Module):
-    def __init__(self, input_dim: int, hidden_size: int, num_layers: int, dropout: float):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_size: int,
+        num_layers: int,
+        dropout: float,
+        bidirectional: bool = False,
+    ):
         super().__init__()
+        self.bidirectional = bool(bidirectional)
         self.gru = nn.GRU(
             input_size=input_dim,
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
+            bidirectional=self.bidirectional,
         )
-        self.head = nn.Linear(hidden_size, 1)
+        out_dim = hidden_size * (2 if self.bidirectional else 1)
+        self.head = nn.Linear(out_dim, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, T, F)
-        out, _ = self.gru(x)  # (B, T, H)
-        last = out[:, -1, :]  # (B, H)
+        out, _ = self.gru(x)  # (B, T, H*D)，D=2 if bidirectional
+        last = out[:, -1, :]  # (B, H*D)
         y = self.head(last)   # (B, 1)
         return y
 
 
 class _GRUNetWithAttention(nn.Module):
-    """带注意力机制的GRU网络"""
-    
+    """带注意力机制的GRU网络（Phase 1 P1-4：支持 bidirectional）"""
+
     def __init__(
-        self, 
-        input_dim: int, 
-        hidden_size: int, 
-        num_layers: int, 
+        self,
+        input_dim: int,
+        hidden_size: int,
+        num_layers: int,
         dropout: float,
         attention_type: str = "self_attention",
         num_heads: int = 4,
+        bidirectional: bool = False,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.attention_type = attention_type
-        
+        self.bidirectional = bool(bidirectional)
+        # 注意：bidirectional 时 GRU 输出维度为 hidden_size*2，注意力的
+        # embed_dim 必须与之对齐，否则 MultiheadAttention 会报维度错误。
+        self._out_dim = hidden_size * (2 if self.bidirectional else 1)
+
         # GRU层
         self.gru = nn.GRU(
             input_size=input_dim,
@@ -70,30 +85,39 @@ class _GRUNetWithAttention(nn.Module):
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
+            bidirectional=self.bidirectional,
         )
-        
-        # 注意力层
+
+        # 注意力层（embed_dim 自适应）
         if attention_type == "self_attention":
+            # MultiheadAttention 要求 embed_dim 能被 num_heads 整除；
+            # 若 bidirectional 时 embed_dim 翻倍且 num_heads 不再整除，则
+            # 自动尝试将 num_heads 减半（保留头数 ≥ 1），避免运行期失败。
+            heads = int(num_heads)
+            while heads > 1 and (self._out_dim % heads != 0):
+                heads //= 2
+            if self._out_dim % heads != 0:
+                heads = 1
             self.attention = nn.MultiheadAttention(
-                embed_dim=hidden_size,
-                num_heads=num_heads,
+                embed_dim=self._out_dim,
+                num_heads=heads,
                 dropout=dropout,
                 batch_first=True,
             )
         elif attention_type == "temporal_attention":
             # 时序注意力：学习每个时间步的权重
             self.attention_weight = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size // 2),
+                nn.Linear(self._out_dim, max(1, self._out_dim // 2)),
                 nn.Tanh(),
-                nn.Linear(hidden_size // 2, 1),
+                nn.Linear(max(1, self._out_dim // 2), 1),
             )
-        
-        # Layer Normalization
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        
+
+        # Layer Normalization（同样自适应到 GRU 实际输出维度）
+        self.layer_norm = nn.LayerNorm(self._out_dim)
+
         # 输出层
-        self.head = nn.Linear(hidden_size, 1)
-        
+        self.head = nn.Linear(self._out_dim, 1)
+
         # Dropout
         self.dropout = nn.Dropout(dropout)
     
@@ -186,6 +210,10 @@ class GRURegressor:
         self._best_state: Optional[dict] = None
         self._best_metric: Optional[float] = None
         self._history: list[dict] = []
+        # Phase 1 P1-6：per-instrument 时序 z-score 统计量
+        # 结构：{"__global__": {"mean": np.ndarray[F], "std": np.ndarray[F]},
+        #        "<instrument>": {"mean": np.ndarray[F], "std": np.ndarray[F]}, ...}
+        self._inst_norm_stats: Optional[dict] = None
 
     def fit(
         self,
@@ -255,6 +283,24 @@ class GRURegressor:
         train_feat = train_feat.copy().fillna(0.0)
         if valid_feat is not None:
             valid_feat = valid_feat.copy().fillna(0.0)
+
+        # Phase 1 P1-6：per-instrument 时序 z-score 归一化
+        # 仅对 GRU 输入做；不影响其它模型（如 LGB）的特征。
+        # 关键：stats 必须只用 train_feat 拟合，避免引入未来信息。
+        per_inst_norm = bool(self.config.get("per_instrument_norm", False))
+        if per_inst_norm:
+            self._inst_norm_stats = self._per_instrument_normalize_fit(train_feat)
+            n_inst = max(0, len(self._inst_norm_stats) - 1)  # 减去 __global__
+            logger.info(
+                "GRU 启用 per-instrument 时序 z-score：fit 覆盖 %d 只 instrument",
+                n_inst,
+            )
+            train_feat = self._per_instrument_normalize_apply(train_feat)
+            if valid_feat is not None:
+                valid_feat = self._per_instrument_normalize_apply(valid_feat)
+        else:
+            self._inst_norm_stats = None
+
         # 固定随机种子（可复现）
         seed = self.config.get("seed", None)
         if seed is not None:
@@ -351,10 +397,14 @@ class GRURegressor:
         else:
             logger.info("GRU 验证序列: %d（valid样本=%d）", len(X_va), len(valid_feat) if valid_feat is not None else 0)
 
-        # 构建模型（支持注意力机制）
+        # 构建模型（支持注意力机制 + bidirectional）
         attention_type = str(self.config.get("attention_type", "none")).lower()
+        bidirectional = bool(self.config.get("bidirectional", False))
         if attention_type in ["self_attention", "temporal_attention"]:
-            logger.info("GRU 使用注意力机制: %s", attention_type)
+            logger.info(
+                "GRU 使用注意力机制: %s (bidirectional=%s)",
+                attention_type, bidirectional,
+            )
             self.model = _GRUNetWithAttention(
                 input_dim=self._input_dim,
                 hidden_size=int(self.config.get("hidden_size", 64)),
@@ -362,14 +412,18 @@ class GRURegressor:
                 dropout=float(self.config.get("dropout", 0.2)),
                 attention_type=attention_type,
                 num_heads=int(self.config.get("attention_heads", 4)),
+                bidirectional=bidirectional,
             ).to(self.device)
         else:
-            logger.info("GRU 使用标准架构（无注意力机制）")
+            logger.info(
+                "GRU 使用标准架构（无注意力机制，bidirectional=%s）", bidirectional,
+            )
             self.model = _GRUNet(
                 input_dim=self._input_dim,
                 hidden_size=int(self.config.get("hidden_size", 64)),
                 num_layers=int(self.config.get("num_layers", 2)),
                 dropout=float(self.config.get("dropout", 0.2)),
+                bidirectional=bidirectional,
             ).to(self.device)
 
         loss_type = str(self.config.get("loss", "mse")).lower()
@@ -382,6 +436,15 @@ class GRURegressor:
             criterion = WeightedMSELoss(
                 w_positive=float(loss_params.get("w_positive", 2.0)),
                 w_negative=float(loss_params.get("w_negative", 0.5)),
+            )
+        elif loss_type in ("listmle", "list_mle"):
+            from utils.loss_functions import ListMLELoss
+            criterion = ListMLELoss(eps=float(loss_params.get("eps", 1e-8)))
+        elif loss_type in ("weighted_rank_mse", "rank_mse"):
+            from utils.loss_functions import WeightedRankMSELoss
+            criterion = WeightedRankMSELoss(
+                alpha=float(loss_params.get("alpha", 0.3)),
+                eps=float(loss_params.get("eps", 1e-8)),
             )
         else:
             criterion = nn.MSELoss()
@@ -553,6 +616,79 @@ class GRURegressor:
         self._best_state = best_state
         self._best_metric = best_metric
 
+    # ------------------------------------------------------------------
+    # Phase 1 P1-6：per-instrument 时序 z-score 归一化
+    # ------------------------------------------------------------------
+    def _per_instrument_normalize_fit(
+        self, df: pd.DataFrame, eps: float = 1e-6
+    ) -> dict:
+        """对每只股票计算时序 mean/std，按特征列存储。
+
+        ``df`` 必须为 ``MultiIndex(datetime, instrument)`` 的二维 DataFrame，
+        列即 GRU 输入特征。返回一个 dict：
+
+            {
+                "__global__": {"mean": np.ndarray[F], "std": np.ndarray[F]},
+                "<instrument_id>": {"mean": np.ndarray[F], "std": np.ndarray[F]},
+                ...
+            }
+
+        ``__global__`` 用于 predict 阶段遇到 fit 中未出现过的新 instrument
+        时的兜底；样本太少（<2 行）的 instrument 也回退到 global。
+        """
+        cols = list(df.columns)
+        stats: dict = {}
+        g_mean = df.mean(axis=0).reindex(cols).fillna(0.0).to_numpy(dtype=np.float32)
+        g_std = df.std(axis=0).reindex(cols).fillna(0.0).to_numpy(dtype=np.float32)
+        stats["__global__"] = {"mean": g_mean, "std": g_std}
+        # 注意：MultiIndex 第二级名为 "instrument"
+        for inst, group in df.groupby(level="instrument", sort=False):
+            if len(group) >= 2:
+                mean = group.mean(axis=0).reindex(cols).fillna(0.0).to_numpy(dtype=np.float32)
+                std = group.std(axis=0).reindex(cols).fillna(0.0).to_numpy(dtype=np.float32)
+            else:
+                mean = g_mean.copy()
+                std = g_std.copy()
+            stats[str(inst)] = {"mean": mean, "std": std}
+        return stats
+
+    def _per_instrument_normalize_apply(
+        self, df: pd.DataFrame, eps: float = 1e-6
+    ) -> pd.DataFrame:
+        """用 ``self._inst_norm_stats`` 对 df 做 per-instrument z-score。
+
+        未见 instrument 自动 fallback 到 ``__global__``。``self._feature_names``
+        如果已固化（fit 之后），会保证列顺序与 fit 时一致。
+        """
+        if not self._inst_norm_stats:
+            return df
+        stats = self._inst_norm_stats
+        cols = list(df.columns)
+        fb = stats.get("__global__", {
+            "mean": np.zeros(len(cols), dtype=np.float32),
+            "std": np.ones(len(cols), dtype=np.float32),
+        })
+        # 按 instrument 构建 mean/std 索引表，再 reindex 对齐到 df 行
+        keys = [k for k in stats.keys() if k != "__global__"]
+        if not keys:
+            return df
+        mean_mat = np.stack([stats[k]["mean"] for k in keys], axis=0)
+        std_mat = np.stack([stats[k]["std"] for k in keys], axis=0)
+        mean_df = pd.DataFrame(mean_mat, index=keys, columns=cols)
+        std_df = pd.DataFrame(std_mat, index=keys, columns=cols)
+        inst_idx = df.index.get_level_values("instrument").astype(str)
+        mean_aligned = mean_df.reindex(inst_idx)
+        std_aligned = std_df.reindex(inst_idx)
+        mean_aligned.index = df.index
+        std_aligned.index = df.index
+        # 兜底：未在 stats 中出现的 instrument 用 global 填充
+        g_mean_s = pd.Series(fb["mean"], index=cols)
+        g_std_s = pd.Series(fb["std"], index=cols)
+        mean_aligned = mean_aligned.fillna(g_mean_s)
+        std_aligned = std_aligned.fillna(g_std_s)
+        out = (df - mean_aligned) / (std_aligned + eps)
+        return out
+
     def predict(self, feat: pd.DataFrame, history_feat: Optional[pd.DataFrame] = None) -> pd.Series:
         # 若该窗口未训练出 GRU（例如窗口太短），返回全 NaN（后续 IC/OOF/meta 会统一过滤）
         if self.model is None:
@@ -577,6 +713,10 @@ class GRURegressor:
             combined = pd.concat([hist_tail, aligned], axis=0).sort_index()
         else:
             combined = aligned
+
+        # Phase 1 P1-6：predict 阶段应用 fit 阶段保存的 per-instrument 统计量
+        if bool(self.config.get("per_instrument_norm", False)) and self._inst_norm_stats:
+            combined = self._per_instrument_normalize_apply(combined)
 
         res = build_panel_sequences(
             combined,
@@ -642,6 +782,8 @@ class GRURegressor:
                 "input_dim": self._input_dim,
                 "best_metric": self._best_metric,
                 "history": self._history,
+                # Phase 1 P1-6：per-instrument 归一化统计量（None 表示未启用）
+                "inst_norm_stats": self._inst_norm_stats,
             },
             path,
         )
@@ -664,36 +806,74 @@ class GRURegressor:
         path = os.path.join(output_dir, f"{model_name}_gru.pt")
         if not os.path.exists(path):
             raise FileNotFoundError(path)
-        ckpt = torch.load(path, map_location=self.device)
+        # PyTorch 2.6+ 把 ``torch.load`` 的 ``weights_only`` 默认改为 True，
+        # 但我们的 ckpt 包含 numpy 数组（per-instrument 归一化统计、history 等），
+        # 必须显式 ``weights_only=False``。该 ckpt 来自我们自己的训练流程，
+        # 是可信源；不引入安全风险。
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.config = ckpt.get("config", self.config)
         self._feature_names = ckpt.get("feature_names")
         self._input_dim = ckpt.get("input_dim")
         self._best_metric = ckpt.get("best_metric")
         self._history = ckpt.get("history", []) or []
+        # Phase 1 P1-6：恢复 per-instrument 归一化统计量（旧 ckpt 没有该字段，默认 None）
+        self._inst_norm_stats = ckpt.get("inst_norm_stats", None)
         if self._input_dim is None:
             raise RuntimeError("GRU ckpt 缺少 input_dim")
 
-        # 构建模型（支持注意力机制）
+        # Phase 1 P1-4：从 state_dict 自动推断 bidirectional，兼容旧 ckpt（即使
+        # 旧 ckpt 的 config 里没有 bidirectional 字段，也能根据 head 权重维度
+        # 反推。原理：head.weight.shape[1] = hidden_size * (2 if bidi else 1)，
+        # 而 hidden_size 由 ckpt config 给出。
+        sd = ckpt["state_dict"]
+        head_w_keys = [k for k in sd.keys() if k.endswith("head.weight")]
+        ckpt_hidden = int(self.config.get("hidden_size", 64))
+        inferred_bidi: Optional[bool] = None
+        if head_w_keys:
+            head_in = int(sd[head_w_keys[0]].shape[1])
+            if head_in == ckpt_hidden * 2:
+                inferred_bidi = True
+            elif head_in == ckpt_hidden:
+                inferred_bidi = False
+            # 若维度不匹配 hidden_size，保持 None，后续以 config 为准
+        config_bidi = bool(self.config.get("bidirectional", False))
+        bidirectional = inferred_bidi if inferred_bidi is not None else config_bidi
+        if inferred_bidi is not None and inferred_bidi != config_bidi:
+            logger.warning(
+                "GRU ckpt 推断 bidirectional=%s 与 config 中 bidirectional=%s 不一致，"
+                "以 ckpt 推断结果为准（避免 state_dict 形状不匹配）。",
+                inferred_bidi, config_bidi,
+            )
+
+        # 构建模型（支持注意力机制 + bidirectional）
         attention_type = str(self.config.get("attention_type", "none")).lower()
         if attention_type in ["self_attention", "temporal_attention"]:
-            logger.info("GRU 加载使用注意力机制: %s", attention_type)
+            logger.info(
+                "GRU 加载使用注意力机制: %s (bidirectional=%s)",
+                attention_type, bidirectional,
+            )
             self.model = _GRUNetWithAttention(
                 input_dim=int(self._input_dim),
                 hidden_size=int(self.config.get("hidden_size", 64)),
                 num_layers=int(self.config.get("num_layers", 2)),
-                dropout=float(self.config.get("dropout", 1.2)),
+                dropout=float(self.config.get("dropout", 0.2)),
                 attention_type=attention_type,
                 num_heads=int(self.config.get("attention_heads", 4)),
+                bidirectional=bidirectional,
             ).to(self.device)
         else:
-            logger.info("GRU 加载使用标准架构（无注意力机制）")
+            logger.info(
+                "GRU 加载使用标准架构（无注意力机制，bidirectional=%s）",
+                bidirectional,
+            )
             self.model = _GRUNet(
                 input_dim=int(self._input_dim),
                 hidden_size=int(self.config.get("hidden_size", 64)),
                 num_layers=int(self.config.get("num_layers", 2)),
-                dropout=float(self.config.get("dropout", 1.2)),
+                dropout=float(self.config.get("dropout", 0.2)),
+                bidirectional=bidirectional,
             ).to(self.device)
-        
+
         self.model.load_state_dict(ckpt["state_dict"])
 
 

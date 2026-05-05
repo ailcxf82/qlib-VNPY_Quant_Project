@@ -35,11 +35,46 @@ if str(_ROOT) not in sys.path:
 
 logger = logging.getLogger("refresh_rdagent_parquet")
 
+FACTOR_LAB_YAML = _ROOT / "config" / "factor_lab.yaml"
+
+
+def _default_refresh_window() -> tuple[str, str]:
+    """统一入口：默认时间窗来自 config/factor_lab.yaml → registry.refresh_time_window。"""
+    try:
+        import yaml
+
+        if not FACTOR_LAB_YAML.exists():
+            return "2020-01-01", "2026-04-27"
+        data = yaml.safe_load(FACTOR_LAB_YAML.read_text(encoding="utf-8")) or {}
+        tw = (data.get("registry") or {}).get("refresh_time_window") or {}
+        start = tw.get("start") or "2020-01-01"
+        end = tw.get("end") or "2026-04-27"
+        return str(start), str(end)
+    except Exception as e:
+        logger.warning("读取 factor_lab.yaml refresh_time_window 失败（%s），使用内置默认", e)
+        return "2020-01-01", "2026-04-27"
+
 PROVIDER_URI = "D:/qlib_data/qlib_data"
 GIT_IGNORE = _ROOT / "git_ignore_folder"
 WS_ROOT = GIT_IGNORE / "RD-Agent_workspace"
-OUT_PATH = GIT_IGNORE / "combined_factors_df.parquet"
-OUT_JSON = GIT_IGNORE / "combined_factors_df.json"
+
+
+def _refresh_output_paths() -> tuple[Path, Path]:
+    """输出路径与 factor_lab.yaml registry.refresh_* 对齐（默认 git_ignore_folder/…）。"""
+    try:
+        import yaml
+
+        if FACTOR_LAB_YAML.exists():
+            reg = (yaml.safe_load(FACTOR_LAB_YAML.read_text(encoding="utf-8")) or {}).get("registry") or {}
+            pq_rel = reg.get("refresh_combined_parquet", "git_ignore_folder/combined_factors_df.parquet")
+            js_rel = reg.get("refresh_summary_json", "git_ignore_folder/combined_factors_df.json")
+            return (_ROOT / pq_rel).resolve(), (_ROOT / js_rel).resolve()
+    except Exception:
+        pass
+    return (GIT_IGNORE / "combined_factors_df.parquet").resolve(), (GIT_IGNORE / "combined_factors_df.json").resolve()
+
+
+OUT_PATH, OUT_JSON = _refresh_output_paths()
 
 # RD-Agent factor.py 期望的字段 ← qlib_data 实际字段
 FIELD_MAP = {
@@ -289,9 +324,20 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s | %(message)s",
     )
-    ap = argparse.ArgumentParser(description="Refresh combined_factors_df.parquet coverage")
-    ap.add_argument("--start", default="2020-01-01")
-    ap.add_argument("--end", default="2026-04-07")
+    d0_start, d0_end = _default_refresh_window()
+    ap = argparse.ArgumentParser(
+        description="Refresh combined_factors_df.parquet coverage（默认窗口见 factor_lab.yaml registry.refresh_time_window）",
+    )
+    ap.add_argument(
+        "--start",
+        default=None,
+        help=f"开始日期（默认 {d0_start}，来自 config/factor_lab.yaml）",
+    )
+    ap.add_argument(
+        "--end",
+        default=None,
+        help=f"结束日期（默认 {d0_end}，来自 config/factor_lab.yaml）",
+    )
     ap.add_argument("--instruments", default="csi500")
     ap.add_argument("--ic-threshold", type=float, default=0.02,
                     help="松模式：仅按 |IC| 过滤")
@@ -310,6 +356,8 @@ def main() -> None:
     ap.add_argument("--n-segments", type=int, default=12,
                     help="严格模式：in-sample 区间被等分的段数")
     args = ap.parse_args()
+    start = args.start if args.start is not None else d0_start
+    end = args.end if args.end is not None else d0_end
     strict = bool(args.oos_cutoff)
 
     if not WS_ROOT.exists():
@@ -317,7 +365,8 @@ def main() -> None:
         sys.exit(1)
 
     logger.info("=== Step 1: build in-memory daily_pv from qlib_data ===")
-    pv = build_in_memory_daily_pv(args.start, args.end, args.instruments)
+    logger.info("时间窗: %s ~ %s（factor_lab 默认可覆盖）", start, end)
+    pv = build_in_memory_daily_pv(start, end, args.instruments)
     logger.info("=== Step 2: compute label ===")
     label = _normalize_dt_inst(build_label(pv))
     logger.info("label non-null=%d", label.notna().sum())
@@ -391,17 +440,17 @@ def main() -> None:
     extras_per_factor: Dict[str, dict] = {}
     if strict:
         logger.info("=== Step 4.5: STRICT mode (OOS cutoff=%s) ===", args.oos_cutoff)
-        in_segs = _make_in_segments(args.start, args.oos_cutoff, args.n_segments)
+        in_segs = _make_in_segments(start, args.oos_cutoff, args.n_segments)
         oos_seg = (
             (pd.Timestamp(args.oos_cutoff) + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
-            args.end,
+            end,
         )
         logger.info("in-sample 段 = %d 段，OOS 段 = %s ~ %s",
                     args.n_segments, oos_seg[0], oos_seg[1])
 
         logger.info("加载 lgb_short_cycle 表达式面板（用于共线性筛除）...")
         instruments = sorted(set(label.index.get_level_values("instrument")))
-        lgb_panel = _load_lgb_short_cycle_panel(args.start, args.end, instruments)
+        lgb_panel = _load_lgb_short_cycle_panel(start, end, instruments)
         logger.info("lgb_short_cycle 面板 shape=%s", lgb_panel.shape)
 
         # (a) 算每个候选 IC_IR + OOS IC + 与 lgb 最大 corr
@@ -493,8 +542,8 @@ def main() -> None:
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "script": "refresh_rdagent_parquet.py",
         "mode": "strict" if strict else "loose",
-        "start": args.start,
-        "end": args.end,
+        "start": start,
+        "end": end,
         "instruments": args.instruments,
         "ic_threshold": args.ic_threshold,
         "max_nan_ratio": args.max_nan_ratio,

@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from utils.normalize import normalize_by_date
@@ -76,12 +77,28 @@ def build_meta_oof(
     merged["fold"] = merged["fold_lgb"]
     merged = merged.drop(columns=["fold_lgb", "fold_gru"])
 
-    # 4) 过滤 NaN 预测（典型：GRU 序列不足）
+    # 4) Phase 1 P1-3：不再整行 dropna。
+    # 旧行为：``merged.dropna(subset=["pred_lgb", "pred_gru"])`` 把 GRU
+    # 序列不足导致 ``pred_gru=NaN`` 的样本整行剔除。这等价于"凡是 GRU
+    # 看不到的样本，LGB 也看不到了"，导致下游 Ridge 训练样本严重偏向
+    # LGB 高覆盖区，并把 GRU 系数压低。
+    # 新行为：仅过滤 ``pred_lgb`` 缺失的行（LGB 是 100% 覆盖基线模型，
+    # 缺它则该行没有任何信号），保留 ``pred_gru`` 缺失行；同时新增
+    # ``gru_coverage`` 列（0/1）记录覆盖情况，供 meta_ridge 训练阶段做
+    # 必要的后处理（fillna(0) → 等价于"无 GRU 信号"）。
     before = len(merged)
-    merged = merged.dropna(subset=["pred_lgb", "pred_gru"])
+    merged = merged.dropna(subset=["pred_lgb"])
     after = len(merged)
     if after < before:
-        print(f"[build_meta_oof] 过滤 NaN 样本 {before - after} 条（pred_lgb/pred_gru 缺失）")
+        print(f"[build_meta_oof] 过滤 pred_lgb 缺失样本 {before - after} 条")
+    merged["gru_coverage"] = merged["pred_gru"].notna().astype(np.int8)
+    gru_missing = int((merged["gru_coverage"] == 0).sum())
+    if gru_missing > 0:
+        ratio = gru_missing / max(1, len(merged))
+        print(
+            f"[build_meta_oof] pred_gru 缺失样本 {gru_missing} 条 "
+            f"(占比 {ratio:.2%})；保留行并打 gru_coverage=0 标记"
+        )
 
     # 5) 加载标签
     if y_path is not None:
@@ -95,10 +112,10 @@ def build_meta_oof(
         if "y" not in merged.columns:
             raise ValueError("未提供 y_path，且合并结果中不存在 y 列，无法构建 meta OOF")
 
-    # 6) 最终列顺序
-    merged = merged[["date", "code", "fold", "y", "pred_lgb", "pred_gru"]]
+    # 6) 最终列顺序（在 pred 列之后追加 gru_coverage）
+    merged = merged[["date", "code", "fold", "y", "pred_lgb", "pred_gru", "gru_coverage"]]
 
-    # 7) 按日横截面标准化（只作用于预测列，防未来泄露）
+    # 7) 按日横截面标准化（仅作用于预测列；NaN 自动被 pandas mean/std 跳过）
     merged = normalize_by_date(merged, cols=["pred_lgb", "pred_gru"], date_col="date", mode=norm_mode, eps=norm_eps)
 
     # 8) 输出 parquet/csv

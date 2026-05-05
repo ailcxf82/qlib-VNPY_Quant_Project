@@ -93,25 +93,47 @@ def train_meta_ridge(
     if not pred_cols:
         raise ValueError("meta_oof 未找到任何预测列（期望 pred_* 或至少存在除 [date,code,fold,y] 外的列）")
 
-    # Ridge 不接受 NaN：先过滤掉任一预测列或 y 为 NaN 的样本（这是最常见的失败原因：GRU 序列不足导致 pred 为 NaN）
+    # Phase 1 P1-3：处理新版 meta_oof（含 gru_coverage 列，pred_gru 允许 NaN）。
+    # 旧行为：``df.dropna(subset=pred_cols + ["y"])`` 把 GRU 缺失行整体剔除，
+    # 直接导致 Ridge 在 LGB 占优分布上拟合 → GRU 系数被压低。
+    # 新行为：仅过滤 y 缺失或 LGB 缺失的行；对 GRU 等"高 NaN 率"列在
+    # normalize 之后用 0 填充（z-score 后 0 = 当日均值 = 无信号）。
+    has_coverage_col = "gru_coverage" in df.columns
+    required_cols = ["y"]
+    if "pred_lgb" in pred_cols:
+        required_cols.append("pred_lgb")
     before = len(df)
-    df = df.dropna(subset=pred_cols + ["y"])
+    df = df.dropna(subset=required_cols)
     after = len(df)
     if after < before:
-        print(f"[meta_ridge] dropna before normalize: {before} -> {after} (dropped={before-after})")
+        print(f"[meta_ridge] dropna y/pred_lgb: {before} -> {after} (dropped={before-after})")
     if len(df) == 0:
-        raise ValueError("[meta_ridge] 过滤 NaN 后样本为 0：请检查 OOF 预测是否大量为 NaN（常见：GRU seq_len 太长或训练期太短）")
+        raise ValueError("[meta_ridge] 过滤 y/pred_lgb 缺失后样本为 0：请检查 OOF 是否完整")
+    # 报告 GRU 覆盖率（仅记录，不剔除）
+    if has_coverage_col:
+        cov = float(df["gru_coverage"].mean())
+        print(f"[meta_ridge] gru_coverage = {cov:.2%}（缺失行的 pred_gru 在归一化后置 0 = 当日均值）")
+    elif "pred_gru" in pred_cols:
+        gru_nan_ratio = float(df["pred_gru"].isna().mean())
+        print(f"[meta_ridge] pred_gru NaN ratio = {gru_nan_ratio:.2%}（旧版 OOF；将在归一化后置 0）")
 
-    # 按日标准化（仅用当日截面）
+    # 按日标准化（仅用当日截面；pandas mean/std 自动跳过 NaN）
     df = normalize_by_date(df, cols=pred_cols, date_col="date", mode=norm_mode, eps=norm_eps)
 
-    # 标准化后仍可能出现 NaN/Inf（例如某天该列全部缺失/常量导致统计量异常）
+    # 标准化后剩余 NaN/Inf（GRU 序列不足等原因）：用 0 填充表示"无信号"
     df = df.replace([np.inf, -np.inf], np.nan)
     before2 = len(df)
-    df = df.dropna(subset=pred_cols + ["y"])
+    df = df.dropna(subset=["y"])  # y 仍必须非 NaN
     after2 = len(df)
     if after2 < before2:
-        print(f"[meta_ridge] dropna after normalize: {before2} -> {after2} (dropped={before2-after2})")
+        print(f"[meta_ridge] dropna y after normalize: {before2} -> {after2} (dropped={before2-after2})")
+    nan_pre = df[pred_cols].isna().sum()
+    if nan_pre.sum() > 0:
+        for c in pred_cols:
+            n = int(nan_pre[c])
+            if n > 0:
+                print(f"[meta_ridge] fillna(0) {c}: {n} 条（z-score 后 0 = 当日均值 = 无信号）")
+        df[pred_cols] = df[pred_cols].fillna(0.0)
     if len(df) == 0:
         raise ValueError("[meta_ridge] 标准化后样本为 0：请检查 pred 列按日是否全缺失/全常量")
 

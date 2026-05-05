@@ -1,16 +1,23 @@
 """
 将 RD-Agent workspace 产出的因子注册到 factor_registry，让 run_train_csi101.py 直接使用。
 
-完整链路：
-  RD-Agent workspace/combined_factors_df.parquet
-      → factor_registry/parquet/factors_v<N>.parquet   (扁平化列名)
-      → factor_registry/data/manifest.json             (更新 active 记录)
-      → config/factor_lab.yaml current_parquet_version (指向新版本)
-      → qlib_feature_pipeline L3 loader 自动消费
-      → run_train_csi101.py 的 LGB 特征集 rdagent_exported
+完整链路（二选一数据源）：
+
+  A) workspace 模式（默认）
+     RD-Agent_workspace/<id>/combined_factors_df.parquet → …
+
+  B) 刷新统一产物（推荐，与 refresh_rdagent_parquet 对齐）
+     config/factor_lab.yaml → registry.refresh_combined_parquet
+     （默认 git_ignore_folder/combined_factors_df.parquet）
+     python scripts/register_rdagent_factors.py --from-refresh
+
+  后续：
+     factor_registry/parquet/factors_v<N>.parquet
+      → manifest.json / factor_lab.yaml current_parquet_version
+      → qlib_feature_pipeline L3 → run_train_csi101.py rdagent_exported
 
 用法（在项目根目录）：
-    python scripts/register_rdagent_factors.py
+    python scripts/register_rdagent_factors.py --from-refresh   # 统一入口（推荐）
     python scripts/register_rdagent_factors.py --workspace 38418fc744744b9695e592f385e69e3c
     python scripts/register_rdagent_factors.py --dry-run   # 仅预览，不写文件
 """
@@ -18,11 +25,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
+import yaml
 
 ROOT = Path(__file__).parent.parent
 WS_BASE = ROOT / "git_ignore_folder" / "RD-Agent_workspace"
@@ -32,6 +40,55 @@ FACTOR_LAB_YAML = ROOT / "config" / "factor_lab.yaml"
 
 # 默认使用 TOP-5 workspace（覆盖率 97-99%，数据到 2025-10-31）
 DEFAULT_WS = "38418fc744744b9695e592f385e69e3c"
+
+REFRESH_WORKSPACE_LABEL = "refresh_rdagent_parquet"
+
+
+def _registry_section() -> dict[str, Any]:
+    if not FACTOR_LAB_YAML.exists():
+        return {}
+    data = yaml.safe_load(FACTOR_LAB_YAML.read_text(encoding="utf-8")) or {}
+    return data.get("registry") or {}
+
+
+def _refresh_parquet_path() -> Path:
+    reg = _registry_section()
+    rel = reg.get("refresh_combined_parquet", "git_ignore_folder/combined_factors_df.parquet")
+    return (ROOT / rel).resolve()
+
+
+def _refresh_summary_json_path() -> Path:
+    reg = _registry_section()
+    rel = reg.get("refresh_summary_json", "git_ignore_folder/combined_factors_df.json")
+    return (ROOT / rel).resolve()
+
+
+def _metrics_from_refresh_summary(path: Path) -> tuple[float | None, float | None]:
+    """从 refresh_rdagent_parquet 写的 summary json 取代表性 IC（无全局 ICIR 时返回 None）。"""
+    if not path.exists():
+        return None, None
+    try:
+        sj = json.loads(path.read_text(encoding="utf-8"))
+        facs = sj.get("factors") or []
+        if not facs:
+            return None, None
+        ics = [float(f["ic"]) for f in facs if f.get("ic") is not None]
+        if not ics:
+            return None, None
+        ic_mean = sum(ics) / len(ics)
+        # summary 无全局 ICIR；用各因子 ic_in_ir 均值作登记参考（可为 None）
+        irs = []
+        for f in facs:
+            v = f.get("ic_in_ir")
+            if v is not None:
+                try:
+                    irs.append(float(v))
+                except (TypeError, ValueError):
+                    pass
+        icir_mean = sum(irs) / len(irs) if irs else None
+        return icir_mean, ic_mean
+    except Exception:
+        return None, None
 
 
 def _pick_workspace(ws_id: str | None) -> Path:
@@ -102,24 +159,39 @@ def register(
     workspace_id: str | None = None,
     dry: bool = False,
     retire_old: bool = True,
+    from_refresh: bool = False,
 ) -> None:
-    ws_dir = _pick_workspace(workspace_id)
-    pq_src = ws_dir / "combined_factors_df.parquet"
+    if from_refresh:
+        pq_src = _refresh_parquet_path()
+        if not pq_src.exists():
+            raise FileNotFoundError(
+                f"统一刷新产物不存在：{pq_src}\n"
+                "请先运行：conda run -n qlib_zhengshi python scripts/refresh_rdagent_parquet.py\n"
+                "或在 config/factor_lab.yaml 中调整 registry.refresh_combined_parquet"
+            )
+        ws_dir_name = REFRESH_WORKSPACE_LABEL
+        summary_path = _refresh_summary_json_path()
+        icir, ic = _metrics_from_refresh_summary(summary_path)
+    else:
+        ws_dir = _pick_workspace(workspace_id)
+        pq_src = ws_dir / "combined_factors_df.parquet"
+        ws_dir_name = ws_dir.name
+        summary_path = None  # unused
 
-    # 读取 workspace parquet，扁平化 MultiIndex 列名
+        # 读 qlib_res.csv 获取指标
+        try:
+            res = pd.read_csv(ws_dir / "qlib_res.csv", index_col=0)
+            res.columns = ["value"]
+            icir = float(res.loc["ICIR", "value"])
+            ic = float(res.loc["IC", "value"])
+        except Exception:
+            icir = ic = None
+
+    # 读取 parquet，扁平化 MultiIndex 列名
     df = pd.read_parquet(pq_src)
     if df.columns.nlevels > 1:
         df.columns = df.columns.get_level_values(-1)
     factor_names = list(df.columns)
-
-    # 读 qlib_res.csv 获取指标
-    try:
-        res = pd.read_csv(ws_dir / "qlib_res.csv", index_col=0)
-        res.columns = ["value"]
-        icir = float(res.loc["ICIR", "value"])
-        ic = float(res.loc["IC", "value"])
-    except Exception:
-        icir = ic = None
 
     # 统计覆盖率
     dts = df.index.get_level_values("datetime")
@@ -127,13 +199,20 @@ def register(
     coverage = df.notna().mean().mean() * 100
 
     print(f"\n{'='*62}")
-    print(f"  workspace  : {ws_dir.name}")
+    print(f"  数据源     : {'统一刷新 parquet (--from-refresh)' if from_refresh else 'RD-Agent workspace'}")
+    print(f"  workspace  : {ws_dir_name}")
+    if from_refresh:
+        print(f"  parquet 文件: {pq_src}")
+        if summary_path and summary_path.exists():
+            print(f"  summary json: {summary_path}")
     print(f"  因子数量   : {len(factor_names)}")
     print(f"  因子列表   : {factor_names}")
     print(f"  日期范围   : {date_min} → {date_max}")
     print(f"  平均覆盖率 : {coverage:.1f}%")
-    if icir is not None:
+    if icir is not None and ic is not None:
         print(f"  ICIR / IC  : {icir:.3f} / {ic:.4f}")
+    elif ic is not None:
+        print(f"  IC (均值)  : {ic:.4f}")
     print(f"{'='*62}\n")
 
     # 确定新版本号
@@ -172,8 +251,8 @@ def register(
         new_rec = {
             "factor_id": factor_id,
             "factor_name": col,
-            "source": "rdagent",
-            "workspace_id": ws_dir.name,
+            "source": "rdagent_refresh" if from_refresh else "rdagent",
+            "workspace_id": ws_dir_name,
             "parquet_column": col,
             "parquet_version": new_version,
             "status": "active",
@@ -221,12 +300,20 @@ def register(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="将 RD-Agent 因子注册到 factor_registry")
-    parser.add_argument("--workspace", default=None, help="workspace ID（默认使用 TOP-5 高覆盖率 workspace）")
+    parser.add_argument(
+        "--from-refresh",
+        action="store_true",
+        help="从 factor_lab.yaml 的 registry.refresh_combined_parquet 注册（与 refresh_rdagent_parquet 对齐）",
+    )
+    parser.add_argument("--workspace", default=None, help="workspace ID（与 --from-refresh 互斥；默认使用内置 TOP workspace）")
     parser.add_argument("--dry-run", action="store_true", help="仅预览，不写任何文件")
     parser.add_argument("--keep-old", action="store_true", help="保留旧因子的 active 状态（不退役）")
     args = parser.parse_args()
+    if args.from_refresh and args.workspace:
+        parser.error("--from-refresh 与 --workspace 不能同时使用")
     register(
         workspace_id=args.workspace,
         dry=args.dry_run,
         retire_old=not args.keep_old,
+        from_refresh=args.from_refresh,
     )
