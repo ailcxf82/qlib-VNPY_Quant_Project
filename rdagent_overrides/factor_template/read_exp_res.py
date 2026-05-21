@@ -1,28 +1,29 @@
 """
-Custom RD-Agent reward signal (P3a).
+Custom RD-Agent reward signal (P3a + Phase-2 diversity).
 
 Executed inside the RD-Agent qlib conda env after `qrun` produces a mlflow recorder.
 Loads the latest recorder, then writes:
 
   - qlib_res.csv : metric Series consumed by RD-Agent feedback (`exp.result`).
-                   Must contain the keys listed in IMPORTANT_METRICS (see
-                   rdagent.scenarios.qlib.developer.feedback). We add three new keys
-                   so the LLM optimisation target becomes "high signal + low turnover":
+                   Keys added beyond standard qlib metrics:
                        1day.excess_return_with_cost.information_ratio
                        1day.excess_return_with_cost.annualized_turnover
-                       1day.composite_score
-  - ret.pkl      : DataFrame logged by RD-Agent workspace as the backtesting chart
-                   (kept for backward compatibility).
+                       1day.composite_score          (P3a reward)
+                       1day.diversity_bonus          (Phase-2: orthogonality to pool)
+                       1day.enhanced_score           (composite + diversity_bonus)
+  - ret.pkl      : DataFrame for RD-Agent workspace backtesting chart.
 
-composite_score = 1.0 * IR + 2.0 * IC_IR - 0.5 * log(1 + annualized_turnover)
-  Larger is better. Encourages factors that move the *real* PnL signal-to-noise ratio
-  up while keeping the strategy turnover bounded (the failure mode observed in the
-  csi300_RD_v2 backtest, where IC went up but Sharpe dropped because turnover doubled).
+enhanced_score = composite_score + DIVERSITY_WEIGHT * (1 - max_spearman_with_pool)
+  where composite_score = 1.0*IR + 2.0*IC_IR - 0.5*log(1+annualized_turnover)
+  DIVERSITY_WEIGHT defaults to 0.4; override via FACTOR_LAB_DIVERSITY_WEIGHT env var.
+  If certified_parquet is unavailable, diversity_bonus = DIVERSITY_WEIGHT (max reward).
 """
 
 from __future__ import annotations
 
 import math
+import os
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -34,6 +35,35 @@ from qlib.workflow import R
 
 OUT_DIR = Path(__file__).resolve().parent
 RET_PKL = Path("ret.pkl")  # cwd, kept for workspace.log_object compatibility
+
+# Phase-2: certified pool parquet for diversity scoring.
+# Path is resolved at runtime; can be overridden via FACTOR_LAB_CERTIFIED_PARQUET env.
+_DEFAULT_CERTIFIED_PARQUET = (
+    Path(__file__).resolve().parents[3]
+    / "git_ignore_folder"
+    / "combined_factors_df.parquet"
+)
+CERTIFIED_PARQUET = Path(
+    os.environ.get("FACTOR_LAB_CERTIFIED_PARQUET", str(_DEFAULT_CERTIFIED_PARQUET))
+)
+
+
+def _compute_diversity_bonus(result_h5_path: Path) -> float:
+    """Attempt to load factor_lab.adapters.diversity_reward from the project root.
+    Falls back gracefully to 0.0 if unavailable (e.g., inside WSL without project on PYTHONPATH).
+    """
+    try:
+        # Ensure project root is on sys.path so factor_lab is importable inside WSL
+        project_root = str(Path(__file__).resolve().parents[3])
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        from factor_lab.adapters.diversity_reward import compute_diversity_bonus
+        return compute_diversity_bonus(result_h5_path, CERTIFIED_PARQUET)
+    except ImportError:
+        pass
+    except Exception as exc:
+        print(f"[warn] diversity_bonus unavailable: {exc}")
+    return 0.0
 
 
 def _latest_recorder():
@@ -143,9 +173,16 @@ def main() -> None:
     ann_turnover = _annualized_turnover(rec)
     composite = _composite_score(info_ratio, ic_ir, ann_turnover)
 
+    # Phase-2: diversity bonus — rewards orthogonality to existing certified pool
+    result_h5 = Path("result.h5")  # produced by the factor.py in cwd
+    diversity_bonus = _compute_diversity_bonus(result_h5)
+    enhanced_score = (composite + diversity_bonus) if composite == composite else float("nan")
+
     metrics["1day.excess_return_with_cost.information_ratio"] = info_ratio
     metrics["1day.excess_return_with_cost.annualized_turnover"] = ann_turnover
     metrics["1day.composite_score"] = composite
+    metrics["1day.diversity_bonus"] = diversity_bonus
+    metrics["1day.enhanced_score"] = enhanced_score
     metrics["ICIR_proxy"] = ic_ir
 
     output_path = OUT_DIR / "qlib_res.csv"
@@ -153,7 +190,8 @@ def main() -> None:
     print(f"[ok] qlib_res.csv -> {output_path} ({len(metrics)} rows)")
 
     print(
-        f"[reward] composite={composite:.6f} | IR={info_ratio:.4f} "
+        f"[reward] enhanced={enhanced_score:.4f} | composite={composite:.4f} "
+        f"diversity_bonus={diversity_bonus:.4f} | IR={info_ratio:.4f} "
         f"IC_IR={ic_ir:.4f} ann_ret={ann_ret:.4f} "
         f"max_dd={max_dd:.4f} ann_turnover={ann_turnover:.4f}"
     )

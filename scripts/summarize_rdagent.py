@@ -173,9 +173,15 @@ _TS_RE = re.compile(r'"timestamp"\s*:\s*(\d+)')
 _QRUN_IC_RE = re.compile(
     r"'IC':\s*np\.float64\(([\d.]+)\).*?'ICIR':\s*np\.float64\(([\d.]+)\)"
 )
-# read_exp_res.py 产出的行：含 [reward] composite=... IC_IR=...
-_REWARD_RE = re.compile(
+# read_exp_res.py 产出的行（P3a 旧格式）: [reward] composite=... IC_IR=...
+_REWARD_RE_LEGACY = re.compile(
     r"\[reward\]\s+composite=([\d.nan]+)\s*\|.*?IC_IR=([\d.nan]+)"
+)
+# read_exp_res.py 产出的行（Phase-2 新格式）:
+# [reward] enhanced=... | composite=... diversity_bonus=... | ... IC_IR=...
+_REWARD_RE = re.compile(
+    r"\[reward\]\s+enhanced=([\d.nan]+)\s*\|\s*composite=([\d.nan]+)\s+"
+    r"diversity_bonus=([\d.nan]+).*?IC_IR=([\d.nan]+)"
 )
 # 从 qlib_res.csv 路径提取 workspace id
 _WS_ID_RE = re.compile(r"RD-Agent_workspace[\\/]([a-f0-9]{32})[\\/]")
@@ -190,7 +196,8 @@ def _parse_debug_logs(max_logs: int = 10) -> list[dict]:
     - `wsl_direct_returned` 行的 stdout_tail 有两种：
       a) qrun 输出：含 'IC': np.float64(...)  → 记录 ic/icir，按 workspace 暂存
       b) read_exp_res 输出：含 [reward] composite=... → 合并同 workspace 的 qrun 结果
-    返回按时间戳排序的列表，每条含 {ts, dt_str, workspace, ic, icir, composite}。
+    返回按时间戳排序的列表，每条含 {ts, dt_str, workspace, ic, icir, composite,
+    enhanced, diversity_bonus}。
     """
     results: list[dict] = []
     pending: dict[str, dict] = {}  # ws_id → 暂存的 qrun 结果
@@ -245,15 +252,31 @@ def _parse_debug_logs(max_logs: int = 10) -> list[dict]:
                     "ic": float(ic_m.group(1)),
                     "icir": float(ic_m.group(2)),
                     "composite": float("nan"),
+                    "enhanced": float("nan"),
+                    "diversity_bonus": float("nan"),
                     "source_log": log_path.name,
                 }
                 continue
 
-            # ── read_exp_res 行（含 [reward] composite=...）──────────────
+            # ── read_exp_res 行（Phase-2 enhanced 或 P3a legacy composite）──
             reward_m = _REWARD_RE.search(line)
+            reward_fmt = "enhanced"
+            if not reward_m:
+                reward_m = _REWARD_RE_LEGACY.search(line)
+                reward_fmt = "legacy"
             if reward_m:
-                comp_str = reward_m.group(1)
-                icir_str = reward_m.group(2)
+                if reward_fmt == "enhanced":
+                    enh_str = reward_m.group(1)
+                    comp_str = reward_m.group(2)
+                    div_str = reward_m.group(3)
+                    icir_str = reward_m.group(4)
+                    enhanced = float(enh_str) if enh_str != "nan" else float("nan")
+                    diversity_bonus = float(div_str) if div_str != "nan" else float("nan")
+                else:
+                    comp_str = reward_m.group(1)
+                    icir_str = reward_m.group(2)
+                    enhanced = float("nan")
+                    diversity_bonus = float("nan")
                 comp = float(comp_str) if comp_str != "nan" else float("nan")
                 icir_reward = float(icir_str) if icir_str != "nan" else float("nan")
 
@@ -261,6 +284,8 @@ def _parse_debug_logs(max_logs: int = 10) -> list[dict]:
                 entry = pending.pop(ws_id, None) or pending.pop(last_ws_id, None)
                 if entry:
                     entry["composite"] = comp
+                    entry["enhanced"] = enhanced
+                    entry["diversity_bonus"] = diversity_bonus
                     if icir_reward == icir_reward:
                         entry["icir"] = icir_reward
                     results.append(entry)
@@ -273,6 +298,8 @@ def _parse_debug_logs(max_logs: int = 10) -> list[dict]:
                             "ic": float("nan"),
                             "icir": icir_reward,
                             "composite": comp,
+                            "enhanced": enhanced,
+                            "diversity_bonus": diversity_bonus,
                             "source_log": log_path.name,
                         }
                     )
@@ -418,8 +445,14 @@ def _render_markdown(
         lines.append(f"| 最新 IC | {latest['ic']:.4f} |")
         lines.append(f"| 最新 IC_IR | **{latest['icir']:.4f}** |")
         lines.append(f"| 最新 Composite | {latest['composite']:.4f} |")
+        if latest.get("enhanced") == latest.get("enhanced"):
+            lines.append(f"| 最新 Enhanced | **{latest['enhanced']:.4f}** |")
+        if latest.get("diversity_bonus") == latest.get("diversity_bonus"):
+            lines.append(f"| 最新 Diversity Bonus | {latest['diversity_bonus']:.4f} |")
         lines.append(f"| 本轮最佳 IC_IR | **{best['icir']:.4f}** ({best['dt_str']}) |")
         lines.append(f"| 本轮最佳 Composite | {best['composite']:.4f} |")
+        if best.get("enhanced") == best.get("enhanced"):
+            lines.append(f"| 本轮最佳 Enhanced | **{best['enhanced']:.4f}** |")
         lines.append("")
 
     # ── 版本变更摘要 ─────────────────────────────────────────────────────
@@ -543,12 +576,17 @@ def _render_markdown(
 
         # 只保留最近一段时间 / 最后 N 条
         recent = perf_history[-50:]
-        lines.append("| 时间 | IC | IC_IR | Composite | 来源日志 |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| 时间 | IC | IC_IR | Composite | Enhanced | Div.Bonus | 来源日志 |")
+        lines.append("|---|---|---|---|---|---|---|")
         for p in recent:
             comp_str = f"{p['composite']:.4f}" if p["composite"] == p["composite"] else "N/A"
+            enh = p.get("enhanced", float("nan"))
+            div = p.get("diversity_bonus", float("nan"))
+            enh_str = f"{enh:.4f}" if enh == enh else "N/A"
+            div_str = f"{div:.4f}" if div == div else "N/A"
             lines.append(
-                f"| {p['dt_str']} | {p['ic']:.4f} | **{p['icir']:.4f}** | {comp_str} | {p['source_log']} |"
+                f"| {p['dt_str']} | {p['ic']:.4f} | **{p['icir']:.4f}** | {comp_str} | "
+                f"{enh_str} | {div_str} | {p['source_log']} |"
             )
         lines.append("")
 
@@ -781,8 +819,21 @@ def _print_terminal_summary(
         latest = perf_history[-1]
         best = max(perf_history, key=lambda x: x["icir"])
         _safe_print(f"\n  组合模型（最新 {latest['dt_str']}）:")
-        _safe_print(f"  IC={latest['ic']:.4f}  IC_IR={latest['icir']:.4f}  Composite={latest['composite']:.4f}")
-        _safe_print(f"  本轮最佳: IC_IR={best['icir']:.4f}  Composite={best['composite']:.4f}  ({best['dt_str']})")
+        _safe_print(
+            f"  IC={latest['ic']:.4f}  IC_IR={latest['icir']:.4f}  "
+            f"Composite={latest['composite']:.4f}"
+        )
+        enh = latest.get("enhanced", float("nan"))
+        div = latest.get("diversity_bonus", float("nan"))
+        if enh == enh:
+            _safe_print(f"  Enhanced={enh:.4f}", end="")
+        if div == div:
+            _safe_print(f"  DiversityBonus={div:.4f}", end="")
+        if enh == enh or div == div:
+            _safe_print("")
+        _safe_print(
+            f"  本轮最佳: IC_IR={best['icir']:.4f}  Composite={best['composite']:.4f}  ({best['dt_str']})"
+        )
 
     _safe_print("")
     _safe_print(sep)

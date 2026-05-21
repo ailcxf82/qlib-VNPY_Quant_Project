@@ -20,34 +20,46 @@
 
 version: "1.0"
 
-allowed_windows: [5, 10, 20, 30, 60]
+allowed_windows: [5, 10, 20, 30, 60, 90, 120]
+# 新增 90/120 日捕获中长期趋势（Barra MOMENTUM 用 252d，这里取次级近似）
 
 allowed_primitives:
   - pct_change
   - shift
-  - rolling(W).mean/std/sum/min/max/corr
+  - rolling(W).mean/std/sum/min/max/corr/skew/kurt
   - rank
   - clip
+  - groupby(level="instrument").transform
+  - groupby("$sw_l1_code").transform  # 行业内中性化排名
 
 forbidden_patterns:
   - nested rolling correlations across many series
   - loops
   - '"10 pairs" patterns'
+  - "groupby(...).apply(...) for final output column (use transform instead)"
 
 columns:
-  Price/Volume: [$close, $open, $high, $low, $volume, $amount]
-  Liquidity:    [$turnover_rate, $turnover_rate_f, $volume_ratio]
-  Valuation:    [$pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio]
-  Quality:      [$roe, $roa, $q_profit_yoy, $q_eps]
-  Technical:    [$rsi12, $macd, $macd_dif, $kdj_k, $kdj_d, $atr]
-  Margin:       [$rzye, $rqye]
+  # v2 (2026-05-21): 42 columns — full qlib coverage, native names
+  Price/raw:      [$close, $open, $high, $low]
+  Price/fwd-adj:  [$close_qfq, $open_qfq, $high_qfq, $low_qfq]
+  Volume:         [$vol, $volume, $amount]
+  Liquidity:      [$turnover_rate, $turnover_rate_f, $volume_ratio]
+  Technical:      [$rsi_qfq_12, $macd_qfq, $macd_dif_qfq, $macd_dea_qfq,
+                   $kdj_k_qfq, $kdj_d_qfq, $kdj_qfq, $atr_qfq, $mtmma_qfq]
+  Valuation:      [$pe, $pe_ttm, $pb, $ps, $ps_ttm, $total_mv, $dv_ratio, $dv_ttm]
+  Quality:        [$roe, $q_profit_yoy, $q_eps, $assets_turn, $profit_to_gr]
+  MoneyFlow:      [$net_amount, $buy_elg_amount, $buy_lg_amount, $buy_md_amount, $buy_sm_amount]
+  Margin:         [$rzye, $rqye]
 
 columns_nan_note: |-
-  NOTE: $pe_ttm/$pb/$roe/$q_profit_yoy may have NaN for some instruments (quarterly data).
-        Always use .fillna(method='ffill') or rolling mean as fallback for fundamental columns.
-  NOTE: Instrument index is Qlib-style: SH/SZ/BJ prefix + 6-digit code (e.g. 'SH600000', 'SZ000001', 'SZ300059'). Preserve it as-is.
-        DO NOT rewrite to dotted / suffix formats like '000001.SZ', 'SZ.000001' or '600000.SH'.
-        Output result.h5 MUST keep the exact same (datetime, instrument) MultiIndex as df.
+  NOTE: Valuation/Quality columns ($pe_ttm/$pb/$roe/$q_profit_yoy etc.) have NaN for quarterly data.
+        Always: df['$col'] = df['$col'].groupby(level='instrument').transform(lambda s: s.ffill())
+  NOTE: MoneyFlow columns ($net_amount/$buy_*_amount) may have NaN for stocks with no institutional data.
+  NOTE: $roa and $roa2_yearly are NOT available (all-NaN in data source) — do NOT use them.
+  NOTE: Instrument code format is '000001.SZ' / '600000.SH' / '430047.BJ'
+        (6-digit code + dot + exchange suffix, case-insensitive).
+        DO NOT rewrite to 'SH600000' prefix format.
+        Preserve MultiIndex (datetime, instrument) index as-is from loaded dataframe.
 
 scoring:
   formula: "1day.composite_score = 1.0*IR + 2.0*IC_IR - 0.5*log(1+annualized_turnover)"
@@ -56,13 +68,22 @@ scoring:
     - "IC_IR (Rank IC mean / IC std) \u2014 signal stability"
     - "annualized_turnover \u2014 penalised; high-frequency switching hurts the score."
   historical_lesson: |-
-    Empirical lesson from previous loops (csi300_RD_v2, 2025-11~2026-03):
-      Adding 5 short-cycle volume-price-reversal factors (RangeRatio_10D, VolRatio_20D,
-      VolumePriceTrend_10D, VolumeTrend_10D, VolRet_5D) raised LGB valid-IC from 0.148
-      to 0.226 BUT the realised Sharpe DROPPED from 3.59 to 1.69 because annualized
-      turnover almost doubled (4.7 -> 8.75) and the strategy beta collapsed from 1.50
-      to 0.90 (signals fought each other instead of stacking). DO NOT propose more
-      short-cycle volume-price-reversal factors; they are the failure family.
+    Empirical lesson (csi300_RD_v2, 2025-11~2026-03):
+      Adding 5 short-cycle volume-price-reversal factors raised LGB valid-IC from 0.148
+      to 0.226 BUT realised Sharpe DROPPED 3.59→1.69 (turnover doubled 4.7→8.75x).
+      DO NOT propose short-cycle volume-price-reversal factors.
+
+    Successful pattern (v17→v19 certified factors):
+      Slow-moving fundamental factors (ValueMR_20D, AmihudIlliquidity_20D, OvernightReturn_5D)
+      yield composite_score > 2.0 with turnover < 3.0. Target this regime.
+
+    Diversity lesson (v19 pool, 15 active factors):
+      The current pool is concentrated in volume/liquidity family.
+      HIGH PRIORITY: propose factors from UNTAPPED families:
+        - earnings quality / fundamental revision (no certified factor yet)
+        - industry-relative valuation (no certified factor yet)
+        - long-horizon residual momentum W=90/120 (no certified factor yet)
+        - margin financing smart-money trend (only 1 factor, need more variants)
 
 feature_universe:
   name: lgb_short_cycle
@@ -90,32 +111,51 @@ orthogonality_rules:
          lagged / smoothed transformations.
 
 encouraged_families:
+  # ── 基本面 / 财务质量 ───────────────────────────────────────────────────────
   - id: a
-    text: "Quality persistence: rolling_mean($roe, 4 quarters) ranked vs sector"
+    text: "Quality persistence: rolling_mean($roe, W=60) ranked vs sector (use $sw_l1_code groupby if available; else universe rank)"
   - id: b
-    text: "Valuation mean-reversion (slow): ($pe_ttm - rolling_median($pe_ttm, 60)) / rolling_std($pe_ttm, 60)"
-  - id: c
-    text: "Margin financing trend: rolling_mean($rzye / $total_mv, 20) - rolling_mean($rzye / $total_mv, 60)"
+    text: "Valuation mean-reversion (slow, W=60/90): zscore of $pe_ttm within rolling window — captures reversion to instrument's own mean"
   - id: d
-    text: "Earnings revision strength: $q_profit_yoy minus its 4-quarter rolling median (use shift)"
+    text: "Earnings revision strength (W=20/60): $q_profit_yoy minus its rolling median over 4 quarters (shift(60)) — earnings surprise"
   - id: e
-    text: "Low-volatility quality: rank($roe) / (rank(VOL20) + 1)"
+    text: "Fundamental quality combo: rank($roe) × (1 - rank(rolling_std($close_qfq.pct_change(), 20))) — low-volatility quality"
+  - id: h
+    text: "ROE acceleration: $roe - shift($roe, 60) / rolling_std($roe, 60) — improving earnings quality direction signal"
+  - id: i
+    text: "PE/ROE composite: $roe / max($pe_ttm, 0.01) — earnings yield quality; or rank(1/pe_ttm) × rank($roe)"
+  # ── 资金流向 / 智能资金 ────────────────────────────────────────────────────
+  - id: c
+    text: "Margin financing trend (W=20/60): rolling_mean($rzye/$total_mv, 20) - rolling_mean($rzye/$total_mv, 60) — smart money net direction"
+  - id: j
+    text: "Short-selling pressure (W=20): $rqye / ($rzye + $rqye + 1e-9) — bearish sentiment from margin shorts"
+  # ── 中长期动量 / 残差动量 ────────────────────────────────────────────────────
   - id: f
-    text: "Long-horizon residual momentum: pct_change($close, 60) - beta * pct_change(benchmark, 60)"
+    text: "Long-horizon residual momentum (W=90/120): pct_change($close_qfq, W) minus cross-sectional mean — excludes market beta"
+  - id: k
+    text: "Momentum reversal combo: 12-month momentum minus 1-month (skip-1-month momentum) — standard Jegadeesh-Titman variant"
+  # ── 流动性 / 微观结构 ─────────────────────────────────────────────────────
   - id: g
-    text: "Liquidity stability: 1 / rolling_std($turnover_rate / Mean($turnover_rate, 60), 20)"
+    text: "Liquidity stability (W=60): 1 / rolling_std($turnover_rate / rolling_mean($turnover_rate, 60), 20) — consistent liquidity"
+  - id: l
+    text: "Amihud illiquidity trend (W=20/60): change in rolling_mean(|pct_change($close_qfq)| / $volume, W) — improving liquidity signal"
+  # ── 价格微观结构 ──────────────────────────────────────────────────────────
+  - id: m
+    text: "Overnight information (W=20): rolling_mean($open_qfq/shift($close_qfq) - 1, W) — after-hours information signal, absent from Alpha158"
+  - id: n
+    text: "Intraday amplitude trend (W=20): sign of rolling regression slope of ($high_qfq-$low_qfq)/$close_qfq over W days"
 
 discouraged_families:
-  # 阶段 G.4：每条目可选 ``penalty`` 字段。
-  #   - 缺省 / penalty=.inf → 硬黑名单，渲染无额外注解（F 阶段行为）。
-  #   - penalty=-0.5 / -1.0 等具体数值 → 软降权：渲染追加「仍可尝试但需附加理由」。
-  # 默认这里三条都不带 penalty，保持和 _FALLBACK_CONSTITUTION_TEXT 的 byte-for-byte 一致。
+  # penalty=inf (default) → 硬黑名单. penalty=-0.5 → 软降权（可附理由尝试）
   - id: x
-    text: "Short-cycle volume-price reversals on W in {5, 10}"
+    text: "Short-cycle volume-price reversals on W in {5, 10} — already failed in multiple loops"
   - id: y
-    text: "Same-day volume spike + price reversal patterns"
+    text: "Same-day volume spike + price reversal patterns — extremely high turnover"
   - id: z
     text: "Anything that ranks the universe with >50% weekly turnover"
+  - id: w
+    text: "Factors that merely replicate Alpha158 signals (RESI5, WVMA5, CORR5/10/20, ROC60, KLEN, KLOW, VSTD5, STD5)"
+    penalty: -1.0  # 软降权：如果确有新角度可尝试，但须说明为何不与 Alpha158 重叠
 
 # 阶段 I.2：注入一段可直接 copy-adapt 的最小骨架。LLM 看到 reference 后，instrument
 # MultiIndex 被 `.str.split('.')` 等破坏的概率显著下降（I.1 之后唯一的剩余阻塞）。
@@ -125,10 +165,15 @@ reference_implementation: |-
   Use groupby(level='instrument').transform so the index is preserved intact. Do NOT
   reset_index, do NOT split/rebuild instrument strings, do NOT rename index levels.
 
+  Instrument code format: '000001.SZ' / '600000.SH' (6-digit.EXCHANGE). NOT 'SH600000'.
+
       import pandas as pd
 
-      W = 60                                       # EDIT 1: window in {5,10,20,30,60}
+      W = 60                                       # EDIT 1: window in {5,10,20,30,60,90,120}
       df = pd.read_hdf("daily_pv.h5", key="data")  # MultiIndex (datetime, instrument)
+      # Coerce all columns (some may be float32 or have NaN)
+      for c in df.columns:
+          df[c] = pd.to_numeric(df[c], errors="coerce")
 
       # Forward-fill fundamental columns first (quarterly NaN); keep the MultiIndex.
       x = df["$pe_ttm"].groupby(level="instrument").transform(lambda s: s.ffill())
@@ -138,7 +183,7 @@ reference_implementation: |-
       std = x.groupby(level="instrument").transform(
           lambda s: s.rolling(W, min_periods=W).std()
       )
-      factor = (x - med) / std                     # same MultiIndex as df -- do NOT reset_index
+      factor = (x - med) / std.replace(0, float("nan"))  # same MultiIndex, do NOT reset_index
 
       out = factor.to_frame("YourFactorName_%dD" % W)  # EDIT 2: factor name
       out.to_hdf("result.h5", key="data", mode="w")    # EDIT 3: nothing else

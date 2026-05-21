@@ -93,6 +93,8 @@ def _patch_feedback_important_metrics() -> None:
             "1day.excess_return_with_cost.information_ratio",
             "1day.excess_return_with_cost.annualized_turnover",
             "1day.composite_score",
+            "1day.diversity_bonus",    # Phase-2: orthogonality to certified pool
+            "1day.enhanced_score",     # Phase-2: composite + diversity_bonus
         ]
         existing = list(getattr(feedback_mod, "IMPORTANT_METRICS", []))
         for k in extra:
@@ -523,7 +525,7 @@ def _patch_local_env_entry_python() -> None:
                     "sessionId": "fc2594", "timestamp": int(_t.time()*1000),
                     "hypothesisId": "H-WSL2", "location": "patch_qlib_conda.py:wsl_direct",
                     "message": "wsl_direct_returned",
-                    "data": {"return_code": proc.returncode, "stdout_tail": out[-600:]}
+                    "data": {"return_code": proc.returncode, "stdout_tail": out[-1200:]}
                 }) + "\n")
                 # #endregion
 
@@ -548,7 +550,7 @@ def _patch_local_env_entry_python() -> None:
                 "data": {
                     "entry_snippet": str(resolved)[:120],
                     "return_code": _rc,
-                    "stdout_tail": str(_out)[-400:],
+                    "stdout_tail": str(_out)[-800:],
                 }
             }) + "\n")
             # #endregion

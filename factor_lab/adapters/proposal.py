@@ -130,28 +130,31 @@ def _strip_code_rules_from_history(trace: Trace) -> None:
 
 
 _ALPHA158_AVOIDANCE_HINT = """
-======  IMPORTANT: Avoid Redundant Signals  ======
-The model already has 20 Alpha158 features as built-in baseline inputs. Proposing factors that
-merely replicate these signals adds noise and reduces IC_IR without adding incremental alpha.
-AVOID proposing factors similar to:
-  - Simple price momentum (ROC5/10/20/60) → already covered by CORR5/CORR10/CORR20/CORR60
-  - Close price residuals (RESI5/10) → already in Alpha158
-  - Price range / daily amplitude (KLEN, KLOW) → already in Alpha158
-  - Simple volume volatility (VSTD5) → already in Alpha158
-  - Short-term price std (STD5) → already in Alpha158
-  - Weighted volume-momentum average (WVMA5/60) → already in Alpha158
-  - Price-volume correlation (CORR5/CORR10/CORR20/CORR60, CORD5/CORD10/CORD60) → already in Alpha158
+======  IMPORTANT: Diversity-Driven Proposal Policy  ======
+The model already has 20 Alpha158 + 15 certified v19 factors. New factors must add ORTHOGONAL
+information to be valuable. Three layers of restrictions apply:
 
-FOCUS on signals NOT covered by Alpha158:
-  1. Overnight gap: open/prev_close - 1  (captures after-hours info, absent from Alpha158)
-  2. Margin financing momentum: ($rzye - shift_N($rzye)) / market_cap  (smart money flow)
-  3. Earnings quality spread: ROE - ROA  (financial leverage quality / asset efficiency)
-  4. Intraday amplitude trend: rolling trend of (high-low)/close  (intraday volatility direction)
-  5. Cross-sectional fundamental rank × technical rank interactions
-     e.g. low-PE STOCKS with positive momentum — value + momentum combination
-  6. Fundamental revision rate: quarter-over-quarter change in ROA or q_profit_yoy
-     (earnings surprise / revision signal)
-  7. Dividend yield stability: dv_ratio relative to its own historical mean (income consistency)
+[Layer 1] HARD AVOID — Alpha158 overlap (these signals already in model):
+  - Simple price momentum (ROC5/10/20/60), RESI5/10, KLEN, KLOW, VSTD5, STD5
+  - WVMA5/WVMA60, CORR5/10/20/60, CORD5/10/60, RSQR5/10/20/60
+
+[Layer 2] CURRENTLY OVER-REPRESENTED in v19 pool — add ONLY with explicit orthogonality argument:
+  - Volume ratio variants (sma_volume_ratio_10d, volume_ratio_ma_15d, winsorized_zscore_volume_ratio)
+  - Turnover variants (turnover_surprise_20, turnover_acceleration_5d, turnover_accel_5d)
+  - Liquidity variants (amihud_illiquidity_20d, log_signed_volume)
+
+[Layer 3] HIGH-PRIORITY GAPS in v19 pool — these families have ZERO or ONE certified factor:
+  ★★★ earnings_quality / fundamental revision — ONLY 1 factor (earnings_yield_momentum_5d)
+      → Target: ROE acceleration, earnings revision rate, ROE/PE combo, PEG-ratio signal
+  ★★★ industry-relative valuation — ZERO factors
+      → Target: PE zscore within industry (use $sw_l1_code groupby), industry momentum spread
+  ★★   long-horizon momentum (W=90/120) — ZERO factors
+      → Target: residual momentum (exclude market beta), skip-1-month momentum
+  ★★   overnight/after-hours information — ZERO factors (open/prev_close gap, W=20)
+  ★    margin financing DIRECTION (vs level) — only close_location related factors
+      → Target: margin net ratio trend, short-selling pressure
+
+PREFER proposing from ★★★ families above. Every proposal should state which gap it fills.
 ======  END IMPORTANT  ======
 """
 
@@ -167,18 +170,37 @@ class ProjectQlibFactorHypothesisGen(QlibFactorHypothesisGen):
     1. ``_reindex_trace_results``  — pads missing metric keys to avoid Jinja crash.
     2. ``_strip_code_rules_from_history`` — trims CODE RULES boilerplate from
        historical factor descriptions to prevent prompt size explosion.
-    3. Injects Alpha158 avoidance hint into the SCENARIO so the PROPOSER LLM
-       knows which signals are already covered and avoids redundant proposals.
+    3. Injects Alpha158 / diversity avoidance hint into SCENARIO.
+    4. Phase-3: Injects RAG academic factor examples (keyword-matched).
     """
 
     def prepare_context(self, trace: Trace) -> Tuple[dict, bool]:
         _reindex_trace_results(trace)
         _strip_code_rules_from_history(trace)
         ctx, ok = super().prepare_context(trace)
-        # Inject the Alpha158 avoidance hint into the scenario so the hypothesis
-        # generator LLM knows what NOT to propose (avoid redundant factors).
         if isinstance(ctx, dict):
-            ctx["scenario"] = str(ctx.get("scenario", "")) + _ALPHA158_AVOIDANCE_HINT
+            scenario = str(ctx.get("scenario", ""))
+            scenario += _ALPHA158_AVOIDANCE_HINT
+
+            # Phase-3: RAG academic factor examples
+            try:
+                from factor_lab.adapters.rag_retriever import (
+                    retrieve_examples,
+                    get_existing_family_counts,
+                )
+                trace_len = len(getattr(trace, "hist", None) or [])
+                family_counts = get_existing_family_counts()
+                rag_block = retrieve_examples(
+                    hypothesis_text=scenario,
+                    trace_length=trace_len,
+                    existing_families=list(family_counts.keys()),
+                )
+                if rag_block:
+                    scenario += rag_block
+            except Exception as _rag_exc:  # noqa: BLE001
+                pass  # RAG failure must not break the loop
+
+            ctx["scenario"] = scenario
         return ctx, ok
 
 
@@ -199,17 +221,22 @@ You MUST generate code with the following fixed skeleton and behavior.
 4) Prefer `pd.read_hdf("daily_pv.h5")`; if key is needed, use `key="data"`.
 5) After loading, enforce index names exactly `['datetime', 'instrument']` and sort index.
 5b) Preserve instrument index AS-IS from loaded dataframe.
-    DO NOT manually split/rebuild/transform instrument strings.
+    Instrument code format is '000001.SZ' / '600000.SH' (6-digit.EXCHANGE).
+    DO NOT rewrite to 'SH600000' prefix format. DO NOT split/rebuild instrument strings.
 6) All columns may have NaN: coerce every column with `pd.to_numeric(..., errors="coerce")` before math.
-6b) Available columns in daily_pv.h5 (EXACT names — copy-paste them verbatim):
-    Price/Volume (raw):  $open, $close, $high, $low, $volume, $factor
-    Fwd-adjusted prices: $close_qfq, $open_qfq, $high_qfq, $low_qfq
-    Liquidity:           $vol, $turnover_rate, $turnover_rate_f, $volume_ratio
-    Technical (pre-calc):$rsi_qfq_12, $macd_qfq, $kdj_k_qfq, $kdj_d_qfq, $atr_qfq
-    Valuation:           $pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio
-    Quality:             $roe, $q_profit_yoy, $q_eps
+6b) Available columns in daily_pv.h5 — v2 (42 columns, EXACT names — copy-paste verbatim):
+    Price/raw:           $close, $open, $high, $low
+    Price/fwd-adj:       $close_qfq, $open_qfq, $high_qfq, $low_qfq
+    Volume/Amount:       $vol, $volume, $amount
+    Liquidity:           $turnover_rate, $turnover_rate_f, $volume_ratio
+    Technical:           $rsi_qfq_12, $macd_qfq, $macd_dif_qfq, $macd_dea_qfq,
+                         $kdj_k_qfq, $kdj_d_qfq, $kdj_qfq, $atr_qfq, $mtmma_qfq
+    Valuation:           $pe, $pe_ttm, $pb, $ps, $ps_ttm, $total_mv, $dv_ratio, $dv_ttm
+    Quality:             $roe, $q_profit_yoy, $q_eps, $assets_turn, $profit_to_gr
+    Money flow:          $net_amount, $buy_elg_amount, $buy_lg_amount, $buy_md_amount, $buy_sm_amount
     Margin financing:    $rzye, $rqye
-    FORBIDDEN (do NOT exist): $rsi12, $macd, $kdj_k, $kdj_d, $atr, $roa, $amount, $pe, $net_amount
+    FORBIDDEN (do NOT exist): $rsi12, $macd, $kdj_k, $kdj_d, $atr, $factor,
+                               $roa, $roa2_yearly (all-NaN in data source)
 
 [Computation rules]
 7) Compute factor with vectorized ops or `groupby(level="instrument").transform(...)`.
@@ -298,20 +325,27 @@ High-value targets NOT yet covered by Alpha158:
 
     _CODER_RULES = (
         "\n[CODE RULES - MUST FOLLOW]\n"
-        "0. Available columns in daily_pv.h5 (EXACT names — copy verbatim):\n"
-        "   Raw OHLCV:           $open, $close, $high, $low, $volume, $factor\n"
-        "   Fwd-adj prices:      $close_qfq, $open_qfq, $high_qfq, $low_qfq\n"
-        "   Liquidity:           $vol, $turnover_rate, $turnover_rate_f, $volume_ratio\n"
-        "   Technical pre-calc:  $rsi_qfq_12, $macd_qfq, $kdj_k_qfq, $kdj_d_qfq, $atr_qfq\n"
-        "   Valuation:           $pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio\n"
-        "   Quality:             $roe, $q_profit_yoy, $q_eps\n"
+        "0. Available columns in daily_pv.h5 — v2 (42 cols, EXACT names — copy verbatim):\n"
+        "   Price/raw:           $close, $open, $high, $low\n"
+        "   Price/fwd-adj:       $close_qfq, $open_qfq, $high_qfq, $low_qfq\n"
+        "   Volume/Amount:       $vol, $volume, $amount\n"
+        "   Liquidity:           $turnover_rate, $turnover_rate_f, $volume_ratio\n"
+        "   Technical:           $rsi_qfq_12, $macd_qfq, $macd_dif_qfq, $macd_dea_qfq,\n"
+        "                        $kdj_k_qfq, $kdj_d_qfq, $kdj_qfq, $atr_qfq, $mtmma_qfq\n"
+        "   Valuation:           $pe, $pe_ttm, $pb, $ps, $ps_ttm, $total_mv, $dv_ratio, $dv_ttm\n"
+        "   Quality:             $roe, $q_profit_yoy, $q_eps, $assets_turn, $profit_to_gr\n"
+        "   Money flow:          $net_amount, $buy_elg_amount, $buy_lg_amount,\n"
+        "                        $buy_md_amount, $buy_sm_amount\n"
         "   Margin financing:    $rzye, $rqye\n"
-        "   FORBIDDEN (do NOT exist): $rsi12, $macd, $kdj_k, $kdj_d, $atr, $roa, $amount, $pe\n"
+        "   FORBIDDEN (do NOT exist): $rsi12, $macd, $kdj_k, $atr, $factor,\n"
+        "                             $roa, $roa2_yearly (all-NaN in source)\n"
+        "0b. Instrument code format: '000001.SZ' / '600000.SH' (6-digit.EXCHANGE).\n"
+        "    DO NOT rewrite to 'SH600000' or split on '.'. Preserve index as-is.\n"
         "1. Load: df = pd.read_hdf('daily_pv.h5')  — NO HDFStore, NO h5py.\n"
         "2. Coerce all columns: for c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')\n"
-        "3. For fundamental columns ($pe_ttm, $pb, $roe, etc.) that have NaN:\n"
-        "   Use forward-fill within each instrument before computation:\n"
-        "   df['$pe_ttm'] = df['$pe_ttm'].groupby(level='instrument').transform(lambda s: s.ffill())\n"
+        "3. For fundamental/quarterly columns ($pe_ttm, $pb, $roe, $q_profit_yoy, etc.) that have NaN:\n"
+        "   Forward-fill within each instrument:\n"
+        "   df['$col'] = df['$col'].groupby(level='instrument').transform(lambda s: s.ffill())\n"
         "4. Compute via: series = df['$close_qfq'].groupby(level='instrument').transform(lambda s: ...)\n"
         "5. Save: result = pd.DataFrame({'FACTOR_NAME': series.astype('float64')}, index=df.index)\n"
         "         result.to_hdf('result.h5', key='data', mode='w', format='table')\n"
