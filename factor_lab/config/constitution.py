@@ -280,98 +280,128 @@ def reload_constitution_text(path: Path | None = None) -> str:
 # 如果你修改 YAML 或 render_constitution，同步回写本字符串 **并** 跑
 # ``tests/factor_lab/config/test_constitution.py::test_yaml_matches_fallback``。
 
-_FALLBACK_CONSTITUTION_TEXT = """
-------Project factor hypothesis constraints (mandatory)------
-1) Propose at most 2 new factors per hypothesis when trace length < 8; at most 3 afterward.
-2) Each factor MUST use a single integer window W chosen from {5, 10, 20, 30, 60} (state W explicitly).
-3) Allowed primitives: pct_change, shift, rolling(W).mean/std/sum/min/max/corr, rank, clip.
-4) FORBIDDEN: nested rolling correlations across many series, loops, \"10 pairs\" patterns.
-5) Available columns in daily_pv.h5 (use EXACTLY these names, no others):
-   Price/Volume: $close, $open, $high, $low, $volume, $amount
-   Liquidity:    $turnover_rate, $turnover_rate_f, $volume_ratio
-   Valuation:    $pe_ttm, $pb, $ps_ttm, $total_mv, $dv_ratio
-   Quality:      $roe, $roa, $q_profit_yoy, $q_eps
-   Technical:    $rsi12, $macd, $macd_dif, $kdj_k, $kdj_d, $atr
-   Margin:       $rzye, $rqye
-   NOTE: $pe_ttm/$pb/$roe/$q_profit_yoy may have NaN for some instruments (quarterly data).
-         Always use .fillna(method='ffill') or rolling mean as fallback for fundamental columns.
-   NOTE: Instrument index is Qlib-style: SH/SZ/BJ prefix + 6-digit code (e.g. 'SH600000', 'SZ000001', 'SZ300059'). Preserve it as-is.
-         DO NOT rewrite to dotted / suffix formats like '000001.SZ', 'SZ.000001' or '600000.SH'.
-         Output result.h5 MUST keep the exact same (datetime, instrument) MultiIndex as df.
-
-------Reward / objective (P3a, mandatory reading)------
-You are scored by `1day.composite_score = 1.0*IR + 2.0*IC_IR - 0.5*log(1+annualized_turnover)`.
-This means three things you MUST optimise simultaneously, NOT just IC:
-  \u00b7 IR  (information_ratio of excess_return_with_cost) \u2014 real backtest signal-to-noise
-  \u00b7 IC_IR (Rank IC mean / IC std) \u2014 signal stability
-  \u00b7 annualized_turnover \u2014 penalised; high-frequency switching hurts the score.
-
-Empirical lesson from previous loops (csi300_RD_v2, 2025-11~2026-03):
-  Adding 5 short-cycle volume-price-reversal factors (RangeRatio_10D, VolRatio_20D,
-  VolumePriceTrend_10D, VolumeTrend_10D, VolRet_5D) raised LGB valid-IC from 0.148
-  to 0.226 BUT the realised Sharpe DROPPED from 3.59 to 1.69 because annualized
-  turnover almost doubled (4.7 -> 8.75) and the strategy beta collapsed from 1.50
-  to 0.90 (signals fought each other instead of stacking). DO NOT propose more
-  short-cycle volume-price-reversal factors; they are the failure family.
-
-------Existing feature universe (`lgb_short_cycle`, 32 columns)------
-The project already exposes these columns to LGB; new factors must add INCREMENTAL
-information, i.e. low correlation with these:
-  Returns/Momentum: RET1, MOM5, MOM10, MOM20, MOM1_5
-  Volatility:       VOL5, VOL10, VOL20
-  Volume ratios:    VRATIO5, VRATIO10, VRATIO20, VOLVOL
-  Range:            HLRANGE, HLRANGE5, HLRANGE10
-  Liquidity:        TURN, TURN_F, TURN_REL
-  Valuation:        PE_TTM, PB, PS_TTM, LOG_MV
-  Quality:          ROE, ROA, PROFIT_YOY
-  Technical:        RSI12, MACD, KDJ_DIFF, ATR
-  Margin:           MARGIN_L, MARGIN_S
-
-Hard requirement (mandatory):
-  6.a) New factor MUST satisfy |Spearman(new_factor, X)| <= 0.50 for every X above
-       (when X is a strict superset, prove orthogonality through transformation).
-  6.b) New factor's day-over-day cross-sectional rank auto-correlation MUST be
-       >= 0.60 (slow-moving) \u2014 this directly bounds turnover.
-  6.c) Avoid signals that primarily fire on the SAME day as a price jump; prefer
-       lagged / smoothed transformations.
-
-------Encouraged factor families (HIGH composite-score expectation)------
-   (a) Quality persistence: rolling_mean($roe, 4 quarters) ranked vs sector
-   (b) Valuation mean-reversion (slow): ($pe_ttm - rolling_median($pe_ttm, 60)) / rolling_std($pe_ttm, 60)
-   (c) Margin financing trend: rolling_mean($rzye / $total_mv, 20) - rolling_mean($rzye / $total_mv, 60)
-   (d) Earnings revision strength: $q_profit_yoy minus its 4-quarter rolling median (use shift)
-   (e) Low-volatility quality: rank($roe) / (rank(VOL20) + 1)
-   (f) Long-horizon residual momentum: pct_change($close, 60) - beta * pct_change(benchmark, 60)
-   (g) Liquidity stability: 1 / rolling_std($turnover_rate / Mean($turnover_rate, 60), 20)
-
-------Discouraged factor families (LOW composite-score, DO NOT propose)------
-   (x) Short-cycle volume-price reversals on W in {5, 10}
-   (y) Same-day volume spike + price reversal patterns
-   (z) Anything that ranks the universe with >50% weekly turnover
-
-------Reference implementation (copy this skeleton; only edit the 3 marked lines)------
-The single most common failure is rewriting the (datetime, instrument) MultiIndex.
-Use groupby(level='instrument').transform so the index is preserved intact. Do NOT
-reset_index, do NOT split/rebuild instrument strings, do NOT rename index levels.
-
-    import pandas as pd
-
-    W = 60                                       # EDIT 1: window in {5,10,20,30,60}
-    df = pd.read_hdf("daily_pv.h5", key="data")  # MultiIndex (datetime, instrument)
-
-    # Forward-fill fundamental columns first (quarterly NaN); keep the MultiIndex.
-    x = df["$pe_ttm"].groupby(level="instrument").transform(lambda s: s.ffill())
-    med = x.groupby(level="instrument").transform(
-        lambda s: s.rolling(W, min_periods=W).median()
-    )
-    std = x.groupby(level="instrument").transform(
-        lambda s: s.rolling(W, min_periods=W).std()
-    )
-    factor = (x - med) / std                     # same MultiIndex as df -- do NOT reset_index
-
-    out = factor.to_frame("YourFactorName_%dD" % W)  # EDIT 2: factor name
-    out.to_hdf("result.h5", key="data", mode="w")    # EDIT 3: nothing else
-
-7) Factor names must encode type and window, e.g. QualPersist_60D, ValueMR_60D,
-   MarginTrend_20D, EarnRev_4Q, LowVolQual_20D, ResidMom_60D, LiqStab_20D.
-"""
+_FALLBACK_CONSTITUTION_TEXT = (
+    "\n"
+    "------Project factor hypothesis constraints (mandatory)------\n"
+    "1) Propose at most 2 new factors per hypothesis when trace length < 8; at most 3 afterward.\n"
+    "2) Each factor MUST use a single integer window W chosen from {5, 10, 20, 30, 60, 90, 120} (state W explicitly).\n"
+    '3) Allowed primitives: pct_change, shift, rolling(W).mean/std/sum/min/max/corr/skew/kurt, rank, clip, groupby(level="instrument").transform, groupby("$sw_l1_code").transform.\n'
+    '4) FORBIDDEN: nested rolling correlations across many series, loops, "10 pairs" patterns, groupby(...).apply(...) for final output column (use transform instead).\n'
+    "5) Available columns in daily_pv.h5 (use EXACTLY these names, no others):\n"
+    "   Price/raw:    $close, $open, $high, $low\n"
+    "   Price/fwd-adj:$close_qfq, $open_qfq, $high_qfq, $low_qfq\n"
+    "   Volume:       $vol, $volume, $amount\n"
+    "   Liquidity:    $turnover_rate, $turnover_rate_f, $volume_ratio\n"
+    "   Technical:    $rsi_qfq_12, $macd_qfq, $macd_dif_qfq, $macd_dea_qfq, $kdj_k_qfq, $kdj_d_qfq, $kdj_qfq, $atr_qfq, $mtmma_qfq\n"
+    "   Valuation:    $pe, $pe_ttm, $pb, $ps, $ps_ttm, $total_mv, $dv_ratio, $dv_ttm\n"
+    "   Quality:      $roe, $q_profit_yoy, $q_eps, $assets_turn, $profit_to_gr\n"
+    "   MoneyFlow:    $net_amount, $buy_elg_amount, $buy_lg_amount, $buy_md_amount, $buy_sm_amount\n"
+    "   Margin:       $rzye, $rqye\n"
+    "   NOTE: Valuation/Quality columns ($pe_ttm/$pb/$roe/$q_profit_yoy etc.) have NaN for quarterly data.\n"
+    "         Always: df['$col'] = df['$col'].groupby(level='instrument').transform(lambda s: s.ffill())\n"
+    "   NOTE: MoneyFlow columns ($net_amount/$buy_*_amount) may have NaN for stocks with no institutional data.\n"
+    "   NOTE: $roa and $roa2_yearly are NOT available (all-NaN in data source) \u2014 do NOT use them.\n"
+    "   NOTE: Instrument code format is '000001.SZ' / '600000.SH' / '430047.BJ'\n"
+    "         (6-digit code + dot + exchange suffix, case-insensitive).\n"
+    "         DO NOT rewrite to 'SH600000' prefix format.\n"
+    "         Preserve MultiIndex (datetime, instrument) index as-is from loaded dataframe.\n"
+    "\n"
+    "------Reward / objective (P3a, mandatory reading)------\n"
+    "You are scored by `1day.composite_score = 1.0*IR + 2.0*IC_IR - 0.5*log(1+annualized_turnover)`.\n"
+    "This means three things you MUST optimise simultaneously, NOT just IC:\n"
+    "  \u00b7 IR  (information_ratio of excess_return_with_cost) \u2014 real backtest signal-to-noise\n"
+    "  \u00b7 IC_IR (Rank IC mean / IC std) \u2014 signal stability\n"
+    "  \u00b7 annualized_turnover \u2014 penalised; high-frequency switching hurts the score.\n"
+    "\n"
+    "Empirical lesson (csi300_RD_v2, 2025-11~2026-03):\n"
+    "  Adding 5 short-cycle volume-price-reversal factors raised LGB valid-IC from 0.148\n"
+    "  to 0.226 BUT realised Sharpe DROPPED 3.59\u21921.69 (turnover doubled 4.7\u21928.75x).\n"
+    "  DO NOT propose short-cycle volume-price-reversal factors.\n"
+    "\n"
+    "Successful pattern (v17\u2192v19 certified factors):\n"
+    "  Slow-moving fundamental factors (ValueMR_20D, AmihudIlliquidity_20D, OvernightReturn_5D)\n"
+    "  yield composite_score > 2.0 with turnover < 3.0. Target this regime.\n"
+    "\n"
+    "Diversity lesson (v19 pool, 15 active factors):\n"
+    "  The current pool is concentrated in volume/liquidity family.\n"
+    "  HIGH PRIORITY: propose factors from UNTAPPED families:\n"
+    "    - earnings quality / fundamental revision (no certified factor yet)\n"
+    "    - industry-relative valuation (no certified factor yet)\n"
+    "    - long-horizon residual momentum W=90/120 (no certified factor yet)\n"
+    "    - margin financing smart-money trend (only 1 factor, need more variants)\n"
+    "\n"
+    "------Existing feature universe (`lgb_short_cycle`, 32 columns)------\n"
+    "The project already exposes these columns to LGB; new factors must add INCREMENTAL\n"
+    "information, i.e. low correlation with these:\n"
+    "  Returns/Momentum: RET1, MOM5, MOM10, MOM20, MOM1_5\n"
+    "  Volatility:       VOL5, VOL10, VOL20\n"
+    "  Volume ratios:    VRATIO5, VRATIO10, VRATIO20, VOLVOL\n"
+    "  Range:            HLRANGE, HLRANGE5, HLRANGE10\n"
+    "  Liquidity:        TURN, TURN_F, TURN_REL\n"
+    "  Valuation:        PE_TTM, PB, PS_TTM, LOG_MV\n"
+    "  Quality:          ROE, ROA, PROFIT_YOY\n"
+    "  Technical:        RSI12, MACD, KDJ_DIFF, ATR\n"
+    "  Margin:           MARGIN_L, MARGIN_S\n"
+    "\n"
+    "Hard requirement (mandatory):\n"
+    "  6.a) New factor MUST satisfy |Spearman(new_factor, X)| <= 0.50 for every X above\n"
+    "       (when X is a strict superset, prove orthogonality through transformation).\n"
+    "  6.b) New factor's day-over-day cross-sectional rank auto-correlation MUST be\n"
+    "       >= 0.60 (slow-moving) \u2014 this directly bounds turnover.\n"
+    "  6.c) Avoid signals that primarily fire on the SAME day as a price jump; prefer\n"
+    "       lagged / smoothed transformations.\n"
+    "\n"
+    "------Encouraged factor families (HIGH composite-score expectation)------\n"
+    "   (a) Quality persistence: rolling_mean($roe, W=60) ranked vs sector (use $sw_l1_code groupby if available; else universe rank)\n"
+    "   (b) Valuation mean-reversion (slow, W=60/90): zscore of $pe_ttm within rolling window \u2014 captures reversion to instrument's own mean\n"
+    "   (d) Earnings revision strength (W=20/60): $q_profit_yoy minus its rolling median over 4 quarters (shift(60)) \u2014 earnings surprise\n"
+    "   (e) Fundamental quality combo: rank($roe) \u00d7 (1 - rank(rolling_std($close_qfq.pct_change(), 20))) \u2014 low-volatility quality\n"
+    "   (h) ROE acceleration: $roe - shift($roe, 60) / rolling_std($roe, 60) \u2014 improving earnings quality direction signal\n"
+    "   (i) PE/ROE composite: $roe / max($pe_ttm, 0.01) \u2014 earnings yield quality; or rank(1/pe_ttm) \u00d7 rank($roe)\n"
+    "   (c) Margin financing trend (W=20/60): rolling_mean($rzye/$total_mv, 20) - rolling_mean($rzye/$total_mv, 60) \u2014 smart money net direction\n"
+    "   (j) Short-selling pressure (W=20): $rqye / ($rzye + $rqye + 1e-9) \u2014 bearish sentiment from margin shorts\n"
+    "   (f) Long-horizon residual momentum (W=90/120): pct_change($close_qfq, W) minus cross-sectional mean \u2014 excludes market beta\n"
+    "   (k) Momentum reversal combo: 12-month momentum minus 1-month (skip-1-month momentum) \u2014 standard Jegadeesh-Titman variant\n"
+    "   (g) Liquidity stability (W=60): 1 / rolling_std($turnover_rate / rolling_mean($turnover_rate, 60), 20) \u2014 consistent liquidity\n"
+    "   (l) Amihud illiquidity trend (W=20/60): change in rolling_mean(|pct_change($close_qfq)| / $volume, W) \u2014 improving liquidity signal\n"
+    "   (m) Overnight information (W=20): rolling_mean($open_qfq/shift($close_qfq) - 1, W) \u2014 after-hours information signal, absent from Alpha158\n"
+    "   (n) Intraday amplitude trend (W=20): sign of rolling regression slope of ($high_qfq-$low_qfq)/$close_qfq over W days\n"
+    "\n"
+    "------Discouraged factor families (LOW composite-score, DO NOT propose)------\n"
+    "   (x) Short-cycle volume-price reversals on W in {5, 10} \u2014 already failed in multiple loops\n"
+    "   (y) Same-day volume spike + price reversal patterns \u2014 extremely high turnover\n"
+    "   (z) Anything that ranks the universe with >50% weekly turnover\n"
+    "   (w) Factors that merely replicate Alpha158 signals (RESI5, WVMA5, CORR5/10/20, ROC60, KLEN, KLOW, VSTD5, STD5)"
+    "   [penalty=-1; soft \u2014 new attempts allowed only with explicit justification of how this proposal differs]\n"
+    "\n"
+    "------Reference implementation (copy this skeleton; only edit the 3 marked lines)------\n"
+    "The single most common failure is rewriting the (datetime, instrument) MultiIndex.\n"
+    "Use groupby(level='instrument').transform so the index is preserved intact. Do NOT\n"
+    "reset_index, do NOT split/rebuild instrument strings, do NOT rename index levels.\n"
+    "\n"
+    "Instrument code format: '000001.SZ' / '600000.SH' (6-digit.EXCHANGE). NOT 'SH600000'.\n"
+    "\n"
+    "    import pandas as pd\n"
+    "\n"
+    "    W = 60                                       # EDIT 1: window in {5,10,20,30,60,90,120}\n"
+    '    df = pd.read_hdf("daily_pv.h5", key="data")  # MultiIndex (datetime, instrument)\n'
+    "    # Coerce all columns (some may be float32 or have NaN)\n"
+    "    for c in df.columns:\n"
+    '        df[c] = pd.to_numeric(df[c], errors="coerce")\n'
+    "\n"
+    "    # Forward-fill fundamental columns first (quarterly NaN); keep the MultiIndex.\n"
+    '    x = df["$pe_ttm"].groupby(level="instrument").transform(lambda s: s.ffill())\n'
+    "    med = x.groupby(level=\"instrument\").transform(\n"
+    "        lambda s: s.rolling(W, min_periods=W).median()\n"
+    "    )\n"
+    "    std = x.groupby(level=\"instrument\").transform(\n"
+    "        lambda s: s.rolling(W, min_periods=W).std()\n"
+    "    )\n"
+    '    factor = (x - med) / std.replace(0, float("nan"))  # same MultiIndex, do NOT reset_index\n'
+    "\n"
+    '    out = factor.to_frame("YourFactorName_%dD" % W)  # EDIT 2: factor name\n'
+    '    out.to_hdf("result.h5", key="data", mode="w")    # EDIT 3: nothing else\n'
+    "\n"
+    "7) Factor names must encode type and window, e.g. QualPersist_60D, ValueMR_60D,\n"
+    "   MarginTrend_20D, EarnRev_4Q, LowVolQual_20D, ResidMom_60D, LiqStab_20D.\n"
+)

@@ -33,6 +33,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _RAG_DB_DIR = Path(__file__).resolve().parents[1] / "rag_db" / "academic_factors"
+# Additional directories loaded in priority order (academic first, then certified)
+_RAG_DB_EXTRA_DIRS: list[Path] = [
+    Path(__file__).resolve().parents[1] / "rag_db" / "implemented_factors",
+]
 
 # 每次注入的最大示例数（太多会超出 context window）
 _MAX_EXAMPLES = int(os.environ.get("FACTOR_LAB_RAG_MAX_EXAMPLES", "3"))
@@ -43,8 +47,11 @@ _EXPLORATION_PERIOD = int(os.environ.get("FACTOR_LAB_RAG_EXPLORATION_PERIOD", "3
 
 # ─── 数据结构 ──────────────────────────────────────────────────────────────────
 
+_FORBIDDEN_COLUMNS: frozenset[str] = frozenset({"$roa", "$roa2_yearly", "$factor"})
+
+
 class FactorEntry:
-    __slots__ = ("id", "family", "name", "formula", "columns_used", "expected_ic", "notes")
+    __slots__ = ("id", "family", "name", "formula", "columns_used", "expected_ic", "notes", "pitfalls")
 
     def __init__(self, d: dict[str, Any]) -> None:
         self.id: str = str(d.get("id", ""))
@@ -54,22 +61,83 @@ class FactorEntry:
         self.columns_used: list[str] = [str(c) for c in (d.get("columns_used") or [])]
         self.expected_ic: float = float(d.get("expected_ic") or 0.0)
         self.notes: str = str(d.get("notes", ""))
+        raw_pitfalls = d.get("pitfalls") or []
+        self.pitfalls: list[str] = [str(p) for p in raw_pitfalls] if isinstance(raw_pitfalls, list) else []
+
+    def has_forbidden_columns(self) -> bool:
+        return any(c in _FORBIDDEN_COLUMNS for c in self.columns_used)
 
     def to_prompt_block(self) -> str:
         cols = ", ".join(self.columns_used)
-        return (
+        lines = [
             f"  [RAG Example: {self.name} | family={self.family} | "
-            f"expected_IC≈{self.expected_ic:.3f}]\n"
-            f"  columns: {cols}\n"
-            f"  formula sketch:\n"
-            + "\n".join(f"    {line}" for line in self.formula.strip().splitlines())
-            + f"\n  notes: {self.notes.strip()}\n"
-        )
+            f"expected_IC≈{self.expected_ic:.3f}]",
+            f"  columns: {cols}",
+            "  formula sketch:",
+        ]
+        for line in self.formula.strip().splitlines():
+            lines.append(f"    {line}")
+        if self.pitfalls:
+            lines.append("  pitfalls (avoid these):")
+            for p in self.pitfalls:
+                lines.append(f"    - {p}")
+        lines.append(f"  notes: {self.notes.strip()}")
+        return "\n".join(lines) + "\n"
+
+    def to_coder_hint(self, max_chars: int = 800) -> str:
+        """Compact hint for the Coder stage: pitfalls + skeleton only."""
+        lines = [
+            f"  [RAG Coder Ref: {self.name} | family={self.family}]",
+            f"  columns used: {', '.join(self.columns_used)}",
+        ]
+        if self.pitfalls:
+            lines.append("  PITFALLS (must avoid):")
+            for p in self.pitfalls:
+                lines.append(f"    ! {p}")
+        lines.append("  formula sketch (adapt, do NOT copy):")
+        for line in self.formula.strip().splitlines()[:10]:
+            lines.append(f"    {line}")
+        result = "\n".join(lines) + "\n"
+        return result[:max_chars]
 
 
 # ─── 加载知识库 ────────────────────────────────────────────────────────────────
 
 _GLOBAL_POOL: list[FactorEntry] | None = None
+
+
+def _load_entries_from_dir(yaml_dir: Path, pool: list[FactorEntry]) -> int:
+    """Load FactorEntry objects from all *.yaml files in yaml_dir into pool.
+
+    Returns the number of entries added.
+    """
+    if not yaml_dir.exists():
+        logger.debug("rag_db dir not found: %s", yaml_dir)
+        return 0
+    try:
+        import yaml
+    except ImportError:
+        return 0
+    added = 0
+    for yaml_file in sorted(yaml_dir.glob("*.yaml")):
+        try:
+            with yaml_file.open("r", encoding="utf-8") as f:
+                doc = yaml.safe_load(f) or {}
+            for entry_dict in doc.get("factors") or []:
+                if isinstance(entry_dict, dict):
+                    entry = FactorEntry(entry_dict)
+                    if entry.has_forbidden_columns():
+                        logger.warning(
+                            "RAG entry %s uses forbidden columns %s — skipping",
+                            entry.id,
+                            [c for c in entry.columns_used if c in _FORBIDDEN_COLUMNS],
+                        )
+                        continue
+                    pool.append(entry)
+                    added += 1
+        except Exception as exc:
+            logger.warning("Failed to load RAG yaml %s: %s", yaml_file, exc)
+    return added
 
 
 def _load_pool() -> list[FactorEntry]:
@@ -78,35 +146,44 @@ def _load_pool() -> list[FactorEntry]:
         return _GLOBAL_POOL
     pool: list[FactorEntry] = []
     try:
-        import yaml
+        import yaml  # noqa: F401 — check availability early
     except ImportError:
         logger.warning("pyyaml not available; RAG retriever disabled")
         _GLOBAL_POOL = pool
         return pool
-    if not _RAG_DB_DIR.exists():
-        logger.debug("rag_db dir not found: %s", _RAG_DB_DIR)
-        _GLOBAL_POOL = pool
-        return pool
-    for yaml_file in _RAG_DB_DIR.glob("*.yaml"):
-        try:
-            with yaml_file.open("r", encoding="utf-8") as f:
-                doc = yaml.safe_load(f) or {}
-            for entry_dict in doc.get("factors") or []:
-                if isinstance(entry_dict, dict):
-                    pool.append(FactorEntry(entry_dict))
-        except Exception as exc:
-            logger.warning("Failed to load RAG yaml %s: %s", yaml_file, exc)
-    logger.info("RAG pool loaded: %d entries from %s", len(pool), _RAG_DB_DIR)
+
+    n_academic = _load_entries_from_dir(_RAG_DB_DIR, pool)
+    n_extra = sum(_load_entries_from_dir(d, pool) for d in _RAG_DB_EXTRA_DIRS)
+    logger.info(
+        "RAG pool loaded: %d entries (academic=%d, extra=%d)",
+        len(pool), n_academic, n_extra,
+    )
     _GLOBAL_POOL = pool
     return pool
 
 
 # ─── 评分 / 检索 ───────────────────────────────────────────────────────────────
 
+def _detect_high_turnover(context_text: str) -> bool:
+    """Return True if context indicates a previous high-turnover regime."""
+    import re
+    text_lower = context_text.lower()
+    # Explicit turnover mention with high value
+    for m in re.finditer(r"turnover[=\s:]*([0-9]+\.?[0-9]*)", text_lower):
+        try:
+            if float(m.group(1)) >= 6.0:
+                return True
+        except ValueError:
+            pass
+    # Key phrases
+    high_turnover_phrases = ["high turnover", "turnover>6", "turnover > 6", "turnover doubled"]
+    return any(p in text_lower for p in high_turnover_phrases)
+
+
 def _score_entry(entry: FactorEntry, context_text: str) -> float:
     """返回 entry 与 context_text 的相关性分数（0-1）。
 
-    当前实现：关键词重叠 + expected_IC 偏好。
+    当前实现：关键词重叠 + expected_IC 偏好 + turnover 条件族权重调整。
     TODO: 替换为 sentence-transformers cosine similarity。
     """
     score = 0.0
@@ -116,7 +193,7 @@ def _score_entry(entry: FactorEntry, context_text: str) -> float:
     # 家族关键词命中
     family_keywords = {
         "value": ["value", "valuation", "pe", "pb", "price-to-earnings", "low-pe", "pb"],
-        "quality": ["quality", "roe", "roa", "earnings", "profit", "revision", "eps"],
+        "quality": ["quality", "roe", "earnings", "profit", "revision", "eps", "profit_to_gr"],
         "momentum": ["momentum", "trend", "return", "residual", "skip", "overnight", "gap"],
         "liquidity": ["liquidity", "turnover", "illiquidity", "amihud", "bid-ask"],
         "smart_money": ["margin", "short", "smart money", "rzye", "rqye", "northbound"],
@@ -134,6 +211,13 @@ def _score_entry(entry: FactorEntry, context_text: str) -> float:
 
     # 高 IC 轻微加分
     score += entry.expected_ic * 2.0
+
+    # 高 turnover 条件：降权 liquidity/momentum 族，加权 value/quality 族
+    if _detect_high_turnover(context_text):
+        if family_lower in ("liquidity", "momentum"):
+            score -= 0.2
+        elif family_lower in ("value", "quality"):
+            score += 0.1
 
     # 随机扰动保证多样性
     score += random.uniform(0, 0.05)
@@ -213,6 +297,28 @@ def retrieve_examples(
     for entry in selected:
         lines.append(entry.to_prompt_block())
     lines.append("======  END RAG EXAMPLES  ======")
+    return "\n".join(lines)
+
+
+def retrieve_coder_hint(hypothesis_text: str, n: int = 1, max_chars: int = 800) -> str:
+    """检索 1 条最相关实现示例作为 Coder 阶段提示（pitfalls + skeleton）。
+
+    刻意限制在 1 条、截断到 max_chars，避免 Coder prompt 过长。
+    """
+    pool = _load_pool()
+    if not pool:
+        return ""
+    scored = sorted(pool, key=lambda e: _score_entry(e, hypothesis_text), reverse=True)
+    selected = scored[:n]
+    if not selected:
+        return ""
+    lines = [
+        "",
+        "======  RAG Coder Reference (adapt structure; do NOT copy verbatim)  ======",
+    ]
+    for entry in selected:
+        lines.append(entry.to_coder_hint(max_chars=max_chars))
+    lines.append("======  END CODER REFERENCE  ======")
     return "\n".join(lines)
 
 

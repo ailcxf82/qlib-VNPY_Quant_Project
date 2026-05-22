@@ -21,6 +21,10 @@ factors:
       factor = -(x - med) / (std + 1e-8)   # 负号：低PE超额收益
     columns_used: [$pe_ttm]
     expected_ic: 0.015
+    pitfalls:
+      - "Must ffill $pe_ttm before rolling — it has quarterly NaN gaps"
+      - "Use transform(lambda s: s.rolling(W).xxx()) NOT groupby().apply() for final column"
+      - "Do NOT reset_index after transform; preserve MultiIndex (datetime, instrument)"
     notes: >
       Barra VALUE 类因子. 均值回归信号. 在 A 股 price-to-earnings 有效性强.
       取负号因为低PE→高未来收益.
@@ -62,21 +66,29 @@ factors:
       factor = roe - roe.groupby(level="instrument").transform(lambda s: s.shift(60))
     columns_used: [$roe]
     expected_ic: 0.014
+    pitfalls:
+      - "Must ffill $roe before shift/rolling — quarterly NaN"
+      - "Do NOT use $roa (all-NaN, forbidden)"
+      - "Instrument code is '000001.SZ', NOT 'SH600000' — never rewrite instrument index"
     notes: >
       ROE 环比变化. 捕捉盈利改善方向. 与 ROE 水平因子正交.
       在 A 股季报发布密集期效果更强.
 
   - id: qual_002
     family: quality
-    name: ROE_ROA_Spread
+    name: ProfitMargin_Quality_60D
     formula: |
-      roe = df["$roe"].groupby(level="instrument").transform(lambda s: s.ffill())
-      roa = df["$roa"].groupby(level="instrument").transform(lambda s: s.ffill())
-      factor = roa - (roa * roe / (roe + 1e-6))  # ROA / (1 + 负债率代理)
-    columns_used: [$roe, $roa]
-    expected_ic: 0.010
+      mg = df["$profit_to_gr"].groupby(level="instrument").transform(lambda s: s.ffill())
+      mg_mean = mg.groupby(level="instrument").transform(lambda s: s.rolling(60, min_periods=20).mean())
+      factor = mg - mg_mean  # 利润率相对自身均值的偏差：改善方向
+    columns_used: [$profit_to_gr]
+    expected_ic: 0.011
+    pitfalls:
+      - "$roa and $roa2_yearly are NOT available (all-NaN) — do NOT use them"
+      - "Must ffill $profit_to_gr before rolling (quarterly NaN)"
     notes: >
-      财务杠杆质量. ROA-ROE 差越小 → 杠杆使用合理.
+      利润率动量. profit_to_gr 相对 60 日均值偏差, 捕捉盈利质量改善方向.
+      替代原 ROA-ROE spread 公式（$roa 在当前数据源全 NaN 无法使用）.
 
   - id: qual_003
     family: quality
@@ -127,6 +139,10 @@ factors:
       factor = overnight.groupby(level="instrument").transform(lambda s: s.rolling(20).mean())
     columns_used: [$open_qfq, $close_qfq]
     expected_ic: 0.014
+    pitfalls:
+      - "Use $open_qfq and $close_qfq (forward-adjusted), NOT $open/$close (raw)"
+      - "shift(1) inside transform preserves MultiIndex; do NOT reset_index after"
+      - "Result must keep same length as df — do NOT dropna()"
     notes: >
       隔夜跳空信息持续性. 捕捉盘后信息流向. A 股特色: 开盘集合竞价含信息量.
       Alpha158 完全未覆盖此信号.

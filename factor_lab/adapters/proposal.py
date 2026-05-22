@@ -10,8 +10,11 @@ Hypothesis2Experiment 子类：在 CoSTEER 代码生成 prompt 里强行注入�
 from __future__ import annotations
 
 import json
+import logging
 
-from typing import Tuple
+from typing import Any, Tuple
+
+logger = logging.getLogger(__name__)
 
 from rdagent.components.coder.factor_coder.factor import FactorExperiment, FactorTask
 from rdagent.components.coder.model_coder.model import ModelExperiment, ModelTask
@@ -159,6 +162,88 @@ PREFER proposing from ★★★ families above. Every proposal should state whic
 """
 
 
+def _build_rag_query_from_trace(trace: Any, fallback: str = "") -> str:
+    """Extract a focused retrieval query from recent trace history.
+
+    Uses last 3 hypothesis descriptions + SOTA metrics (especially turnover)
+    so the RAG retriever can select examples relevant to the *current situation*
+    rather than the empty static constitution text.
+    """
+    hist = getattr(trace, "hist", None) or []
+    parts: list[str] = []
+    for exp, _ in reversed(hist[-3:]):
+        hyp = getattr(exp, "hypothesis", None)
+        desc = str(getattr(hyp, "hypothesis", "") or "")[:150].strip()
+        if desc:
+            parts.append(desc)
+        res = getattr(exp, "result", None)
+        if hasattr(res, "get"):
+            turnover = res.get("1day.excess_return_with_cost.annualized_turnover")
+            if turnover is not None:
+                try:
+                    parts.append(f"prev_turnover={float(turnover):.2f}")
+                except (TypeError, ValueError):
+                    pass
+            composite = res.get("1day.composite_score")
+            if composite is not None:
+                try:
+                    parts.append(f"prev_composite={float(composite):.3f}")
+                except (TypeError, ValueError):
+                    pass
+    if parts:
+        return " | ".join(parts)
+    return fallback[:300]
+
+
+def _enrich_factor_hypothesis_rag(ctx: dict[str, Any], trace: Trace) -> None:
+    """Append project guidance into ``ctx['RAG']`` for hypothesis-generation LLM.
+
+    ``LLMHypothesisGen.gen()`` reads ``context_dict['RAG']`` in the *user* prompt only;
+    it builds *system* ``scenario`` from ``scen.get_scenario_all_desc()``. Writing to
+    ``ctx['scenario']`` therefore has no effect — this was the original wiring bug.
+    """
+    from factor_lab.adapters.quant_proposal import (
+        _infer_retrieval_query_with_source,
+        compose_project_rag,
+    )
+
+    base_rag = str(ctx.get("RAG") or "")
+    retrieval_query: str | None = None
+    try:
+        retrieval_query, _ = _infer_retrieval_query_with_source(trace=trace, ctx=ctx)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("factor hypothesis retrieval_query inference failed: %s", exc)
+
+    try:
+        rag_text = compose_project_rag(base_rag, retrieval_query=retrieval_query)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("compose_project_rag failed, keeping upstream RAG: %s", exc)
+        rag_text = base_rag
+
+    rag_text = rag_text.rstrip() + "\n\n" + _ALPHA158_AVOIDANCE_HINT.strip()
+
+    try:
+        from factor_lab.adapters.rag_retriever import (
+            get_existing_family_counts,
+            retrieve_examples,
+        )
+
+        trace_len = len(getattr(trace, "hist", None) or [])
+        family_counts = get_existing_family_counts()
+        rag_query = _build_rag_query_from_trace(trace, fallback=rag_text[:300])
+        rag_block = retrieve_examples(
+            hypothesis_text=rag_query,
+            trace_length=trace_len,
+            existing_families=list(family_counts.keys()),
+        )
+        if rag_block:
+            rag_text = rag_text.rstrip() + "\n\n" + rag_block.strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("retrieve_examples failed, skipping academic RAG block: %s", exc)
+
+    ctx["RAG"] = rag_text
+
+
 class ProjectQlibFactorHypothesisGen(QlibFactorHypothesisGen):
     """Patch point for ``FactorRDLoop`` (pure factor loop).
 
@@ -170,37 +255,16 @@ class ProjectQlibFactorHypothesisGen(QlibFactorHypothesisGen):
     1. ``_reindex_trace_results``  — pads missing metric keys to avoid Jinja crash.
     2. ``_strip_code_rules_from_history`` — trims CODE RULES boilerplate from
        historical factor descriptions to prevent prompt size explosion.
-    3. Injects Alpha158 / diversity avoidance hint into SCENARIO.
-    4. Phase-3: Injects RAG academic factor examples (keyword-matched).
+    3. Injects static constitution + diversity policy + academic examples into ``RAG``
+       (the field ``LLMHypothesisGen.gen()`` passes to the user prompt).
     """
 
     def prepare_context(self, trace: Trace) -> Tuple[dict, bool]:
         _reindex_trace_results(trace)
         _strip_code_rules_from_history(trace)
         ctx, ok = super().prepare_context(trace)
-        if isinstance(ctx, dict):
-            scenario = str(ctx.get("scenario", ""))
-            scenario += _ALPHA158_AVOIDANCE_HINT
-
-            # Phase-3: RAG academic factor examples
-            try:
-                from factor_lab.adapters.rag_retriever import (
-                    retrieve_examples,
-                    get_existing_family_counts,
-                )
-                trace_len = len(getattr(trace, "hist", None) or [])
-                family_counts = get_existing_family_counts()
-                rag_block = retrieve_examples(
-                    hypothesis_text=scenario,
-                    trace_length=trace_len,
-                    existing_families=list(family_counts.keys()),
-                )
-                if rag_block:
-                    scenario += rag_block
-            except Exception as _rag_exc:  # noqa: BLE001
-                pass  # RAG failure must not break the loop
-
-            ctx["scenario"] = scenario
+        if ok and isinstance(ctx, dict):
+            _enrich_factor_hypothesis_rag(ctx, trace)
         return ctx, ok
 
 
@@ -318,9 +382,20 @@ High-value targets NOT yet covered by Alpha158:
         ctx, ok = super().prepare_context(hypothesis, trace)
         if isinstance(ctx, dict):
             scenario = str(ctx.get("scenario", ""))
-            ctx["scenario"] = (
-                scenario + "\n" + self._STRICT_FACTOR_IO_RULES + "\n" + self._FORMULA_IMPLEMENTATION_RULES
-            )
+            scenario = scenario + "\n" + self._STRICT_FACTOR_IO_RULES + "\n" + self._FORMULA_IMPLEMENTATION_RULES
+
+            # Phase-3 Coder RAG: inject 1 matching example (pitfalls + skeleton)
+            # to help Coder avoid common column/index errors.
+            try:
+                from factor_lab.adapters.rag_retriever import retrieve_coder_hint
+                hyp_text = str(getattr(hypothesis, "hypothesis", "") or "")[:300]
+                coder_hint = retrieve_coder_hint(hyp_text, n=1, max_chars=800)
+                if coder_hint:
+                    scenario += coder_hint
+            except Exception:  # noqa: BLE001
+                pass  # Coder RAG failure must not break the loop
+
+            ctx["scenario"] = scenario
         return ctx, ok
 
     _CODER_RULES = (

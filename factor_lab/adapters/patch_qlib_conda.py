@@ -778,6 +778,52 @@ def _patch_cap_n_epochs() -> None:
         pass
 
 
+def _patch_process_factor_data_prescreen() -> None:
+    """Filter new factor columns after process_factor_data, before parquet+qrun."""
+    try:
+        import rdagent.scenarios.qlib.developer.factor_runner as fr_mod
+        import rdagent.scenarios.qlib.developer.utils as utils_mod
+        from rdagent.core.exception import FactorEmptyError
+
+        from factor_lab.adapters.pre_screener import (
+            filter_new_factors_panel,
+            finish_experiment_all_prescreen_rejected,
+        )
+
+        if not getattr(utils_mod.process_factor_data, "__factor_lab_prescreen_patched__", False):
+            _orig_process = utils_mod.process_factor_data
+
+            def _process_with_prescreen(exp_or_list):  # type: ignore[no-untyped-def]
+                return filter_new_factors_panel(_orig_process(exp_or_list))
+
+            _process_with_prescreen.__factor_lab_prescreen_patched__ = True  # type: ignore[attr-defined]
+            utils_mod.process_factor_data = _process_with_prescreen  # type: ignore[assignment]
+            fr_mod.process_factor_data = _process_with_prescreen  # type: ignore[assignment]
+
+        if getattr(fr_mod.QlibFactorRunner.develop, "__factor_lab_prescreen_develop_patched__", False):
+            return
+
+        _orig_develop = fr_mod.QlibFactorRunner.develop
+
+        def _develop_with_prescreen(self: Any, exp: Any) -> Any:  # type: ignore[no-untyped-def]
+            try:
+                return _orig_develop(self, exp)
+            except FactorEmptyError as exc:
+                if (
+                    os.environ.get("FACTOR_LAB_PRESCREENER_ENABLED", "").strip()
+                    and "pre_screen" in str(exc).lower()
+                ):
+                    return finish_experiment_all_prescreen_rejected(exp)
+                raise
+
+        _develop_with_prescreen.__factor_lab_prescreen_develop_patched__ = True  # type: ignore[attr-defined]
+        fr_mod.QlibFactorRunner.develop = _develop_with_prescreen  # type: ignore[method-assign]
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("_patch_process_factor_data_prescreen failed: %s", exc)
+
+
 def apply_qlib_conda_env_patch() -> None:
     """Must run before any import of rdagent.scenarios.qlib.experiment.workspace."""
     # Windows has no select.poll; disable live stream mode in LocalEnv to avoid that code path.
@@ -854,10 +900,13 @@ def apply_qlib_conda_env_patch() -> None:
     _patch_cap_n_epochs()
     # Cap CoSTEER evo loops so coding step stays under ~20 min.
     _patch_costeer_max_loop()
+    # Phase-4: Rank IC filter on merged new factor columns before qrun.
+    _patch_process_factor_data_prescreen()
     # Windows/Linux cross-platform: remap PosixPath in pkl cache → PurePosixPath.
     _patch_pickle_cache_posixpath()
-    # numpy 2.x compat: ret.pkl from WSL uses numpy._core; Windows may have numpy 1.x.
+    # numpy 2.x compat first; prescreen wraps outermost so it runs before qrun.
     _patch_workspace_numpy_pkl_compat()
+    _patch_workspace_prescreener()
 
 
 def _patch_pickle_cache_posixpath() -> None:
@@ -939,6 +988,50 @@ def _patch_qlib_runner_env() -> None:
         ws_mod.QlibCondaConf = env_mod.QlibCondaConf  # type: ignore[attr-defined]
     except Exception:
         pass
+
+
+def _patch_workspace_prescreener() -> None:
+    """Hook pre-screener on QlibFBWorkspace.execute (real qrun entry).
+
+    RD-Agent calls workspace.execute() → check_output(qrun) → check_output(read_exp_res).
+    ProjectQlibFactorExperiment.execute() is never invoked on this path, so the
+    experiments.py hook alone cannot skip qrun.
+    """
+    try:
+        import rdagent.scenarios.qlib.experiment.workspace as ws_mod
+
+        orig_execute = ws_mod.QlibFBWorkspace.execute
+        if getattr(orig_execute, "__factor_lab_prescreen_patched__", False):
+            return
+
+        def _execute_with_prescreen(self, qlib_config_name: str = "conf.yaml", run_env=None, *args, **kwargs):
+            run_env = run_env if run_env is not None else {}
+            try:
+                import sys
+                from pathlib import Path as _Path
+
+                root = str(_Path(__file__).resolve().parents[2])
+                if root not in sys.path:
+                    sys.path.insert(0, root)
+                from factor_lab.adapters.pre_screener import prescreen_workspace_before_qrun
+
+                rejected = prescreen_workspace_before_qrun(self.workspace_path)
+                if rejected is not None:
+                    return rejected
+            except Exception as exc:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "prescreen hook fail-open on %s: %s", self.workspace_path, exc
+                )
+            return orig_execute(self, qlib_config_name=qlib_config_name, run_env=run_env, *args, **kwargs)
+
+        _execute_with_prescreen.__factor_lab_prescreen_patched__ = True  # type: ignore[attr-defined]
+        ws_mod.QlibFBWorkspace.execute = _execute_with_prescreen  # type: ignore[method-assign]
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("_patch_workspace_prescreener failed: %s", exc)
 
 
 def _patch_workspace_numpy_pkl_compat() -> None:

@@ -57,7 +57,7 @@ registry:
   parquet_dir: "factor_registry/parquet"
 
   # 当前 production 因子集版本（写入 parquet/factors_v<N>.parquet）
-  current_parquet_version: 19
+  current_parquet_version: 20
 
   # ---------------------------------------------------------------------------
   # 统一入口：refresh_rdagent_parquet.py 输出 ↔ register_rdagent_factors 输入
