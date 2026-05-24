@@ -6,11 +6,12 @@ market: &market all
 # P3a: keep market=all so RDAgent factor eval uses the full A-share universe
 # (csi500 instrument files may be absent in the rdagent conda Qlib data,
 #  causing "Empty data from dataset" at model fit time).
-benchmark: &benchmark SH000905
+# CSI500 index in D:/qlib_data is 000905.SZ (all.txt), not SH000905
+benchmark: &benchmark 000905.SZ
 
 data_handler_config: &data_handler_config
     start_time: 2022-01-01
-    end_time: 2026-05-12
+    end_time: 2026-05-22
     instruments: *market
     data_loader:
         class: NestedDataLoader
@@ -118,9 +119,9 @@ port_analysis_config: &port_analysis_config
             topk: 50
             n_drop: 5
     backtest:
-        # 数据更新至 2026-04-23，test/backtest 窗口同步推进至 2026-Q1~Q2。
+        # PortAna 需 calendar[end+1]：end_time 比 test 段最后一根交易日早 1 天（由 update_data_window 维护）。
         start_time: 2026-01-01
-        end_time: 2026-05-12
+        end_time: 2026-05-21
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -162,7 +163,7 @@ task:
                 # 数据更新至 2026-04-23，窗口整体后移一年。
                 train: [2022-01-01, 2025-06-30]
                 valid: [2025-07-01, 2025-12-31]
-                test: [2026-01-01, 2026-05-12]
+                test: [2026-01-01, 2026-05-22]
     record:
         - class: SignalRecord
           module_path: qlib.workflow.record_temp
@@ -174,8 +175,9 @@ task:
           kwargs:
             ana_long_short: False
             ann_scaler: 252
-        # PortAnaRecord requires benchmark data which may be unavailable
-        # in the local Qlib data. Removing it prevents the benchmark ValueError
-        # that crashed the process at Loop 1+. read_exp_res.py already handles
-        # missing backtest metrics gracefully: composite = 2.0 * IC_IR when
-        # IR and ann_turnover are NaN.
+        # PortAnaRecord: required for IR + annualized_turnover in composite_score.
+        # Run scripts/lab/check_qlib_benchmark.py before loops (benchmark 000905.SZ).
+        - class: PortAnaRecord
+          module_path: qlib.workflow.record_temp
+          kwargs:
+            config: *port_analysis_config

@@ -149,8 +149,8 @@ information to be valuable. Three layers of restrictions apply:
 [Layer 3] HIGH-PRIORITY GAPS in v19 pool — these families have ZERO or ONE certified factor:
   ★★★ earnings_quality / fundamental revision — ONLY 1 factor (earnings_yield_momentum_5d)
       → Target: ROE acceleration, earnings revision rate, ROE/PE combo, PEG-ratio signal
-  ★★★ industry-relative valuation — ZERO factors
-      → Target: PE zscore within industry (use $sw_l1_code groupby), industry momentum spread
+  ★★★ industry-relative valuation — ZERO factors (BLOCKED until $sw_l1_code in daily_pv.h5)
+      → Until data extension: use slow universe-rank value/quality combos instead
   ★★   long-horizon momentum (W=90/120) — ZERO factors
       → Target: residual momentum (exclude market beta), skip-1-month momentum
   ★★   overnight/after-hours information — ZERO factors (open/prev_close gap, W=20)
@@ -240,6 +240,15 @@ def _enrich_factor_hypothesis_rag(ctx: dict[str, Any], trace: Trace) -> None:
             rag_text = rag_text.rstrip() + "\n\n" + rag_block.strip()
     except Exception as exc:  # noqa: BLE001
         logger.warning("retrieve_examples failed, skipping academic RAG block: %s", exc)
+
+    try:
+        from factor_lab.adapters.rag_retriever import load_failed_pattern_warnings
+
+        avoid_block = load_failed_pattern_warnings()
+        if avoid_block:
+            rag_text = rag_text.rstrip() + "\n\n" + avoid_block.strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("load_failed_pattern_warnings failed: %s", exc)
 
     ctx["RAG"] = rag_text
 

@@ -285,8 +285,8 @@ _FALLBACK_CONSTITUTION_TEXT = (
     "------Project factor hypothesis constraints (mandatory)------\n"
     "1) Propose at most 2 new factors per hypothesis when trace length < 8; at most 3 afterward.\n"
     "2) Each factor MUST use a single integer window W chosen from {5, 10, 20, 30, 60, 90, 120} (state W explicitly).\n"
-    '3) Allowed primitives: pct_change, shift, rolling(W).mean/std/sum/min/max/corr/skew/kurt, rank, clip, groupby(level="instrument").transform, groupby("$sw_l1_code").transform.\n'
-    '4) FORBIDDEN: nested rolling correlations across many series, loops, "10 pairs" patterns, groupby(...).apply(...) for final output column (use transform instead).\n'
+    "3) Allowed primitives: pct_change, shift, rolling(W).mean/std/sum/min/max/corr/skew/kurt, rank, clip, groupby(level=\"instrument\").transform.\n"
+    "4) FORBIDDEN: nested rolling correlations across many series, loops, \"10 pairs\" patterns, groupby(...).apply(...) for final output column (use transform instead).\n"
     "5) Available columns in daily_pv.h5 (use EXACTLY these names, no others):\n"
     "   Price/raw:    $close, $open, $high, $low\n"
     "   Price/fwd-adj:$close_qfq, $open_qfq, $high_qfq, $low_qfq\n"
@@ -301,6 +301,7 @@ _FALLBACK_CONSTITUTION_TEXT = (
     "         Always: df['$col'] = df['$col'].groupby(level='instrument').transform(lambda s: s.ffill())\n"
     "   NOTE: MoneyFlow columns ($net_amount/$buy_*_amount) may have NaN for stocks with no institutional data.\n"
     "   NOTE: $roa and $roa2_yearly are NOT available (all-NaN in data source) \u2014 do NOT use them.\n"
+    "   NOTE: $sw_l1_code / industry groupby is NOT in daily_pv.h5 v2 \u2014 use universe rank only until data extension.\n"
     "   NOTE: Instrument code format is '000001.SZ' / '600000.SH' / '430047.BJ'\n"
     "         (6-digit code + dot + exchange suffix, case-insensitive).\n"
     "         DO NOT rewrite to 'SH600000' prefix format.\n"
@@ -352,7 +353,7 @@ _FALLBACK_CONSTITUTION_TEXT = (
     "       lagged / smoothed transformations.\n"
     "\n"
     "------Encouraged factor families (HIGH composite-score expectation)------\n"
-    "   (a) Quality persistence: rolling_mean($roe, W=60) ranked vs sector (use $sw_l1_code groupby if available; else universe rank)\n"
+    "   (a) Quality persistence: rolling_mean($roe, W=60) universe rank (industry rank requires $sw_l1_code \u2014 not in daily_pv yet)\n"
     "   (b) Valuation mean-reversion (slow, W=60/90): zscore of $pe_ttm within rolling window \u2014 captures reversion to instrument's own mean\n"
     "   (d) Earnings revision strength (W=20/60): $q_profit_yoy minus its rolling median over 4 quarters (shift(60)) \u2014 earnings surprise\n"
     "   (e) Fundamental quality combo: rank($roe) \u00d7 (1 - rank(rolling_std($close_qfq.pct_change(), 20))) \u2014 low-volatility quality\n"
@@ -371,8 +372,7 @@ _FALLBACK_CONSTITUTION_TEXT = (
     "   (x) Short-cycle volume-price reversals on W in {5, 10} \u2014 already failed in multiple loops\n"
     "   (y) Same-day volume spike + price reversal patterns \u2014 extremely high turnover\n"
     "   (z) Anything that ranks the universe with >50% weekly turnover\n"
-    "   (w) Factors that merely replicate Alpha158 signals (RESI5, WVMA5, CORR5/10/20, ROC60, KLEN, KLOW, VSTD5, STD5)"
-    "   [penalty=-1; soft \u2014 new attempts allowed only with explicit justification of how this proposal differs]\n"
+    "   (w) Factors that merely replicate Alpha158 signals (RESI5, WVMA5, CORR5/10/20, ROC60, KLEN, KLOW, VSTD5, STD5)   [penalty=-1; soft \u2014 new attempts allowed only with explicit justification of how this proposal differs]\n"
     "\n"
     "------Reference implementation (copy this skeleton; only edit the 3 marked lines)------\n"
     "The single most common failure is rewriting the (datetime, instrument) MultiIndex.\n"
@@ -384,23 +384,23 @@ _FALLBACK_CONSTITUTION_TEXT = (
     "    import pandas as pd\n"
     "\n"
     "    W = 60                                       # EDIT 1: window in {5,10,20,30,60,90,120}\n"
-    '    df = pd.read_hdf("daily_pv.h5", key="data")  # MultiIndex (datetime, instrument)\n'
+    "    df = pd.read_hdf(\"daily_pv.h5\", key=\"data\")  # MultiIndex (datetime, instrument)\n"
     "    # Coerce all columns (some may be float32 or have NaN)\n"
     "    for c in df.columns:\n"
-    '        df[c] = pd.to_numeric(df[c], errors="coerce")\n'
+    "        df[c] = pd.to_numeric(df[c], errors=\"coerce\")\n"
     "\n"
     "    # Forward-fill fundamental columns first (quarterly NaN); keep the MultiIndex.\n"
-    '    x = df["$pe_ttm"].groupby(level="instrument").transform(lambda s: s.ffill())\n'
+    "    x = df[\"$pe_ttm\"].groupby(level=\"instrument\").transform(lambda s: s.ffill())\n"
     "    med = x.groupby(level=\"instrument\").transform(\n"
     "        lambda s: s.rolling(W, min_periods=W).median()\n"
     "    )\n"
     "    std = x.groupby(level=\"instrument\").transform(\n"
     "        lambda s: s.rolling(W, min_periods=W).std()\n"
     "    )\n"
-    '    factor = (x - med) / std.replace(0, float("nan"))  # same MultiIndex, do NOT reset_index\n'
+    "    factor = (x - med) / std.replace(0, float(\"nan\"))  # same MultiIndex, do NOT reset_index\n"
     "\n"
-    '    out = factor.to_frame("YourFactorName_%dD" % W)  # EDIT 2: factor name\n'
-    '    out.to_hdf("result.h5", key="data", mode="w")    # EDIT 3: nothing else\n'
+    "    out = factor.to_frame(\"YourFactorName_%dD\" % W)  # EDIT 2: factor name\n"
+    "    out.to_hdf(\"result.h5\", key=\"data\", mode=\"w\")    # EDIT 3: nothing else\n"
     "\n"
     "7) Factor names must encode type and window, e.g. QualPersist_60D, ValueMR_60D,\n"
     "   MarginTrend_20D, EarnRev_4Q, LowVolQual_20D, ResidMom_60D, LiqStab_20D.\n"

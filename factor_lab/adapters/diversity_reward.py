@@ -174,3 +174,84 @@ def compute_diversity_bonus(
     except Exception as exc:
         logger.warning("compute_diversity_bonus failed: %s", exc)
         return 0.0
+
+
+def _normalize_parquet_columns(df: "pd.DataFrame") -> "pd.DataFrame":  # type: ignore[name-defined]
+    """Flatten MultiIndex columns to plain names if needed."""
+    import pandas as pd
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.copy()
+        df.columns = [
+            str(c[-1]) if isinstance(c, tuple) else str(c) for c in df.columns
+        ]
+    return df
+
+
+def compute_diversity_bonus_from_workspace(
+    workspace_dir: Union[str, "Path"],
+    certified_parquet: Union[str, "Path"],
+    weight: float | None = None,
+) -> float:
+    """Score diversity using workspace ``combined_factors_df.parquet`` vs certified pool.
+
+    New factor columns = workspace columns not present in the certified parquet.
+    Uses max bonus across new columns (most conservative vs pool orthogonality).
+    """
+    if weight is None:
+        weight = _load_env_weight()
+    if weight <= 0:
+        return 0.0
+
+    try:
+        import pandas as pd
+
+        ws_path = Path(workspace_dir) / "combined_factors_df.parquet"
+        pool_path = Path(certified_parquet)
+
+        if not ws_path.exists():
+            logger.debug("combined_factors_df.parquet not found: %s", ws_path)
+            return 0.0
+        if not pool_path.exists():
+            logger.debug("certified_parquet not found, diversity_bonus=max: %s", pool_path)
+            return weight
+
+        ws_df = _normalize_parquet_columns(pd.read_parquet(ws_path))
+        pool_df = _normalize_parquet_columns(pd.read_parquet(pool_path))
+
+        if ws_df.empty:
+            return 0.0
+
+        pool_cols = {str(c) for c in pool_df.columns}
+        new_cols = [str(c) for c in ws_df.columns if str(c) not in pool_cols]
+        if not new_cols:
+            new_cols = [str(c) for c in ws_df.columns]
+
+        if pool_df.empty:
+            return weight
+
+        best_bonus = 0.0
+        worst_corr = 0.0
+        for col in new_cols:
+            try:
+                series = ws_df[col]
+                max_corr = max_spearman_with_pool(series, pool_df)
+                bonus = weight * (1.0 - max_corr)
+                if bonus > best_bonus:
+                    best_bonus = bonus
+                    worst_corr = max_corr
+            except Exception:
+                continue
+
+        logger.info(
+            "diversity_bonus=%.4f (max_spearman=%.3f, n_new_cols=%d, weight=%.2f)",
+            best_bonus,
+            worst_corr,
+            len(new_cols),
+            weight,
+        )
+        return float(best_bonus)
+
+    except Exception as exc:
+        logger.warning("compute_diversity_bonus_from_workspace failed: %s", exc)
+        return 0.0

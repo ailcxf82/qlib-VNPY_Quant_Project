@@ -239,6 +239,53 @@ def _avoid_duplicates_with_existing(
     return sorted(entries, key=sort_key, reverse=True)
 
 
+# ─── 负向模式库（failed_patterns）────────────────────────────────────────────
+
+_FAILED_PATTERNS_YAML = (
+    Path(__file__).resolve().parents[1] / "rag_db" / "failed_patterns" / "loop_patterns.yaml"
+)
+
+
+def load_failed_pattern_warnings() -> str:
+    """Load hard/soft failure patterns from loop_patterns.yaml for hypothesis RAG."""
+    path = _FAILED_PATTERNS_YAML
+    if not path.exists():
+        return ""
+    try:
+        import yaml
+    except ImportError:
+        return ""
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as exc:
+        logger.warning("Failed to load failed patterns %s: %s", path, exc)
+        return ""
+
+    warnings = data.get("warnings") or []
+    if not warnings:
+        return ""
+
+    lines = [
+        "",
+        "======  AVOID patterns (known failures — do NOT repeat)  ======",
+        "These patterns failed in prior loops or v19 audit. Hard = do not propose.",
+    ]
+    for w in warnings:
+        if not isinstance(w, dict):
+            continue
+        wid = w.get("id", "")
+        level = w.get("warning_level", "soft")
+        family = w.get("family", "")
+        desc = str(w.get("description", "")).strip().replace("\n", " ")
+        if not desc:
+            continue
+        lines.append(f"  [{level.upper()}] {wid} ({family}): {desc[:400]}")
+    lines.append("======  END AVOID patterns  ======")
+    return "\n".join(lines)
+
+
 # ─── 公开 API ─────────────────────────────────────────────────────────────────
 
 def retrieve_examples(

@@ -41,7 +41,7 @@ _DEFAULT_DAILY_PV = _PROJECT_ROOT / "git_ignore_folder" / "factor_implementation
 _FALLBACK_DAILY_PV = _PROJECT_ROOT / "git_ignore_folder" / "daily_pv.h5"
 
 # 最低 Rank IC 阈值（可通过环境变量调整）
-_DEFAULT_MIN_RANK_IC = 0.005
+_DEFAULT_MIN_RANK_IC = 0.015
 _DEFAULT_LOOKBACK_DAYS = 252
 
 
@@ -94,7 +94,7 @@ def _load_label_series(daily_pv_path: Path, lookback: int = 252) -> "pd.Series |
         close_col = "$close_qfq" if "$close_qfq" in df.columns else "$close"
         close = pd.to_numeric(df[close_col], errors="coerce")
         label = close.groupby(level="instrument").transform(
-            lambda s: s.pct_change().shift(-1)  # forward 1-day return
+            lambda s: s.ffill().pct_change(fill_method=None).shift(-1)
         )
         return label.dropna()
     except Exception as exc:

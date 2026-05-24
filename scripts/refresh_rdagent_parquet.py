@@ -56,6 +56,24 @@ def _default_refresh_window() -> tuple[str, str]:
 
 PROVIDER_URI = "D:/qlib_data/qlib_data"
 GIT_IGNORE = _ROOT / "git_ignore_folder"
+
+
+def _resolve_provider_uri() -> str:
+    """WSL 下使用 /mnt/d/...；Windows 下可用 D:/...；优先 QLIB_PROVIDER_URI。"""
+    import os
+
+    candidates = [
+        os.environ.get("QLIB_PROVIDER_URI", "").strip(),
+        PROVIDER_URI,
+        "/mnt/d/qlib_data/qlib_data",
+    ]
+    for uri in candidates:
+        if not uri:
+            continue
+        p = Path(uri)
+        if p.is_dir():
+            return str(p.resolve())
+    return PROVIDER_URI
 WS_ROOT = GIT_IGNORE / "RD-Agent_workspace"
 
 
@@ -112,7 +130,9 @@ def build_in_memory_daily_pv(start: str, end: str, instruments: str) -> pd.DataF
     from qlib.config import REG_CN
     from qlib.data import D
 
-    qlib.init(provider_uri=PROVIDER_URI, region=REG_CN)
+    provider = _resolve_provider_uri()
+    logger.info("qlib provider_uri=%s", provider)
+    qlib.init(provider_uri=provider, region=REG_CN)
 
     rd_fields = list(FIELD_MAP.keys())
     q_fields = list(FIELD_MAP.values())

@@ -30,7 +30,7 @@ allowed_primitives:
   - rank
   - clip
   - groupby(level="instrument").transform
-  - groupby("$sw_l1_code").transform  # 行业内中性化排名
+  # NOTE: groupby("$sw_l1_code") is NOT allowed until $sw_l1_code is added to daily_pv.h5
 
 forbidden_patterns:
   - nested rolling correlations across many series
@@ -56,6 +56,7 @@ columns_nan_note: |-
         Always: df['$col'] = df['$col'].groupby(level='instrument').transform(lambda s: s.ffill())
   NOTE: MoneyFlow columns ($net_amount/$buy_*_amount) may have NaN for stocks with no institutional data.
   NOTE: $roa and $roa2_yearly are NOT available (all-NaN in data source) — do NOT use them.
+  NOTE: $sw_l1_code / industry groupby is NOT in daily_pv.h5 v2 — use universe rank only until data extension.
   NOTE: Instrument code format is '000001.SZ' / '600000.SH' / '430047.BJ'
         (6-digit code + dot + exchange suffix, case-insensitive).
         DO NOT rewrite to 'SH600000' prefix format.
@@ -113,7 +114,7 @@ orthogonality_rules:
 encouraged_families:
   # ── 基本面 / 财务质量 ───────────────────────────────────────────────────────
   - id: a
-    text: "Quality persistence: rolling_mean($roe, W=60) ranked vs sector (use $sw_l1_code groupby if available; else universe rank)"
+    text: "Quality persistence: rolling_mean($roe, W=60) universe rank (industry rank requires $sw_l1_code — not in daily_pv yet)"
   - id: b
     text: "Valuation mean-reversion (slow, W=60/90): zscore of $pe_ttm within rolling window — captures reversion to instrument's own mean"
   - id: d

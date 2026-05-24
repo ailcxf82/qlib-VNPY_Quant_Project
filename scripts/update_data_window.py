@@ -22,11 +22,14 @@
     train_end  = valid_start - 1 天               （如 2025-06-30）
     fit_end    = train_end（标准化器拟合截止，与训练集对齐）
     train_start= 2022-01-01（固定，历史数据起点）
+    test_end    = 不晚于 data_end 的最后一根 Qlib 交易日
+    backtest_end= test_end 的前一交易日（PortAna 最后一步需要 calendar[i+1]）
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from datetime import date, timedelta
@@ -47,6 +50,7 @@ TARGET_FILES = [
 ]
 
 TRAIN_START = date(2022, 1, 1)
+DEFAULT_PROVIDER_URI = "/mnt/d/qlib_data/qlib_data"
 
 
 # ── 日期窗口计算 ────────────────────────────────────────────────────────────
@@ -59,13 +63,15 @@ class DateWindow(NamedTuple):
     valid_end: date
     test_start: date
     test_end: date
+    backtest_end: date
 
     def show(self) -> str:
         lines = [
             "  数据窗口  : 2022-01-01 ～ " + fmt(self.data_end),
             "  训练集    : " + fmt(self.train_start) + " ～ " + fmt(self.train_end),
             "  验证集    : " + fmt(self.valid_start) + " ～ " + fmt(self.valid_end),
-            "  测试/回测 : " + fmt(self.test_start)  + " ～ " + fmt(self.test_end),
+            "  测试集    : " + fmt(self.test_start)  + " ～ " + fmt(self.test_end),
+            "  PortAna   : " + fmt(self.test_start)  + " ～ " + fmt(self.backtest_end),
             "  fit_end   : " + fmt(self.fit_end) + "（标准化器拟合截止）",
         ]
         return "\n".join(lines)
@@ -92,27 +98,70 @@ def fmt(d: date) -> str:
     return d.strftime("%Y-%m-%d")
 
 
-def calc_window(data_end: date) -> DateWindow:
-    test_start  = date(data_end.year, 1, 1)
-    valid_end   = test_start - timedelta(days=1)
+def _ts_to_date(ts) -> date:
+    if hasattr(ts, "date"):
+        return ts.date()
+    return date.fromisoformat(str(ts)[:10])
+
+
+def safe_backtest_end_index(start_idx: int, end_idx: int) -> int:
+    """PortAna 最后一步 get_step_time 需要 calendar[end_idx+1]，故回测 inclusive end 至少比 test 少 1 根。"""
+    if end_idx <= start_idx:
+        raise ValueError(
+            f"not enough calendar bars for PortAna: start_idx={start_idx}, end_idx={end_idx}"
+        )
+    return end_idx - 1
+
+
+def resolve_trading_endpoints(
+    test_start: date,
+    data_end: date,
+    provider_uri: str | None = None,
+) -> tuple[date, date]:
+    """Return (test_end, backtest_end) on the Qlib day calendar."""
+    uri = provider_uri or os.environ.get("QLIB_PROVIDER_URI", DEFAULT_PROVIDER_URI)
+    try:
+        import qlib
+        from qlib.config import REG_CN
+        from qlib.data.data import Cal
+
+        qlib.init(provider_uri=uri, region=REG_CN)
+        cal = Cal.calendar(freq="day", future=True)
+        _, _, start_idx, end_idx = Cal.locate_index(
+            str(test_start), str(data_end), freq="day", future=True
+        )
+        safe_backtest_end_index(start_idx, end_idx)
+        return _ts_to_date(cal[end_idx]), _ts_to_date(cal[safe_backtest_end_index(start_idx, end_idx)])
+    except Exception as exc:
+        print(f"[warn] Qlib calendar resolve failed ({exc}); using calendar-day fallback")
+        test_end = data_end
+        backtest_end = data_end - timedelta(days=1)
+        return test_end, backtest_end
+
+
+def calc_window(data_end: date, *, provider_uri: str | None = None) -> DateWindow:
+    test_start = date(data_end.year, 1, 1)
+    valid_end = test_start - timedelta(days=1)
     # valid_start = 6 个月前
     vs_month = valid_end.month - 5           # 12 - 5 = 7 → 7 月
-    vs_year  = valid_end.year
+    vs_year = valid_end.year
     if vs_month <= 0:
         vs_month += 12
-        vs_year  -= 1
+        vs_year -= 1
     valid_start = date(vs_year, vs_month, 1)
-    train_end   = valid_start - timedelta(days=1)
-    fit_end     = train_end
+    train_end = valid_start - timedelta(days=1)
+    fit_end = train_end
+    test_end, backtest_end = resolve_trading_endpoints(test_start, data_end, provider_uri)
     return DateWindow(
-        data_end    = data_end,
-        fit_end     = fit_end,
-        train_start = TRAIN_START,
-        train_end   = train_end,
-        valid_start = valid_start,
-        valid_end   = valid_end,
-        test_start  = test_start,
-        test_end    = data_end,
+        data_end=data_end,
+        fit_end=fit_end,
+        train_start=TRAIN_START,
+        train_end=train_end,
+        valid_start=valid_start,
+        valid_end=valid_end,
+        test_start=test_start,
+        test_end=test_end,
+        backtest_end=backtest_end,
     )
 
 
@@ -123,15 +172,14 @@ def build_replacements(w: DateWindow) -> list[tuple[re.Pattern, str]]:
     _D = r"\d{4}-\d{2}-\d{2}"
 
     rules = [
-        # data_handler end_time
-        (r"(end_time:\s*)(" + _D + r")",          r"\g<1>" + fmt(w.data_end)),
         # fit_end_time
         (r"(fit_end_time:\s*)(" + _D + r")",      r"\g<1>" + fmt(w.fit_end)),
-        # backtest end
-        (r"(backtest:\s*\n(?:.*\n)*?\s*end_time:\s*)(" + _D + r")",
-         r"\g<1>" + fmt(w.test_end)),
+        # PortAna backtest end（8 空格缩进，仅此一处；勿用可变行数正则，易被注释行干扰）
+        (r"(^        end_time:\s*)(" + _D + r")", r"\g<1>" + fmt(w.backtest_end)),
+        # data_handler end_time（4 空格缩进，勿与 backtest 的 end_time 混用同一规则）
+        (r"(^    end_time:\s*)(" + _D + r")",      r"\g<1>" + fmt(w.test_end)),
         # factor_lab.yaml time_window end
-        (r"(end:\s*\"?)(" + _D + r")(\"?)",       r"\g<1>" + fmt(w.data_end) + r"\g<3>"),
+        (r"(end:\s*\"?)(" + _D + r")(\"?)",       r"\g<1>" + fmt(w.test_end) + r"\g<3>"),
         # train / valid / test segments
         (r"(train:\s*\[)(" + _D + r")(,\s*)(" + _D + r")(\])",
          r"\g<1>" + fmt(w.train_start) + r"\g<3>" + fmt(w.train_end) + r"\g<5>"),
@@ -178,9 +226,10 @@ def apply_data_window(
     dry_run: bool = False,
     root: Path = ROOT,
     target_files: Iterable[str] = TARGET_FILES,
+    provider_uri: str | None = None,
 ) -> DataWindowUpdateResult:
     """Apply the derived data window to all configured target files."""
-    w = calc_window(data_end)
+    w = calc_window(data_end, provider_uri=provider_uri)
     results: list[FileUpdateResult] = []
     for rel in target_files:
         path = root / rel
@@ -230,7 +279,8 @@ def auto_detect_data_end() -> date:
         import qlib
         from qlib.data import D
 
-        qlib.init(provider_uri="/mnt/d/qlib_data/qlib_data", region="cn")
+        uri = os.environ.get("QLIB_PROVIDER_URI", DEFAULT_PROVIDER_URI)
+        qlib.init(provider_uri=uri, region="cn")
         cal = D.calendar(freq="day")
         if len(cal) == 0:
             raise RuntimeError("日历为空")

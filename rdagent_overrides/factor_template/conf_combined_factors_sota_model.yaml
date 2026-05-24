@@ -3,11 +3,11 @@
     region: cn
 
 market: &market all
-benchmark: &benchmark SH000905
+benchmark: &benchmark 000905.SZ
 
 data_handler_config: &data_handler_config
     start_time: 2022-01-01
-    end_time: 2026-05-12
+    end_time: 2026-05-22
     instruments: *market
     data_loader:
         class: NestedDataLoader
@@ -62,7 +62,7 @@ port_analysis_config: &port_analysis_config
             n_drop: 5
     backtest:
         start_time: 2026-01-01
-        end_time: 2026-05-12
+        end_time: 2026-05-21
         account: 100000000
         benchmark: *benchmark
         exchange_kwargs:
@@ -101,7 +101,7 @@ task:
             segments:
                 train: [2022-01-01, 2025-06-30]
                 valid: [2025-07-01, 2025-12-31]
-                test: [2026-01-01, 2026-05-12]
+                test: [2026-01-01, 2026-05-22]
             {% if step_len %}step_len: {{ step_len }}{% endif %}
     record: 
         - class: SignalRecord

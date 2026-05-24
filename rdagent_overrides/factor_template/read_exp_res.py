@@ -48,17 +48,24 @@ CERTIFIED_PARQUET = Path(
 )
 
 
-def _compute_diversity_bonus(result_h5_path: Path) -> float:
-    """Attempt to load factor_lab.adapters.diversity_reward from the project root.
-    Falls back gracefully to 0.0 if unavailable (e.g., inside WSL without project on PYTHONPATH).
-    """
+def _compute_diversity_bonus(workspace_dir: Path) -> float:
+    """Diversity bonus from workspace parquet (primary) or result.h5 (fallback)."""
     try:
-        # Ensure project root is on sys.path so factor_lab is importable inside WSL
         project_root = str(Path(__file__).resolve().parents[3])
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
-        from factor_lab.adapters.diversity_reward import compute_diversity_bonus
-        return compute_diversity_bonus(result_h5_path, CERTIFIED_PARQUET)
+        from factor_lab.adapters.diversity_reward import (
+            compute_diversity_bonus,
+            compute_diversity_bonus_from_workspace,
+        )
+
+        parquet_path = workspace_dir / "combined_factors_df.parquet"
+        if parquet_path.exists():
+            return compute_diversity_bonus_from_workspace(workspace_dir, CERTIFIED_PARQUET)
+
+        result_h5 = workspace_dir / "result.h5"
+        if result_h5.exists():
+            return compute_diversity_bonus(result_h5, CERTIFIED_PARQUET)
     except ImportError:
         pass
     except Exception as exc:
@@ -174,8 +181,7 @@ def main() -> None:
     composite = _composite_score(info_ratio, ic_ir, ann_turnover)
 
     # Phase-2: diversity bonus — rewards orthogonality to existing certified pool
-    result_h5 = Path("result.h5")  # produced by the factor.py in cwd
-    diversity_bonus = _compute_diversity_bonus(result_h5)
+    diversity_bonus = _compute_diversity_bonus(OUT_DIR)
     enhanced_score = (composite + diversity_bonus) if composite == composite else float("nan")
 
     metrics["1day.excess_return_with_cost.information_ratio"] = info_ratio

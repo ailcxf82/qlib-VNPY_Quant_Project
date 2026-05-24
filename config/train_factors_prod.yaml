@@ -21,7 +21,7 @@ qlib_init:
     region: cn
 
 market: &market csi500
-benchmark: &benchmark SH000905
+benchmark: &benchmark 000905.SZ
 
 data_handler_config: &data_handler_config
     start_time: 2022-01-01

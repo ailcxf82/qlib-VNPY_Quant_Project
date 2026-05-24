@@ -2076,13 +2076,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "intraday_return",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_rank_close_open_20",
@@ -2091,13 +2092,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "rank_close_open",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_close_location_20",
@@ -2106,13 +2108,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "close_location",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_log_signed_volume_20",
@@ -2121,13 +2124,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "log_signed_volume",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_close_location_turnover_wt_20",
@@ -2136,13 +2140,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "close_location_turnover_wt",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_ValueMR_20D_20",
@@ -2151,13 +2156,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "ValueMR_20D",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_close_location_ma_5_20",
@@ -2166,13 +2172,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "close_location_ma_5",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_roe_momentum_5d_interaction_20",
@@ -2181,13 +2188,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "roe_momentum_5d_interaction",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_volume_ratio_signal_20",
@@ -2196,13 +2204,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "volume_ratio_signal",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_volume_ratio_20",
@@ -2211,13 +2220,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "volume_ratio",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_volume_ratio_unusual_20",
@@ -2226,13 +2236,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "volume_ratio_unusual",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_raw_volume_ratio_20",
@@ -2241,13 +2252,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "raw_volume_ratio",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_vol_surge_5d_20",
@@ -2256,13 +2268,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "vol_surge_5d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_earnings_yield_momentum_5d_interaction_20",
@@ -2271,13 +2284,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "earnings_yield_momentum_5d_interaction",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_turnover_deviation_20d_20",
@@ -2286,13 +2300,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "turnover_deviation_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_quality_value_momentum_5d_composite_20",
@@ -2301,13 +2316,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "quality_value_momentum_5d_composite",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_volume_zscore_20d_20",
@@ -2316,13 +2332,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "volume_zscore_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_rank_volume_ratio_20",
@@ -2331,13 +2348,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "rank_volume_ratio",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_volume_ratio_rank_20",
@@ -2346,13 +2364,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "volume_ratio_rank",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_winsorized_zscore_volume_ratio_20",
@@ -2361,13 +2380,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "winsorized_zscore_volume_ratio",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_Volume_Surprise_20D_20",
@@ -2376,13 +2396,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "Volume_Surprise_20D",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_turnover_surprise_20_20",
@@ -2391,13 +2412,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "turnover_surprise_20",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_turnover_acceleration_20d_20",
@@ -2406,13 +2428,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "turnover_acceleration_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_turnover_acceleration_5d_20",
@@ -2421,13 +2444,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "turnover_acceleration_5d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_rank_turnover_deviation_20d_20",
@@ -2436,13 +2460,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "rank_turnover_deviation_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_pb_pct_change_20d_20",
@@ -2451,13 +2476,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "pb_pct_change_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_overnight_return_5d_avg_20",
@@ -2466,13 +2492,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "overnight_return_5d_avg",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_ValueMR_60D_20",
@@ -2481,13 +2508,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "ValueMR_60D",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_sma_volume_ratio_10d_20",
@@ -2496,13 +2524,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "sma_volume_ratio_10d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_sma_volume_ratio_5d_20",
@@ -2511,13 +2540,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "sma_volume_ratio_5d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_eps_yield_20",
@@ -2526,13 +2556,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "eps_yield",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_profit_growth_yoy_20",
@@ -2541,13 +2572,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "profit_growth_yoy",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_profit_yoy_20",
@@ -2556,13 +2588,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "profit_yoy",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_q_profit_yoy_20",
@@ -2571,13 +2604,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "q_profit_yoy",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_earnings_growth_smooth_20",
@@ -2586,13 +2620,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "earnings_growth_smooth",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_log_amihud_20d_20",
@@ -2601,13 +2636,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "log_amihud_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_amihud_illiquidity_20d_20",
@@ -2616,13 +2652,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "amihud_illiquidity_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_roe_momentum_60d_20",
@@ -2631,13 +2668,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "roe_momentum_60d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_intraday_range_20",
@@ -2646,13 +2684,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "intraday_range",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_liq_turnover_f_20",
@@ -2661,13 +2700,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "liq_turnover_f",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_turnover_rate_f_20",
@@ -2676,13 +2716,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "turnover_rate_f",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_raw_turnover_rate_f_20",
@@ -2691,13 +2732,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "raw_turnover_rate_f",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_free_float_turnover_20",
@@ -2706,13 +2748,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "free_float_turnover",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_avg_vol_ratio_5d_20",
@@ -2721,13 +2764,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "avg_vol_ratio_5d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_vol_ratio_5d_20d_20",
@@ -2736,13 +2780,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "vol_ratio_5d_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_eps_yield_momentum_20d_20",
@@ -2751,13 +2796,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "eps_yield_momentum_20d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_Turnover_Acceleration_10D_20",
@@ -2766,13 +2812,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "Turnover_Acceleration_10D",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_turnover_accel_5d_20",
@@ -2781,13 +2828,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "turnover_accel_5d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_rank_pb_roe_20",
@@ -2796,13 +2844,14 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "rank_pb_roe",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
     },
     {
       "factor_id": "rdagent_roe_pb_momentum_divergence_60d_20",
@@ -2811,13 +2860,261 @@
       "workspace_id": "refresh_rdagent_parquet",
       "parquet_column": "roe_pb_momentum_divergence_60d",
       "parquet_version": 20,
-      "status": "active",
+      "status": "retired",
       "registered_at": "2026-05-22T02:16:12Z",
       "icir": null,
       "ic": 0.09614122000000005,
       "date_min": "2020-01-02",
       "date_max": "2026-05-12",
-      "coverage_pct": 98.62
+      "coverage_pct": 98.62,
+      "retired_at": "2026-05-24T01:43:52Z"
+    },
+    {
+      "factor_id": "rdagent_log_signed_volume_21",
+      "factor_name": "log_signed_volume",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "log_signed_volume",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.88
+    },
+    {
+      "factor_id": "rdagent_close_location_21",
+      "factor_name": "close_location",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "close_location",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.88
+    },
+    {
+      "factor_id": "rdagent_rank_close_open_21",
+      "factor_name": "rank_close_open",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "rank_close_open",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.88
+    },
+    {
+      "factor_id": "rdagent_ValueMR_20D_21",
+      "factor_name": "ValueMR_20D",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "ValueMR_20D",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 86.7
+    },
+    {
+      "factor_id": "rdagent_winsorized_zscore_volume_ratio_21",
+      "factor_name": "winsorized_zscore_volume_ratio",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "winsorized_zscore_volume_ratio",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 100.0
+    },
+    {
+      "factor_id": "rdagent_roe_momentum_5d_interaction_21",
+      "factor_name": "roe_momentum_5d_interaction",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "roe_momentum_5d_interaction",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.66
+    },
+    {
+      "factor_id": "rdagent_close_location_ma_5_21",
+      "factor_name": "close_location_ma_5",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "close_location_ma_5",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.51
+    },
+    {
+      "factor_id": "rdagent_turnover_deviation_20d_21",
+      "factor_name": "turnover_deviation_20d",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "turnover_deviation_20d",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 98.12
+    },
+    {
+      "factor_id": "rdagent_earnings_yield_momentum_5d_interaction_21",
+      "factor_name": "earnings_yield_momentum_5d_interaction",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "earnings_yield_momentum_5d_interaction",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 97.55
+    },
+    {
+      "factor_id": "rdagent_turnover_acceleration_5d_21",
+      "factor_name": "turnover_acceleration_5d",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "turnover_acceleration_5d",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.46
+    },
+    {
+      "factor_id": "rdagent_eps_yield_21",
+      "factor_name": "eps_yield",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "eps_yield",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.88
+    },
+    {
+      "factor_id": "rdagent_Turnover_Acceleration_10D_21",
+      "factor_name": "Turnover_Acceleration_10D",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "Turnover_Acceleration_10D",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.04
+    },
+    {
+      "factor_id": "rdagent_amihud_illiquidity_20d_21",
+      "factor_name": "amihud_illiquidity_20d",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "amihud_illiquidity_20d",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 98.06
+    },
+    {
+      "factor_id": "rdagent_sma_volume_ratio_10d_21",
+      "factor_name": "sma_volume_ratio_10d",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "sma_volume_ratio_10d",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 98.97
+    },
+    {
+      "factor_id": "rdagent_overnight_return_5d_avg_21",
+      "factor_name": "overnight_return_5d_avg",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "overnight_return_5d_avg",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.41
+    },
+    {
+      "factor_id": "rdagent_volume_ratio_ma_15d_21",
+      "factor_name": "volume_ratio_ma_15d",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "volume_ratio_ma_15d",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 98.51
+    },
+    {
+      "factor_id": "rdagent_intraday_range_21",
+      "factor_name": "intraday_range",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "intraday_range",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 99.88
+    },
+    {
+      "factor_id": "rdagent_roe_momentum_60d_21",
+      "factor_name": "roe_momentum_60d",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "roe_momentum_60d",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 95.95
+    },
+    {
+      "factor_id": "rdagent_ROEAccel_60D_21",
+      "factor_name": "ROEAccel_60D",
+      "source": "rdagent",
+      "workspace_id": "refreshed_combined_factors",
+      "parquet_column": "ROEAccel_60D",
+      "parquet_version": 21,
+      "status": "active",
+      "registered_at": "2026-05-24T01:43:52Z",
+      "date_min": "2020-01-02",
+      "date_max": "2026-05-22",
+      "coverage_pct": 71.22
     }
   ]
 }

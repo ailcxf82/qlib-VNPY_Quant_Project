@@ -1013,6 +1013,9 @@ def _patch_workspace_prescreener() -> None:
                 root = str(_Path(__file__).resolve().parents[2])
                 if root not in sys.path:
                     sys.path.insert(0, root)
+                from factor_lab.adapters.portana_dates import patch_workspace_portana_dates
+
+                patch_workspace_portana_dates(self.workspace_path)
                 from factor_lab.adapters.pre_screener import prescreen_workspace_before_qrun
 
                 rejected = prescreen_workspace_before_qrun(self.workspace_path)

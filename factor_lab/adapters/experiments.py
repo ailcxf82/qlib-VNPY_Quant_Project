@@ -48,6 +48,13 @@ class ProjectQlibFactorExperiment(QlibFactorExperiment):
     def execute(self, *args, **kwargs):
         """Phase-4 pre-screener (secondary path if workspace patch is bypassed)."""
         ws = getattr(self.experiment_workspace, "workspace_path", None)
+        if ws is not None:
+            try:
+                from factor_lab.adapters.portana_dates import patch_workspace_portana_dates
+
+                patch_workspace_portana_dates(ws)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("PortAna date patch fail-open: %s", exc)
         if ws is not None and os.environ.get("FACTOR_LAB_PRESCREENER_ENABLED"):
             try:
                 from factor_lab.adapters.pre_screener import prescreen_workspace_before_qrun
