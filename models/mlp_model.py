@@ -20,17 +20,23 @@ from utils import load_yaml_config
 logger = logging.getLogger(__name__)
 
 
-def _build_mlp(input_dim: int, hidden_dims: List[int], dropout: float, activation: str) -> nn.Module:
+def _build_mlp(input_dim: int, hidden_dims: List[int], dropout: float, activation: str, use_batch_norm: bool = False) -> nn.Module:
     """根据配置构造 MLP。"""
+    # Swish激活函数：x * sigmoid(x)，PyTorch中SiLU就是swish
     act_cls = {
         "relu": nn.ReLU,
         "gelu": nn.GELU,
         "tanh": nn.Tanh,
+        "swish": nn.SiLU,  # SiLU就是swish激活函数
+        "silu": nn.SiLU,
     }.get(activation.lower(), nn.ReLU)
     layers = []
     prev_dim = input_dim
     for dim in hidden_dims:
         layers.append(nn.Linear(prev_dim, dim))
+        # Batch Normalization：在Linear之后、激活函数之前
+        if use_batch_norm:
+            layers.append(nn.BatchNorm1d(dim))
         layers.append(act_cls())
         if dropout > 0:
             layers.append(nn.Dropout(dropout))
@@ -46,6 +52,7 @@ def _build_mlp_with_embedding(
     hidden_dims: List[int],
     dropout: float,
     activation: str,
+    use_batch_norm: bool = False,
 ) -> nn.Module:
     """
     使用 Embedding 构造 MLP，用于处理稀疏的叶子索引输入。
@@ -58,10 +65,13 @@ def _build_mlp_with_embedding(
         dropout: dropout 率
         activation: 激活函数名称
     """
+    # Swish激活函数：x * sigmoid(x)，PyTorch中SiLU就是swish
     act_cls = {
         "relu": nn.ReLU,
         "gelu": nn.GELU,
         "tanh": nn.Tanh,
+        "swish": nn.SiLU,  # SiLU就是swish激活函数
+        "silu": nn.SiLU,
     }.get(activation.lower(), nn.ReLU)
     
     class MLPWithEmbedding(nn.Module):
@@ -88,6 +98,9 @@ def _build_mlp_with_embedding(
             prev_dim = input_dim
             for dim in hidden_dims:
                 layers.append(nn.Linear(prev_dim, dim))
+                # Batch Normalization：在Linear之后、激活函数之前
+                if use_batch_norm:
+                    layers.append(nn.BatchNorm1d(dim))
                 layers.append(act_cls())
                 if dropout > 0:
                     layers.append(nn.Dropout(dropout))
@@ -157,6 +170,7 @@ class MLPRegressor:
             hidden_dims=self.config.get("hidden_dims", [128, 64]),
             dropout=self.config.get("dropout", 0.1),
             activation=self.config.get("activation", "relu"),
+            use_batch_norm=self.config.get("use_batch_norm", False),
         ).to(self.device)
 
         # 支持自定义损失函数
@@ -256,6 +270,16 @@ class MLPRegressor:
     def predict(self, feat: pd.DataFrame) -> pd.Series:
         if self.model is None:
             raise RuntimeError("MLP 模型尚未训练")
+        
+        # 检查特征数量是否匹配（如果模型已加载，应该有 input_dim）
+        if self._input_dim is not None:
+            actual_dim = feat.shape[1]
+            if actual_dim != self._input_dim:
+                raise ValueError(
+                    f"MLP 模型特征数量不匹配：期望 {self._input_dim}，实际 {actual_dim}。"
+                    f"请确保预测时使用的特征与训练时一致。"
+                )
+        
         self.model.eval()
         with torch.no_grad():
             preds = self.model(torch.tensor(feat.values, dtype=torch.float32).to(self.device)).cpu().numpy().flatten()
@@ -299,6 +323,7 @@ class MLPRegressor:
             hidden_dims=self.config.get("hidden_dims", [128, 64]),
             dropout=self.config.get("dropout", 0.1),
             activation=self.config.get("activation", "relu"),
+            use_batch_norm=self.config.get("use_batch_norm", False),
         ).to(self.device)
         
         # 支持自定义损失函数
@@ -477,6 +502,7 @@ class MLPRegressor:
                 hidden_dims=self.config.get("hidden_dims", [128, 64]),
                 dropout=self.config.get("dropout", 0.1),
                 activation=self.config.get("activation", "relu"),
+                use_batch_norm=self.config.get("use_batch_norm", False),
             ).to(self.device)
         else:
             # 加载普通 MLP 模型
@@ -490,6 +516,7 @@ class MLPRegressor:
                 hidden_dims=self.config.get("hidden_dims", [128, 64]),
                 dropout=self.config.get("dropout", 0.1),
                 activation=self.config.get("activation", "relu"),
+                use_batch_norm=self.config.get("use_batch_norm", False),
             ).to(self.device)
         
         ckpt = torch.load(path, map_location=self.device)

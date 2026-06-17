@@ -8,14 +8,29 @@ model:
   # max_epochs: 50
   # patience: 5
 
-  hidden_dims: [256, 128, 64]   # [修改] 稍微简化网络，强制压缩特征
-  dropout: 0.3                 # 增加 Dropout，提高正则化（从0.3增加到0.4）
-  activation: "relu"
-  batch_size: 2048             # [修改] 增大 Batch Size 稳定梯度
-  lr: 0.0005                   # [修改] 降低学习率
-  weight_decay: 1e-4           # 增加权重衰减，提高正则化（从1e-4增加到5e-4）
-  max_epochs: 100              # [修改] 增加轮数
-  patience: 10                 # [修改] 增加早停耐心
-  predict_batch_size: 4096     # 预测时的批处理大小（避免 GPU 内存溢出，可根据 GPU 内存调整）
-
-
+  # hidden_dims: [128, 64, 32]   # [修改] 稍微简化网络，强制压缩特征
+  # dropout: 0.4                 # 增加 Dropout，提高正则化（从0.3增加到0.4）
+  # activation: "swish"         # 之前是relu
+  # batch_size: 2048             # [修改] 增大 Batch Size 稳定梯度 
+  # lr: 0.0005                   # [修改] 降低学习率
+  # weight_decay: 1e-3           # 增加权重衰减，提高正则化（从1e-4增加到5e-4）
+  # max_epochs: 100              # [修改] 增加轮数
+  # patience: 10                 # [修改] 增加早停耐心
+  # predict_batch_size: 4096     # 预测时的批处理大小（避免 GPU 内存溢出，可根据 GPU 内存调整）
+ 
+ # 结构优化  
+ hidden_dims: [128, 64, 32]   # [建议] 如果特征数<150，尝试更窄的网络，逼迫特征压缩  
+ activation: "swish"          # [重点] 替换 ReLU，保留负值信息，梯度更顺滑  
+ use_batch_norm: true         # [重点] 显式开启 BN，稳定分布，加速训练收敛
+ dropout: 0.4                 # 执行你的注释，甚至第一层可以用 0.5  
+ weight_decay: 1e-3           # [重点] 1e-4太小，加到1e-3强行抑制过拟合    
+ # 训练参数  
+ batch_size: 512              # [重点] 减小 BS，增加梯度噪音，提升泛化能力  
+ lr: 0.001                    # 初始 LR 略大  
+ lr_scheduler: "cosine"       # [建议] 余弦退火调度，从 0.001 降到 1e-6    
+ # 流程控制  
+ max_epochs: 200              # 增加轮数，配合早停  
+ patience: 20                 # [建议] 增加耐心，给模型跳出局部最优的机会  
+ early_stop_metric: "val_loss" # 确保是看验证集    
+ # 预测  
+ predict_batch_size: 4096     # 保持不变，只影响显存

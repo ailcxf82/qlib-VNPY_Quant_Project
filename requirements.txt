@@ -1,0 +1,45 @@
+# =============================================================================
+# qlib-VNPY_Quant_Project — 聚合依赖（与 docs/PIP_DEPENDENCIES.md 同步）
+# 用法：pip install -r requirements.txt
+# =============================================================================
+
+# ----- 数值 / 配置 / 机器学习 -----
+numpy
+pandas
+scipy
+PyYAML
+scikit-learn
+joblib
+lightgbm
+
+# Parquet 与 OOF/缓存（pandas.to_parquet / read_parquet 依赖引擎）
+pyarrow
+
+# ----- 深度学习 -----
+torch
+
+# ----- Microsoft Qlib（务必安装 pyqlib，勿误装 PyPI 上同名 qlib）-----
+pyqlib
+
+# ----- HTTP / API -----
+requests
+flask
+
+# ----- 行情与回测 -----
+akshare
+tushare
+rqalpha
+h5py
+
+# ----- 可选：图表（回测报告出图）-----
+matplotlib
+
+# ----- 可选：监控 LLM 分析（未安装则走降级逻辑）-----
+openai
+
+# ----- 开发 / 测试 -----
+pytest
+
+# ----- RD-Agent：因子/模型联合演化（fin_quant），见 scripts/run_fin_quant.py 与 .env.example -----
+rdagent>=0.8.0
+python-dotenv

@@ -1,0 +1,167 @@
+# ============================================================
+# 生产级因子训练配置 — Windows 原生 Python 运行（无需 WSL）
+# ============================================================
+# 用法（在项目根目录）：
+#   python scripts/train_with_factors.py
+# 或直接用 qrun（需激活 qlib_zhengshi）：
+#   cd git_ignore_folder/RD-Agent_workspace/38418fc744744b9695e592f385e69e3c
+#   qrun D:\quant_project\Qlib_Quant\qlib-VNPY_Quant_Project\config\train_factors_prod.yaml
+#
+# 因子来源：
+#   workspace 38418fc744744b9695e592f385e69e3c
+#   ICIR=5.629  IC=0.4393  Rank ICIR=4.148
+#   8 个 AI 因子，日期覆盖 2020-01-02 → 2025-10-31（97-99%）
+#   factors: price_momentum_10d, price_momentum_20d, volatility_10d,
+#             volatility_20d, volume_momentum_5d, volume_momentum_20d,
+#             avg_turnover_5d, avg_turnover_10d
+# ============================================================
+
+qlib_init:
+    provider_uri: "D:/qlib_data/qlib_data"   # Windows 本地路径
+    region: cn
+
+market: &market csi500
+benchmark: &benchmark 000905.SZ
+
+data_handler_config: &data_handler_config
+    start_time: 2022-01-01
+    end_time: 2026-04-23
+    instruments: *market
+    data_loader:
+        class: NestedDataLoader
+        kwargs:
+            dataloader_l:
+                # ── 基础特征（34 个价量/估值/技术指标） ──────────────────
+                - class: qlib.data.dataset.loader.QlibDataLoader
+                  kwargs:
+                    config:
+                        feature:
+                            - ["$close_qfq/Ref($close_qfq,1)-1",
+                               "$close_qfq/Ref($close_qfq,5)-1",
+                               "$close_qfq/Ref($close_qfq,10)-1",
+                               "$close_qfq/Ref($close_qfq,20)-1",
+                               "Ref($close_qfq,1)/Ref($close_qfq,5)-1",
+                               "Std($close_qfq/Ref($close_qfq,1)-1,5)",
+                               "Std($close_qfq/Ref($close_qfq,1)-1,10)",
+                               "Std($close_qfq/Ref($close_qfq,1)-1,20)",
+                               "$vol/Mean($vol,5)",
+                               "$vol/Mean($vol,10)",
+                               "$vol/Mean($vol,20)",
+                               "($high_qfq-$low_qfq)/$close_qfq",
+                               "Mean(($high_qfq-$low_qfq)/$close_qfq,5)",
+                               "Mean(($high_qfq-$low_qfq)/$close_qfq,10)",
+                               "$turnover_rate",
+                               "$turnover_rate_f",
+                               "$turnover_rate/Mean($turnover_rate,20)-1",
+                               "$volume_ratio",
+                               "$pe_ttm",
+                               "$pb",
+                               "$ps_ttm",
+                               "Log($total_mv)",
+                               "$dv_ratio",
+                               "$roe",
+                               "$roa",
+                               "$q_profit_yoy",
+                               "$q_eps",
+                               "$rsi_qfq_12",
+                               "$macd_qfq",
+                               "$kdj_k_qfq-$kdj_d_qfq",
+                               "$atr_qfq",
+                               "$rzye/$total_mv",
+                               "$rqye/$total_mv"]
+                            - ["RET1","MOM5","MOM10","MOM20","MOM1_5",
+                               "VOL5","VOL10","VOL20",
+                               "VRATIO5","VRATIO10","VRATIO20",
+                               "HLRANGE","HLRANGE5","HLRANGE10",
+                               "TURN","TURN_F","TURN_REL","VOLVOL",
+                               "PE_TTM","PB","PS_TTM","LOG_MV","DV",
+                               "ROE","ROA","PROFIT_YOY","EPS",
+                               "RSI12","MACD","KDJ_DIFF","ATR",
+                               "MARGIN_L","MARGIN_S"]
+                        label:
+                            - ["Ref($close_qfq,-3)/Ref($close_qfq,1)-1"]
+                            - ["LABEL0"]
+                # ── AI 生成因子（8 个，来自 workspace 38418fc7，覆盖 2020-2025） ──
+                # 注意：StaticDataLoader 使用 RELATIVE 路径，须在 workspace 目录运行
+                # 若使用 train_with_factors.py，脚本会自动切换 CWD
+                - class: qlib.data.dataset.loader.StaticDataLoader
+                  kwargs:
+                    config: "combined_factors_df.parquet"
+
+    infer_processors:
+        - class: RobustZScoreNorm
+          kwargs:
+              fields_group: feature
+              clip_outlier: true
+              fit_start_time: 2022-01-01
+              fit_end_time: 2025-06-30
+        - class: Fillna
+          kwargs:
+              fields_group: feature
+
+    learn_processors:
+        - class: DropnaLabel
+        - class: CSRankNorm
+          kwargs:
+              fields_group: label
+
+port_analysis_config: &port_analysis_config
+    strategy:
+        class: TopkDropoutStrategy
+        module_path: qlib.contrib.strategy
+        kwargs:
+            signal: <PRED>
+            topk: 50
+            n_drop: 5
+    backtest:
+        start_time: 2026-01-01
+        end_time: 2026-04-23
+        account: 100000000
+        benchmark: *benchmark
+        exchange_kwargs:
+            limit_threshold: 0.095
+            deal_price: close
+            open_cost: 0.0003
+            close_cost: 0.0013
+            min_cost: 5
+
+task:
+    model:
+        class: LGBModel
+        module_path: qlib.contrib.model.gbdt
+        kwargs:
+            loss: mse
+            colsample_bytree: 0.72
+            learning_rate: 0.05
+            subsample: 0.8
+            lambda_l1: 50.0
+            lambda_l2: 100.0
+            max_depth: 6
+            num_leaves: 63
+            num_threads: 20
+            n_estimators: 500
+            early_stopping_rounds: 50
+            min_child_samples: 50
+    dataset:
+        class: DatasetH
+        module_path: qlib.data.dataset
+        kwargs:
+            handler:
+                class: DataHandlerLP
+                module_path: qlib.contrib.data.handler
+                kwargs: *data_handler_config
+            segments:
+                train: [2022-01-01, 2025-06-30]
+                valid: [2025-07-01, 2025-12-31]
+                test:  [2026-01-01, 2026-04-23]
+    record:
+        - class: SignalRecord
+          module_path: qlib.workflow.record_temp
+          kwargs:
+            model: <MODEL>
+            dataset: <DATASET>
+        - class: SigAnaRecord
+          module_path: qlib.workflow.record_temp
+          kwargs:
+            ana_long_short: False
+            ann_scaler: 252

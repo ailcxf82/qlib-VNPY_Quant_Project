@@ -43,24 +43,49 @@ class ICIRWeightedAverageAdapter:
             valid_label: 验证集标签
         """
         if not valid_preds or valid_label.empty:
-            logger.warning("验证集为空，无法计算 IC-IR 权重，回退为等权")
+            logger.warning(
+                "验证集为空，无法计算 IC-IR 权重，回退为等权（valid_preds=%d, valid_label=%d）",
+                len(valid_preds),
+                len(valid_label),
+            )
             self.weights = {name: 1.0 / len(valid_preds) for name in valid_preds.keys()}
             return
 
         # 计算每个模型在验证集上的 IC
         ic_values = {}
+        debug_info = {}
         for name, pred in valid_preds.items():
             if pred.empty:
+                debug_info[name] = {"reason": "pred_empty", "pred_len": 0}
                 continue
             aligned_pred, aligned_label = pred.align(valid_label, join="inner")
             if aligned_pred.empty:
+                debug_info[name] = {
+                    "reason": "aligned_empty",
+                    "pred_len": len(pred),
+                    "label_len": len(valid_label),
+                }
                 continue
+            # 统计缺失与常量
+            pred_nan = float(aligned_pred.isna().mean())
+            label_nan = float(aligned_label.isna().mean())
+            pred_unique = int(aligned_pred.nunique(dropna=True))
+            label_unique = int(aligned_label.nunique(dropna=True))
             ic = aligned_pred.rank().corr(aligned_label, method="spearman")
+            debug_info[name] = {
+                "aligned_len": len(aligned_pred),
+                "pred_nan_ratio": pred_nan,
+                "label_nan_ratio": label_nan,
+                "pred_unique": pred_unique,
+                "label_unique": label_unique,
+                "ic": float(ic) if not np.isnan(ic) else None,
+            }
             if not np.isnan(ic):
                 ic_values[name] = ic
 
         if not ic_values:
             logger.warning("无法计算任何模型的 IC，回退为等权")
+            logger.warning("IC 诊断信息: %s", debug_info)
             self.weights = {name: 1.0 / len(valid_preds) for name in valid_preds.keys()}
             return
 
@@ -84,7 +109,8 @@ class ICIRWeightedAverageAdapter:
             # 回退为等权
             self.weights = {name: 1.0 / len(valid_preds) for name in valid_preds.keys()}
 
-        logger.info(f"IC-IR 权重: {self.weights}")
+        logger.info("验证集 IC: %s", ic_values)
+        logger.info("IC-IR 权重: %s", self.weights)
 
     def __call__(self, preds: Dict[str, pd.Series]) -> pd.Series:
         """

@@ -68,6 +68,13 @@ class LightGBMModelWrapper:
         valid_feat: Optional[pd.DataFrame] = None,
         valid_label: Optional[pd.Series] = None,
     ):
+        # 记录并打印训练时使用的特征列（便于排查“按模型分配特征集合”是否生效）
+        feat_cols = list(train_feat.columns)
+        logger.info("LGB 训练特征列数=%d，示例=%s", len(feat_cols), feat_cols[:30])
+        # 列数不大时，直接打印完整列表；避免过长时刷屏
+        if len(feat_cols) <= 60:
+            logger.info("LGB 训练特征完整列表=%s", feat_cols)
+
         # 通过 PandasDataset 向 qlib 声明训练/验证时间切片
         segments = {
             "train": (
@@ -97,12 +104,49 @@ class LightGBMModelWrapper:
         logger.info("开始训练 LightGBM，训练样本: %d", len(train_feat))
         self.model.fit(dataset=dataset)
         self.booster = self.model.model
-        self.feature_names = list(train_feat.columns)
+        self.feature_names = feat_cols
 
     def predict(self, feat: pd.DataFrame) -> Tuple[pd.Series, np.ndarray]:
         if self.booster is None:
             raise RuntimeError("模型尚未训练")
-        values = feat.values
+
+        # 空输入短路：LightGBM 在 nrow==0 时会在内部触发 ZeroDivisionError
+        if feat is None or len(feat) == 0:
+            try:
+                n_trees = int(self.booster.num_trees())
+            except Exception:
+                n_trees = 0
+            empty_pred = pd.Series([], index=getattr(feat, "index", None), dtype=float, name="lgb_pred")
+            empty_leaf = np.empty((0, n_trees), dtype=np.int32)
+            return empty_pred, empty_leaf
+        
+        # 确保特征列与训练时一致
+        if self.feature_names is None:
+            # 如果没有保存特征名，尝试从 booster 获取
+            try:
+                self.feature_names = self.booster.feature_name()
+            except:
+                logger.warning("无法获取模型的特征名，使用输入特征列（可能导致特征不匹配）")
+                self.feature_names = list(feat.columns)
+        
+        # 强制按训练时的 feature_names 对齐：多余特征忽略，缺失特征补 0
+        missing_cols = [c for c in self.feature_names if c not in feat.columns]
+        if missing_cols:
+            logger.warning(
+                "预测数据缺失 %d 个训练特征，将用 0 填充（示例: %s）",
+                len(missing_cols),
+                missing_cols[:10],
+            )
+        unused_cols = [c for c in feat.columns if c not in set(self.feature_names)]
+        if unused_cols:
+            logger.warning(
+                "预测数据包含 %d 个未参与训练的特征，将被忽略（示例: %s）",
+                len(unused_cols),
+                unused_cols[:10],
+            )
+        aligned_feat = feat.reindex(columns=self.feature_names).fillna(0.0)
+        
+        values = aligned_feat.values
         preds = self.booster.predict(values)
         # pred_leaf=True 返回每棵树的叶子编号，用作二级模型输入
         leaf_index = self.booster.predict(values, pred_leaf=True)

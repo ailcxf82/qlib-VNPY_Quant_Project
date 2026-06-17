@@ -44,6 +44,7 @@ ensemble:
 在训练时，计算各模型在验证集上的 IC（信息系数），然后使用 `RankICDynamicWeighter` 计算 IC-IR（IC 信息比率），将 IC-IR 转换为权重。
 
 **优点**：
+
 - 性能好的模型（通常是 LGBM）会被赋予更高的权重
 - 自动适应模型表现变化
 - 简单高效，计算开销小
@@ -51,23 +52,20 @@ ensemble:
 ### 3.2 权重计算流程
 
 1. **计算验证集 IC**：
-   ```python
+  ```python
    ic_lgb = rank_correlation(valid_pred_lgb, valid_label)
    ic_mlp = rank_correlation(valid_pred_mlp, valid_label)
-   ```
-
+  ```
 2. **计算 IC-IR**：
-   - 由于只有一期验证集，IC-IR 直接使用 IC 值
-   - 负 IC 会被裁剪为 0（如果 `clip_negative=True`）
-
+  - 由于只有一期验证集，IC-IR 直接使用 IC 值
+  - 负 IC 会被裁剪为 0（如果 `clip_negative=True`）
 3. **归一化和约束**：
-   - 权重归一化（和为 1）
-   - 应用 min/max 约束（默认 min=0.1, max=0.8）
-
+  - 权重归一化（和为 1）
+  - 应用 min/max 约束（默认 min=0.1, max=0.8）
 4. **加权融合**：
-   ```python
+  ```python
    final_pred = weight_lgb * pred_lgb + weight_mlp * pred_mlp
-   ```
+  ```
 
 ### 3.3 使用示例
 
@@ -84,6 +82,7 @@ ensemble:
 ```
 
 **日志输出示例**：
+
 ```
 IC-IR 权重: {'lgb': 0.65, 'mlp': 0.35}
 ```
@@ -99,40 +98,39 @@ label = intercept + coef_lgb * pred_lgb + coef_mlp * pred_mlp + ...
 ```
 
 **优点**：
+
 - 可以学习模型之间的非线性交互
 - 自动学习最优组合方式
 - Ridge 回归可以防止过拟合
 
 **缺点**：
+
 - 需要足够的验证集样本（建议至少 100+ 样本）
 - 计算开销略大于加权平均
 
 ### 4.2 训练流程
 
 1. **在验证集上获取各模型预测**：
-   ```python
+  ```python
    valid_preds = {
        "lgb": lgb_model.predict(valid_feat),
        "mlp": mlp_model.predict(valid_feat),
    }
-   ```
-
+  ```
 2. **构建特征矩阵**：
-   ```python
+  ```python
    X = pd.DataFrame(valid_preds)  # 每列是一个模型的预测
    y = valid_label
-   ```
-
+  ```
 3. **标准化特征**：
-   ```python
+  ```python
    X_scaled = StandardScaler().fit_transform(X)
-   ```
-
+  ```
 4. **训练 Meta-Learner**：
-   ```python
+  ```python
    meta_model = Ridge(alpha=1.0)
    meta_model.fit(X_scaled, y)
-   ```
+  ```
 
 ### 4.3 使用示例
 
@@ -182,6 +180,7 @@ ensemble:
 ```
 
 **日志输出示例**：
+
 ```
 Meta-Learner (ridge) 训练完成:
   截距: 0.000123
@@ -208,11 +207,13 @@ Meta-Learner (ridge) 训练完成:
 ### 5.3 推荐配置
 
 **默认推荐**：`weighted_average`
+
 - 简单高效
 - 适应性强
 - 通常效果优于简单平均
 
 **进阶推荐**：`meta_learner` (Ridge)
+
 - 如果验证集样本充足
 - 如果简单平均效果不佳
 - 如果希望学习更复杂的组合方式
@@ -221,17 +222,17 @@ Meta-Learner (ridge) 训练完成:
 
 **重要**：`ensemble.aggregator` 和 `predictor` 中的 IC 动态加权是**两个不同层面**的优化：
 
-1. **`ensemble.aggregator`**（训练时）：
-   - 在验证集上计算权重
-   - 生成 `qlib_ensemble` 或 `weighted_ensemble` 或 `meta_ensemble`
-   - 这个结果会作为**一个模型**参与后续的 IC 动态加权
-
+1. `**ensemble.aggregator`**（训练时）：
+  - 在验证集上计算权重
+  - 生成 `qlib_ensemble` 或 `weighted_ensemble` 或 `meta_ensemble`
+  - 这个结果会作为**一个模型**参与后续的 IC 动态加权
 2. **IC 动态加权**（预测时）：
-   - 基于历史 IC 表现动态调整权重
-   - 融合所有模型（包括 `lgb`, `mlp`, `stack`, `qlib_ensemble`/`weighted_ensemble`/`meta_ensemble`）
-   - 生成最终的 `final` 预测
+  - 基于历史 IC 表现动态调整权重
+  - 融合所有模型（包括 `lgb`, `mlp`, `stack`, `qlib_ensemble`/`weighted_ensemble`/`meta_ensemble`）
+  - 生成最终的 `final` 预测
 
 **工作流程**：
+
 ```
 训练阶段:
   LGB + MLP → [aggregator] → weighted_ensemble (或 meta_ensemble)
@@ -244,22 +245,26 @@ Meta-Learner (ridge) 训练完成:
 
 ### 7.1 简单平均 vs 加权平均
 
-| 指标 | 简单平均 | 加权平均 |
-|------|----------|----------|
-| 计算开销 | 低 | 低 |
-| 适应能力 | 弱 | 强 |
-| 可解释性 | 高 | 中 |
+
+| 指标   | 简单平均   | 加权平均     |
+| ---- | ------ | -------- |
+| 计算开销 | 低      | 低        |
+| 适应能力 | 弱      | 强        |
+| 可解释性 | 高      | 中        |
 | 推荐场景 | 模型表现相近 | 模型表现差异明显 |
+
 
 ### 7.2 加权平均 vs Meta-Learner
 
-| 指标 | 加权平均 | Meta-Learner |
-|------|----------|--------------|
-| 计算开销 | 低 | 中 |
-| 学习能力 | 弱 | 强 |
-| 样本需求 | 低 | 高 |
-| 过拟合风险 | 低 | 中（Ridge 可缓解） |
-| 推荐场景 | 默认选择 | 验证集充足时 |
+
+| 指标    | 加权平均 | Meta-Learner |
+| ----- | ---- | ------------ |
+| 计算开销  | 低    | 中            |
+| 学习能力  | 弱    | 强            |
+| 样本需求  | 低    | 高            |
+| 过拟合风险 | 低    | 中（Ridge 可缓解） |
+| 推荐场景  | 默认选择 | 验证集充足时       |
+
 
 ## 八、故障排查
 
@@ -268,6 +273,7 @@ Meta-Learner (ridge) 训练完成:
 **问题**：所有模型的 IC 为负或 NaN
 
 **解决**：
+
 - 检查验证集是否有效
 - 检查模型预测是否正常
 - 系统会自动回退为等权
@@ -277,6 +283,7 @@ Meta-Learner (ridge) 训练完成:
 **问题**：`有效样本数太少`
 
 **解决**：
+
 - 增加验证集大小（`valid_months`）
 - 或改用 `weighted_average`
 
@@ -285,6 +292,7 @@ Meta-Learner (ridge) 训练完成:
 **问题**：某个模型权重过高或过低
 
 **解决**：
+
 - 检查验证集 IC 值
 - 调整 `min_weight` 和 `max_weight`（在 `weighted_ensemble.py` 中）
 
@@ -297,42 +305,39 @@ Meta-Learner (ridge) 训练完成:
 
 ## 十、参考
 
-- Qlib Ensemble 文档：https://qlib.readthedocs.io/
-- Scikit-learn Ridge 回归：https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.Ridge.html
-
-
+- Qlib Ensemble 文档：[https://qlib.readthedocs.io/](https://qlib.readthedocs.io/)
+- Scikit-learn Ridge 回归：[https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.Ridge.html](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.Ridge.html)
 
 方案 1：加权平均（推荐）
 ensemble:
   aggregator: "weighted_average"
   models:
       - name: "lgb"
-      type: "lightgbm"      
-      config_key: "lightgbm_config"    
-      - name: "mlp"      
-      type: "mlp"      
+      type: "lightgbm"  
+      config_key: "lightgbm_config"  
+      - name: "mlp"  
+      type: "mlp"  
       config_key: "mlp_config"
 方案 2：Meta-Learner (Ridge)
 ensemble:
   aggregator: "meta_learner"  
   aggregator_params: 
-     model_type: "ridge"    
+     model_type: "ridge"  
      alpha: 1.0 
   models:  
-    - name: "lgb"   
-      type: "lightgbm"      
-      config_key: "lightgbm_config"    
-    - name: "mlp"      
-      type: "mlp"      
+    - name: "lgb"  
+      type: "lightgbm"  
+      config_key: "lightgbm_config"  
+    - name: "mlp"  
+      type: "mlp"  
       config_key: "mlp_config"
 方案 3：Meta-Learner (Linear)
 ensemble:
   aggregator: "meta_learner_linear"  
   models:  
-    - name: "lgb"      
-      type: "lightgbm"      
-      config_key: "lightgbm_config"    
-    - name: "mlp"   
-       type: "mlp"      
+    - name: "lgb"  
+      type: "lightgbm"  
+      config_key: "lightgbm_config"  
+    - name: "mlp"  
+       type: "mlp"  
        config_key: "mlp_config
-

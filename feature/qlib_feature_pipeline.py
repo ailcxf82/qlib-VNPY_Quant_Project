@@ -2,7 +2,8 @@
 基于 qlib 的特征提取流水线，负责：
 1. 初始化 qlib 环境
 2. 调用 D.features 获取行情与因子
-3. 生成对齐标签 Ref($close, -5)/$close - 1
+3. 生成对齐标签（默认跟随 config/data.yaml 的 `label` 字段，
+   当前主工程口径为 `Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1`）
 4. 进行基础标准化，并输出训练用 DataFrame
 """
 
@@ -10,6 +11,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import re
+import json
+import time
 from pathlib import Path
 from typing import Dict, Tuple, Any, Union, List
 
@@ -26,6 +30,23 @@ if str(_project_root) not in sys.path:
 from utils import load_yaml_config
 
 logger = logging.getLogger(__name__)
+
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
+    payload = {
+        "sessionId": "78b9cb",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open("debug-78b9cb.log", "a", encoding="utf-8") as fp:
+            fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 # 尝试导入 158 因子相关模块
 try:
@@ -45,8 +66,17 @@ _QLIB_INITIALIZED = False
 class QlibFeaturePipeline:
     """特征管线核心类。"""
 
-    def __init__(self, config_path: str):
-        self.config = load_yaml_config(config_path)
+    def __init__(self, config_path: str | Dict[str, Any]):
+        """
+        参数:
+            config_path:
+                - str: YAML 配置文件路径（原行为）
+                - dict: 已加载/已修改后的配置字典（用于动态调整 start_time/end_time 等）
+        """
+        if isinstance(config_path, dict):
+            self.config = config_path
+        else:
+            self.config = load_yaml_config(str(config_path))
         self._init_qlib()
         self.feature_cfg = self.config["data"]
         self.features_df: pd.DataFrame | None = None
@@ -54,6 +84,8 @@ class QlibFeaturePipeline:
         self._feature_mean: pd.Series | None = None
         self._feature_std: pd.Series | None = None
         self._label_is_rank: bool = False  # 标记标签是否为排名
+        # P0-1：RD-Agent 导出因子（combined_factors_df.parquet）列名，供 trainer/ensemble 注册 feature_sets
+        self.rdagent_factor_columns: list[str] = []
 
     def _init_qlib(self):
         qlib_cfg = self.config.get("qlib", {})
@@ -199,10 +231,397 @@ class QlibFeaturePipeline:
         
         return filtered_fields
 
-    def build(self):
-        """执行特征提取。"""
-        feats = self.feature_cfg.get("features", []).copy()  # 使用 copy 避免修改原配置
+    def _discover_available_fields(self) -> set[str]:
+        """从 qlib data/features 目录发现当前可用底层字段名。"""
+        qlib_cfg = self.config.get("qlib", {})
+        provider_uri = qlib_cfg.get("provider_uri")
+        if not provider_uri:
+            return set()
+        features_dir = Path(provider_uri) / "features"
+        if not features_dir.exists() or not features_dir.is_dir():
+            return set()
+        try:
+            sample_dirs = [d for d in features_dir.iterdir() if d.is_dir()]
+            if not sample_dirs:
+                return set()
+            # 取第一个标的目录作为字段样本
+            sample_dir = sample_dirs[0]
+            fields: set[str] = set()
+            for f in sample_dir.glob("*.day.bin"):
+                name = f.name
+                if not name.endswith(".day.bin"):
+                    continue
+                fields.add(name[: -len(".day.bin")])
+            return fields
+        except Exception as e:
+            logger.warning("扫描 qlib 特征字段失败: %s", e)
+            return set()
+
+    def _build_field_aliases(self, available_fields: set[str]) -> Dict[str, str]:
+        """构建字段别名映射（兼容 qlib_data 字段命名变化）。"""
+        # 默认兼容映射：old_name -> new_name / expression
+        aliases: Dict[str, str] = {
+            "open": "open_qfq",
+            "high": "high_qfq",
+            "low": "low_qfq",
+            "close": "close_qfq",
+            "volume": "vol",
+            "net_mf_amount": "net_amount",
+            "margin_balance": "rzye",
+            "short_balance": "rqye",
+            "asset_turnover": "assets_turn",
+            "market_cap": "total_mv",
+            "float_mv": "total_mv",
+            "net_profit_growth": "profit_to_gr",
+            "eps_growth": "q_profit_yoy",
+            # 行业轮动配置常见别名
+            "pct_change": "$close / Ref($close, 1) - 1",
+            "change": "$close - Ref($close, 1)",
+        }
+        # 配置可覆盖默认映射
+        custom_aliases = self.feature_cfg.get("field_aliases", {}) or {}
+        for k, v in custom_aliases.items():
+            aliases[str(k)] = str(v)
+
+        # 如果别名目标是“字段名”，但该字段在数据中不存在，则不启用该映射
+        filtered: Dict[str, str] = {}
+        for old, new in aliases.items():
+            # 表达式别名（包含运算符）直接保留
+            if any(op in new for op in (" ", "(", ")", "+", "-", "*", "/")):
+                filtered[old] = new
+                continue
+            # 字段别名：目标字段可用才生效
+            if (not available_fields) or (new in available_fields):
+                filtered[old] = new
+        return filtered
+
+    @staticmethod
+    def _replace_field_tokens(expr: str, alias_map: Dict[str, str]) -> str:
+        """将表达式中的 $field 按别名映射替换。"""
+        if not expr or not alias_map:
+            return expr
+
+        def repl(m: re.Match) -> str:
+            field = m.group(1)
+            target = alias_map.get(field)
+            if not target:
+                return m.group(0)
+            # 表达式别名
+            if any(op in target for op in (" ", "(", ")", "+", "-", "*", "/")):
+                return f"({target})"
+            # 字段别名
+            return f"${target}"
+
+        return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", repl, str(expr))
+
+    def _default_rdagent_parquet_path(self) -> Path:
+        return _project_root / "git_ignore_folder" / "combined_factors_df.parquet"
+
+    def _try_load_from_registry(
+        self, feature_index: pd.MultiIndex
+    ) -> pd.DataFrame | None:
+        """阶段 B：优先通过 L3 ``ProductionFactorLoader`` 取因子。
+
+        返回 ``None`` 表示 L3 通路不可用（flag 关闭 / 未迁移 / 任何异常），
+        调用方应 fallback 到旧路径（``git_ignore_folder/combined_factors_df.parquet``）。
+
+        与旧路径 **数值完全等价** 的必要条件：``migrate_legacy_factors.py`` 把同一份
+        parquet 原样写入 ``factor_registry/parquet/factors_v<N>.parquet``；loader 按
+        active 记录取列后再 reindex 到 ``feature_index``，索引对齐后值不会变动。
+        """
+        cfg_path = _project_root / "config" / "factor_lab.yaml"
+        if not cfg_path.exists():
+            return None
+        try:
+            import yaml  # noqa: WPS433 延迟导入
+            with cfg_path.open("r", encoding="utf-8") as f:
+                raw_cfg = yaml.safe_load(f) or {}
+        except Exception as exc:
+            logger.warning("L3 loader: 读取 factor_lab.yaml 失败: %s（回退旧路径）", exc)
+            return None
+        if not (raw_cfg.get("flags") or {}).get("enabled", False):
+            return None
+
+        try:
+            # 延迟导入：避免测试隔离场景下触发 registry 目录副作用
+            from feature.production_factor_loader import ProductionFactorLoader  # noqa: WPS433
+            loader = ProductionFactorLoader.from_default_paths(
+                project_root=_project_root, config_path=cfg_path
+            )
+            cols = loader.list_active_columns()
+            if not cols:
+                logger.info("L3 loader: manifest 无 active 因子，回退旧路径")
+                return None
+            df = loader.load_active(align_index=feature_index)
+            if df is None or df.shape[1] == 0:
+                return None
+            logger.info(
+                "L3 loader: 取到 %d 个 active 因子 (version=%s): %s",
+                df.shape[1],
+                loader.resolve_version(),
+                list(df.columns)[:5],
+            )
+            return df
+        except Exception as exc:  # noqa: BLE001 — 任何异常都回退保持兼容
+            logger.warning("L3 loader 失败，回退旧路径：%s", exc)
+            return None
+
+    def _load_production_quality_gate(self) -> dict[str, Any]:
+        cfg_path = _project_root / "config" / "factor_lab.yaml"
+        if not cfg_path.exists():
+            return {}
+        try:
+            import yaml  # noqa: WPS433 延迟导入
+            with cfg_path.open("r", encoding="utf-8") as f:
+                raw_cfg = yaml.safe_load(f) or {}
+            return ((raw_cfg.get("registry") or {}).get("quality_gate") or {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取 production 因子质量阈值失败，跳过质量门控：%s", exc)
+            return {}
+
+    def _maybe_merge_rdagent_parquet(self, feature_panel: pd.DataFrame) -> pd.DataFrame:
+        """若 ``active_feature_sets`` 含 ``rdagent_exported``，则合并 L3 因子到特征表。
+
+        阶段 B 数据源优先级：
+
+        1. **L3 loader**：``config/factor_lab.yaml.flags.enabled=true`` 且 manifest 有
+           active 因子 → 通过 ``ProductionFactorLoader`` 读取。
+        2. **旧路径 fallback**：``git_ignore_folder/combined_factors_df.parquet``。
+           保持与 B 改造前 100% 行为等价——用于阶段 B 迁移脚本未跑时的过渡。
+        """
+        self.rdagent_factor_columns = []
+        feature_sets = self.feature_cfg.get("feature_sets", {}) or {}
+        active_sets = self.feature_cfg.get("active_feature_sets", []) or []
+        if "rdagent_exported" not in active_sets:
+            return feature_panel
+
+        # ---- 优先路径：L3 Production Factor Loader ----------------------
+        extra = self._try_load_from_registry(feature_panel.index)
+        if extra is not None and extra.shape[1] > 0:
+            overlap = [c for c in extra.columns if c in feature_panel.columns]
+            if overlap:
+                logger.warning(
+                    "L3: 与 qlib 特征列名冲突，跳过 L3 侧列: %s", overlap[:10]
+                )
+                extra = extra.drop(columns=list(overlap))
+            if extra.shape[1] > 0:
+                out = pd.concat([feature_panel, extra], axis=1)
+                self.rdagent_factor_columns = list(extra.columns)
+                # #region agent log
+                _agent_debug_log(
+                    "pre-fix",
+                    "H5",
+                    "feature/qlib_feature_pipeline.py:_maybe_merge_rdagent_parquet:l3_merge",
+                    "rdagent columns merged from l3",
+                    {
+                        "extra_cols_count": len(extra.columns),
+                        "extra_col_type_sample": [type(c).__name__ for c in list(extra.columns)[:5]],
+                        "extra_cols_sample": [repr(c) for c in list(extra.columns)[:5]],
+                        "out_cols_count": len(out.columns),
+                    },
+                )
+                # #endregion
+                logger.info(
+                    "L3: 已合并 production 因子 %d 列，示例: %s",
+                    len(self.rdagent_factor_columns),
+                    self.rdagent_factor_columns[:5],
+                )
+                return out
+            logger.warning("L3: 所有列与 qlib 特征冲突，回退旧路径")
+
+        # ---- Fallback：旧 git_ignore_folder/combined_factors_df.parquet ----
+        rd_cfg = self.feature_cfg.get("rdagent_parquet") or {}
+        path_raw = rd_cfg.get("path") if isinstance(rd_cfg, dict) else None
+        pq_path = Path(path_raw) if path_raw else self._default_rdagent_parquet_path()
+        if not pq_path.is_absolute():
+            pq_path = _project_root / pq_path
+        if not pq_path.exists():
+            logger.warning(
+                "P0-1：已启用 rdagent_exported，但未找到 parquet：%s（可配置 data.rdagent_parquet.path）",
+                pq_path,
+            )
+            return feature_panel
+
+        try:
+            extra = pd.read_parquet(str(pq_path))
+        except Exception as e:
+            logger.error("P0-1：读取 RD-Agent parquet 失败 %s: %s", pq_path, e)
+            return feature_panel
+
+        extra = self._normalize_index(extra)
+        if not isinstance(extra.index, pd.MultiIndex) or "datetime" not in extra.index.names:
+            logger.error("P0-1：parquet 索引需为 MultiIndex(datetime, instrument)，实际=%s", type(extra.index))
+            return feature_panel
+        overlap_rows = None
+        feature_date_min = None
+        feature_date_max = None
+        extra_date_min = None
+        extra_date_max = None
+        # #region agent log
+        try:
+            fp_idx = feature_panel.index
+            ex_idx = extra.index
+            fp_dates = fp_idx.get_level_values("datetime")
+            ex_dates = ex_idx.get_level_values("datetime")
+            fp_inst = fp_idx.get_level_values("instrument")
+            ex_inst = ex_idx.get_level_values("instrument")
+            overlap_idx = fp_idx.intersection(ex_idx)
+            overlap_rows = int(len(overlap_idx))
+            feature_date_min = str(fp_dates.min()) if len(fp_dates) else None
+            feature_date_max = str(fp_dates.max()) if len(fp_dates) else None
+            extra_date_min = str(ex_dates.min()) if len(ex_dates) else None
+            extra_date_max = str(ex_dates.max()) if len(ex_dates) else None
+            overlap_inst = pd.Index(fp_inst).intersection(pd.Index(ex_inst))
+            _agent_debug_log(
+                "pre-fix",
+                "H10",
+                "feature/qlib_feature_pipeline.py:_maybe_merge_rdagent_parquet:index_overlap",
+                "index overlap diagnostics before reindex",
+                {
+                    "feature_rows": int(len(fp_idx)),
+                    "extra_rows": int(len(ex_idx)),
+                    "overlap_rows": int(len(overlap_idx)),
+                    "feature_date_min": str(fp_dates.min()) if len(fp_dates) else None,
+                    "feature_date_max": str(fp_dates.max()) if len(fp_dates) else None,
+                    "extra_date_min": str(ex_dates.min()) if len(ex_dates) else None,
+                    "extra_date_max": str(ex_dates.max()) if len(ex_dates) else None,
+                    "feature_instrument_sample": [str(x) for x in list(pd.Index(fp_inst).unique()[:5])],
+                    "extra_instrument_sample": [str(x) for x in list(pd.Index(ex_inst).unique()[:5])],
+                    "overlap_instrument_count": int(len(overlap_inst)),
+                },
+            )
+        except Exception:
+            pass
+        # #endregion
+        if overlap_rows == 0:
+            raise ValueError(
+                "rdagent_exported 数据与当前训练样本无任何索引交集："
+                f"feature日期范围=[{feature_date_min},{feature_date_max}]，"
+                f"rdagent日期范围=[{extra_date_min},{extra_date_max}]。"
+                "请先刷新 RD-Agent parquet（例如运行 scripts/refresh_rdagent_parquet.py），"
+                "或调整 data.start_time/end_time 到 parquet 覆盖区间。"
+            )
+
+        # 可选：仅用 feature_sets.rdagent_exported 中列出的列名过滤（非表达式）
+        want = feature_sets.get("rdagent_exported")
+        if isinstance(want, list) and want:
+            use_cols = [c for c in want if c in extra.columns and isinstance(c, str) and not str(c).strip().startswith("Ref(")]
+            if not use_cols:
+                use_cols = list(extra.columns)
+        else:
+            use_cols = list(extra.columns)
+
+        extra = extra[use_cols]
+        extra = extra.reindex(feature_panel.index)
+        quality_gate = self._load_production_quality_gate()
+        min_cov_raw = quality_gate.get("min_align_coverage_pct")
+        if min_cov_raw is not None and extra.shape[1] > 0:
+            try:
+                min_cov = float(min_cov_raw)
+            except (TypeError, ValueError):
+                logger.warning("忽略非法 min_align_coverage_pct=%r", min_cov_raw)
+            else:
+                coverage = extra.notna().mean().mul(100.0)
+                low_cols = coverage[coverage < min_cov].sort_values()
+                if len(low_cols) > 0:
+                    logger.warning(
+                        "P0-1：旧路径 parquet 中 %d 列对齐覆盖率低于 %.2f%%，将跳过；Top10=%s",
+                        len(low_cols),
+                        min_cov,
+                        {str(k): round(float(v), 2) for k, v in low_cols.head(10).items()},
+                    )
+                    extra = extra.drop(columns=list(low_cols.index))
+                    if extra.shape[1] == 0:
+                        logger.warning("P0-1：旧路径 RD-Agent 因子全部低覆盖，跳过合并")
+                        return feature_panel
+        # #region agent log
+        try:
+            _nonnull = extra.notna().sum().to_dict()
+            _agent_debug_log(
+                "pre-fix",
+                "H8",
+                "feature/qlib_feature_pipeline.py:_maybe_merge_rdagent_parquet:after_reindex",
+                "rdagent non-null stats after reindex",
+                {
+                    "rows": int(len(extra)),
+                    "cols": int(extra.shape[1]),
+                    "non_null_sample": {repr(k): int(v) for k, v in list(_nonnull.items())[:5]},
+                    "all_zero_non_null_cols": int(sum(1 for v in _nonnull.values() if int(v) == 0)),
+                },
+            )
+        except Exception:
+            pass
+        # #endregion
+        overlap = [c for c in extra.columns if c in feature_panel.columns]
+        if overlap:
+            logger.warning("P0-1：parquet 与 qlib 特征列名冲突，跳过 parquet 侧列: %s", overlap[:10])
+            extra = extra.drop(columns=[c for c in overlap])
+
+        if extra.shape[1] == 0:
+            logger.warning("P0-1：合并后无新增 RD-Agent 列，跳过")
+            return feature_panel
+
+        out = pd.concat([feature_panel, extra], axis=1)
+        self.rdagent_factor_columns = list(extra.columns)
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H5",
+            "feature/qlib_feature_pipeline.py:_maybe_merge_rdagent_parquet:fallback_merge",
+            "rdagent columns merged from fallback parquet",
+            {
+                "extra_cols_count": len(extra.columns),
+                "extra_col_type_sample": [type(c).__name__ for c in list(extra.columns)[:5]],
+                "extra_cols_sample": [repr(c) for c in list(extra.columns)[:5]],
+                "out_cols_count": len(out.columns),
+            },
+        )
+        # #endregion
+        logger.info(
+            "P0-1：已合并 RD-Agent 因子 %d 列（parquet=%s, 旧路径），示例: %s",
+            len(self.rdagent_factor_columns),
+            pq_path,
+            self.rdagent_factor_columns[:5],
+        )
+        return out
+
+    def build(self, *, include_label: bool = True):
+        """
+        执行特征提取。
         
+        参数:
+            include_label:
+                - True（默认）：构建训练用数据（特征 + 标签），并进行 label 对齐与清理。
+                - False：构建预测用数据（仅特征）。**不会**因为 label 缺失而截断尾部日期，
+                  用于支持在训练样本截止后继续生成未来日期的预测信号。
+        """
+        feats = self.feature_cfg.get("features", []).copy()  # 使用 copy 避免修改原配置
+
+        # 可选：按 feature_sets + active_feature_sets 追加特征（用于“按模型分组特征”）
+        feature_sets = self.feature_cfg.get("feature_sets", {}) or {}
+        active_sets = self.feature_cfg.get("active_feature_sets", []) or []
+        if feature_sets and active_sets:
+            for set_name in active_sets:
+                if set_name == "rdagent_exported":
+                    # P0-1：该集合来自 parquet 合并，不参与 D.features 表达式列表
+                    continue
+                if set_name not in feature_sets:
+                    logger.warning("active_feature_sets 中的 %s 不存在于 feature_sets，已忽略", set_name)
+                    continue
+                feats.extend(feature_sets[set_name] or [])
+            logger.info("已追加 feature_sets(%s)，当前特征总数: %d", active_sets, len(feats))
+        
+        # 去重（保留顺序）
+        if feats:
+            seen = set()
+            dedup = []
+            for f in feats:
+                if f in seen:
+                    continue
+                seen.add(f)
+                dedup.append(f)
+            feats = dedup
+
         # 检查是否启用 158 因子
         use_alpha158 = self.feature_cfg.get("use_alpha158", False)
         if use_alpha158:
@@ -214,20 +633,50 @@ class QlibFeaturePipeline:
             else:
                 logger.warning("use_alpha158=True 但无法获取 158 因子，将仅使用自定义特征")
         
-        instruments = self._parse_instruments(self.feature_cfg["instruments"])
+        # 优先使用 industry_index_path（行业轮动场景），否则使用 instruments
+        if "industry_index_path" in self.feature_cfg:
+            instruments = self._parse_industry_index_path(self.feature_cfg["industry_index_path"])
+        elif "instruments" in self.feature_cfg:
+            instruments = self._parse_instruments(self.feature_cfg["instruments"])
+        else:
+            raise ValueError("配置文件中必须包含 'instruments' 或 'industry_index_path' 字段")
+        
         start = self.feature_cfg["start_time"]
         end = self.feature_cfg["end_time"]
         freq = self.feature_cfg.get("freq", "day")
-        label_expr = self.feature_cfg.get("label", "Ref($close, -5)/$close - 1")
+        label_expr = self.feature_cfg.get(
+            "label", "Ref($close_qfq, -3)/Ref($close_qfq, 1) - 1"
+        )
+
+        # 字段兼容层：根据 qlib_data 的真实字段名自动适配表达式
+        available_fields = self._discover_available_fields()
+        alias_map = self._build_field_aliases(available_fields)
+        if alias_map:
+            feats = [self._replace_field_tokens(f, alias_map) for f in feats]
+            label_expr = self._replace_field_tokens(label_expr, alias_map)
+            logger.info("已应用字段别名映射，映射数量: %d", len(alias_map))
+
+        # 去重（替换后可能产生重复表达式）
+        if feats:
+            seen = set()
+            dedup = []
+            for f in feats:
+                if f in seen:
+                    continue
+                seen.add(f)
+                dedup.append(f)
+            feats = dedup
 
         logger.info("提取特征，共 %d 个特征表达式", len(feats))
         
         
         
-        # 提取特征和标签
+        # 提取特征（以及可选的标签）
         try:
             feature_panel = D.features(instruments=instruments, fields=feats, start_time=start, end_time=end, freq=freq)
-            label_panel = D.features(instruments=instruments, fields=[label_expr], start_time=start, end_time=end, freq=freq)
+            label_panel = None
+            if include_label:
+                label_panel = D.features(instruments=instruments, fields=[label_expr], start_time=start, end_time=end, freq=freq)
         except Exception as e:
             logger.error("特征提取失败: %s", e)
             logger.error("提示：可能是 158 因子中的某些表达式在当前数据源中不可用")
@@ -235,19 +684,36 @@ class QlibFeaturePipeline:
             raise
         
         feature_panel.columns = feats
-        label_series = label_panel.iloc[:, 0].rename("label")
+        label_series = None
+        if include_label and label_panel is not None:
+            label_series = label_panel.iloc[:, 0].rename("label")
+
+        # 诊断：D.features 返回的原始日期范围（不受后续对齐/清理影响）
+        try:
+            if len(feature_panel) > 0 and isinstance(feature_panel.index, pd.MultiIndex) and "datetime" in feature_panel.index.names:
+                _dt = feature_panel.index.get_level_values("datetime")
+                logger.info("原始特征日期范围(D.features): %s 到 %s", _dt.min(), _dt.max())
+            if include_label and label_series is not None and len(label_series) > 0 and isinstance(label_series.index, pd.MultiIndex) and "datetime" in label_series.index.names:
+                _dt = label_series.index.get_level_values("datetime")
+                logger.info("原始标签日期范围(D.features): %s 到 %s", _dt.min(), _dt.max())
+        except Exception as e:
+            logger.debug("打印原始日期范围失败(可忽略): %s", e)
 
         # 记录原始数据量
         logger.info("原始特征数据量: %d 行，%d 列", len(feature_panel), len(feature_panel.columns))
-        logger.info("原始标签数据量: %d 行", len(label_series))
+        if include_label and label_series is not None:
+            logger.info("原始标签数据量: %d 行", len(label_series))
         
-        # 检查缺失值情况
+        # 检查缺失值情况（label 可选）
         feature_nan_count = feature_panel.isnull().sum().sum()
         feature_nan_pct = feature_nan_count / (len(feature_panel) * len(feature_panel.columns)) * 100 if len(feature_panel) > 0 else 0
-        label_nan_count = label_series.isnull().sum()
-        label_nan_pct = label_nan_count / len(label_series) * 100 if len(label_series) > 0 else 0
-        logger.info("特征缺失值: %d (%.2f%%)，标签缺失值: %d (%.2f%%)", 
-                   feature_nan_count, feature_nan_pct, label_nan_count, label_nan_pct)
+        if include_label and label_series is not None:
+            label_nan_count = label_series.isnull().sum()
+            label_nan_pct = label_nan_count / len(label_series) * 100 if len(label_series) > 0 else 0
+            logger.info("特征缺失值: %d (%.2f%%)，标签缺失值: %d (%.2f%%)", 
+                       feature_nan_count, feature_nan_pct, label_nan_count, label_nan_pct)
+        else:
+            logger.info("特征缺失值: %d (%.2f%%)（预测模式：未构建标签）", feature_nan_count, feature_nan_pct)
         
         # 找出缺失值最多的特征（用于诊断）
         if len(feature_panel) > 0 and feature_nan_count > 0:
@@ -256,12 +722,57 @@ class QlibFeaturePipeline:
             logger.info("缺失值最多的前10个特征: %s", top_nan_cols.to_dict())
 
         feature_panel = self._normalize_index(feature_panel)
-        label_series = self._normalize_index(label_series)
+        feature_panel = self._maybe_merge_rdagent_parquet(feature_panel)
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H6",
+            "feature/qlib_feature_pipeline.py:build:after_merge",
+            "feature panel columns after merge",
+            {
+                "feature_panel_cols_count": len(feature_panel.columns),
+                "feature_panel_col_type_sample": [type(c).__name__ for c in list(feature_panel.columns)[:8]],
+                "feature_panel_cols_sample": [repr(c) for c in list(feature_panel.columns)[-8:]],
+                "rdagent_factor_columns_count": len(self.rdagent_factor_columns),
+            },
+        )
+        # #endregion
+        if include_label and label_series is not None:
+            label_series = self._normalize_index(label_series)
 
-        # 基础对齐
-        # inner join 先对齐索引
+        if not include_label:
+            # 预测模式：不与 label 对齐，也不因为 label 缺失截断日期
+            combined = feature_panel.copy()
+            logger.info("预测模式：仅构建特征，不进行 label 对齐与清理。样本量: %d 行", len(combined))
+            # 对于预测，建议始终使用“宽松填充”（ffill + 0）以避免因为个别字段缺失而丢掉整行
+            if len(combined) > 0:
+                before = len(combined)
+                # 按股票分组 ffill，避免跨股票污染
+                if isinstance(combined.index, pd.MultiIndex) and "instrument" in combined.index.names:
+                    combined = combined.groupby(level="instrument").ffill()
+                else:
+                    combined = combined.ffill()
+                remaining_nan = combined.isnull().sum().sum()
+                if remaining_nan > 0:
+                    logger.warning("预测模式：ffill 后仍有 %d 个 NaN，使用 0 填充", remaining_nan)
+                    combined = combined.fillna(0)
+                logger.info("预测模式：特征缺失填充完成: %d -> %d 行", before, len(combined))
+
+            self.features_df = combined
+            # 预测模式下没有标签
+            self.label_series = pd.Series(dtype=float)
+            return
+
+        # 训练模式：基础对齐（inner join 先对齐索引）
         combined = feature_panel.join(label_series, how="inner")
         logger.info("对齐后数据量: %d 行", len(combined))
+        # 诊断：对齐后的日期范围
+        try:
+            if len(combined) > 0 and isinstance(combined.index, pd.MultiIndex) and "datetime" in combined.index.names:
+                _dt = combined.index.get_level_values("datetime")
+                logger.info("对齐后日期范围(join): %s 到 %s", _dt.min(), _dt.max())
+        except Exception as e:
+            logger.debug("打印对齐后日期范围失败(可忽略): %s", e)
         
         # 检查对齐后的缺失值
         if len(combined) > 0:
@@ -272,6 +783,20 @@ class QlibFeaturePipeline:
             # 详细诊断：检查哪些列全为 NaN
             nan_by_col = combined.isnull().sum()
             all_nan_cols = nan_by_col[nan_by_col == len(combined)].index.tolist()
+            # #region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "H9",
+                "feature/qlib_feature_pipeline.py:build:all_nan_cols",
+                "all-NaN columns detected before cleanup",
+                {
+                    "combined_rows": int(len(combined)),
+                    "all_nan_cols_count": int(len(all_nan_cols)),
+                    "all_nan_cols_sample": [repr(c) for c in all_nan_cols[:10]],
+                    "rdagent_all_nan_count": int(sum(1 for c in all_nan_cols if c in self.rdagent_factor_columns)),
+                },
+            )
+            # #endregion
             if all_nan_cols:
                 logger.warning("以下 %d 个特征全为 NaN（可能表达式不可用）: %s", 
                              len(all_nan_cols), all_nan_cols[:10])  # 只显示前10个
@@ -282,41 +807,100 @@ class QlibFeaturePipeline:
                 logger.warning("标签缺失: %d 行 (%.2f%%)，这可能是由于标签计算需要未来数据（Ref($close, -5)）", 
                              label_nan_count, label_nan_count / len(combined) * 100)
             
-            # 如果缺失值过多，使用更宽松的 dropna 策略
-            # 只删除标签为 NaN 的行，特征中的 NaN 可以后续填充
-            if combined_nan_pct > 50 or len(all_nan_cols) > 0:
-                logger.warning("缺失值比例过高 (%.2f%%) 或存在全 NaN 特征 (%d 个)，使用宽松的清理策略", 
-                             combined_nan_pct, len(all_nan_cols))
-                
+            # 缺失值清理策略：auto（默认，保持现有逻辑）/strict（全量dropna）/relaxed（只drop标签并填充特征）
+            mv_strategy = str(self.feature_cfg.get("missing_value_strategy", "auto")).strip().lower()
+            if mv_strategy not in {"auto", "strict", "relaxed"}:
+                logger.warning("未知 missing_value_strategy=%s，回退到 auto", mv_strategy)
+                mv_strategy = "auto"
+
+            def _relaxed_cleanup(df: pd.DataFrame) -> pd.DataFrame:
                 # 先删除全为 NaN 的列（这些特征不可用）
                 if all_nan_cols:
                     logger.info("删除 %d 个全为 NaN 的特征列", len(all_nan_cols))
-                    combined = combined.drop(columns=all_nan_cols)
-                
+                    df = df.drop(columns=all_nan_cols)
                 # 只删除标签为 NaN 的行
-                before_drop = len(combined)
-                combined = combined.dropna(subset=["label"])
-                logger.info("删除标签为 NaN 的行: %d -> %d", before_drop, len(combined))
-                
-                # 对于特征，使用前向填充和后向填充
-                feature_cols = [col for col in combined.columns if col != "label"]
-                if len(feature_cols) > 0:
-                    # 按股票分组填充（避免跨股票填充）
-                    if isinstance(combined.index, pd.MultiIndex) and "instrument" in combined.index.names:
-                        combined[feature_cols] = combined.groupby(level="instrument")[feature_cols].ffill().bfill()
+                before_drop = len(df)
+                df = df.dropna(subset=["label"])
+                logger.info("删除标签为 NaN 的行: %d -> %d", before_drop, len(df))
+                # 对于特征，使用前向/后向填充，最后用 0 补齐
+                feature_cols = [col for col in df.columns if col != "label"]
+                if feature_cols:
+                    # 关键：只能使用 ffill（前向填充），禁止 bfill（后向填充）。
+                    # bfill 会把“未来值”填到过去，属于典型未来数据泄漏，会显著抬高回测表现。
+                    if isinstance(df.index, pd.MultiIndex) and "instrument" in df.index.names:
+                        df[feature_cols] = df.groupby(level="instrument")[feature_cols].ffill()
                     else:
-                        combined[feature_cols] = combined[feature_cols].ffill().bfill()
-                    
-                    # 如果还有 NaN，用 0 填充（避免全部删除）
-                    remaining_nan = combined[feature_cols].isnull().sum().sum()
+                        df[feature_cols] = df[feature_cols].ffill()
+                    remaining_nan = df[feature_cols].isnull().sum().sum()
                     if remaining_nan > 0:
-                        logger.warning("填充后仍有 %d 个 NaN，使用 0 填充", remaining_nan)
-                        combined[feature_cols] = combined[feature_cols].fillna(0)
-            else:
-                # 缺失值不多，使用严格的 dropna
+                        # 记录“被 0 填充”的特征清单，便于数据优化
+                        try:
+                            nan_by_col = df[feature_cols].isnull().sum()
+                            nan_by_col = nan_by_col[nan_by_col > 0]
+                            if len(nan_by_col) > 0:
+                                total = len(df)
+                                nan_ratio = (nan_by_col / max(1, total)).astype(float)
+                                ts = df.index.get_level_values("datetime")
+                                window_start = pd.to_datetime(ts.min()).strftime("%Y-%m-%d")
+                                window_end = pd.to_datetime(ts.max()).strftime("%Y-%m-%d")
+                                report = pd.DataFrame(
+                                    {
+                                        "feature": nan_by_col.index,
+                                        "nan_count": nan_by_col.values,
+                                        "total": total,
+                                        "nan_ratio": nan_ratio.values,
+                                        "window_start": window_start,
+                                        "window_end": window_end,
+                                        "source": "train_relaxed_fill0",
+                                    }
+                                ).sort_values("nan_ratio", ascending=False)
+                                report_dir = os.path.join("data", "logs")
+                                os.makedirs(report_dir, exist_ok=True)
+                                report_path = os.path.join(report_dir, "feature_nan_filled_report.csv")
+                                header = not os.path.exists(report_path)
+                                report.to_csv(report_path, mode="a", index=False, header=header)
+                                logger.warning(
+                                    "填充后仍有 %d 个 NaN，已记录到 %s（Top10特征如下）:\n%s",
+                                    remaining_nan,
+                                    report_path,
+                                    report.head(10).to_string(index=False),
+                                )
+                        except Exception as e:
+                            logger.warning("记录 NaN 填充特征失败：%s", e)
+                        df[feature_cols] = df[feature_cols].fillna(0)
+                return df
+
+            chosen = mv_strategy
+            if mv_strategy == "relaxed":
+                logger.warning("missing_value_strategy=relaxed：只删除 label NaN，并对特征做填充（可能引入更多填充值）")
+                combined = _relaxed_cleanup(combined)
+            elif mv_strategy == "strict":
                 before_drop = len(combined)
                 combined = combined.dropna()
-                logger.info("使用严格清理策略: %d -> %d 行", before_drop, len(combined))
+                logger.info("missing_value_strategy=strict：使用严格清理策略: %d -> %d 行", before_drop, len(combined))
+            else:
+                # auto：保持现有启发式逻辑
+                if combined_nan_pct > 50 or len(all_nan_cols) > 0:
+                    logger.warning("缺失值比例过高 (%.2f%%) 或存在全 NaN 特征 (%d 个)，使用宽松的清理策略", 
+                                 combined_nan_pct, len(all_nan_cols))
+                    combined = _relaxed_cleanup(combined)
+                    chosen = "relaxed"
+                else:
+                    before_drop = len(combined)
+                    combined = combined.dropna()
+                    logger.info("使用严格清理策略: %d -> %d 行", before_drop, len(combined))
+                    chosen = "strict"
+
+            if mv_strategy == "auto":
+                logger.info("missing_value_strategy=auto：本次根据缺失情况选择 %s（已禁止 bfill，避免未来数据泄漏）", chosen)
+
+        # 诊断：清理后的日期范围（这是最终会影响 get_slice/预测文件起点的范围）
+        try:
+            if len(combined) > 0 and isinstance(combined.index, pd.MultiIndex) and "datetime" in combined.index.names:
+                _dt = combined.index.get_level_values("datetime")
+                logger.info("清理后日期范围(clean): %s 到 %s", _dt.min(), _dt.max())
+        except Exception as e:
+            logger.debug("打印清理后日期范围失败(可忽略): %s", e)
         
         if len(combined) == 0:
             logger.error("=" * 80)
@@ -342,6 +926,20 @@ class QlibFeaturePipeline:
         
         features = combined.drop(columns=["label"])
         label = combined["label"]
+        # #region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H7",
+            "feature/qlib_feature_pipeline.py:build:final_features",
+            "final feature columns after cleanup",
+            {
+                "final_feature_cols_count": len(features.columns),
+                "final_feature_col_type_sample": [type(c).__name__ for c in list(features.columns)[:8]],
+                "final_feature_cols_tail_sample": [repr(c) for c in list(features.columns)[-8:]],
+                "rdagent_cols_survive_count": int(sum(1 for c in self.rdagent_factor_columns if c in features.columns)),
+            },
+        )
+        # #endregion
         
         logger.info("最终特征数据量: %d 行，%d 列", len(features), len(features.columns))
         logger.info("最终标签数据量: %d 行", len(label))
@@ -357,6 +955,22 @@ class QlibFeaturePipeline:
             self._label_is_rank = True
         else:
             self._label_is_rank = False
+
+        # 截面标准化：按日期对特征进行截面标准化（非常重要，避免未来数据泄露）
+        cross_sectional_cfg = self.feature_cfg.get("cross_sectional_normalization", {})
+        if cross_sectional_cfg.get("enabled", False):
+            features = self._apply_cross_sectional_normalization(
+                features,
+                method=cross_sectional_cfg.get("method", "zscore"),
+                groupby=cross_sectional_cfg.get("groupby", "datetime"),
+                clip=cross_sectional_cfg.get("clip", False),
+                clip_quantile=cross_sectional_cfg.get("clip_quantile", 0.05),
+            )
+            logger.info("特征已应用截面标准化（方法: %s, 分组: %s）", 
+                       cross_sectional_cfg.get("method", "zscore"),
+                       cross_sectional_cfg.get("groupby", "datetime"))
+        else:
+            logger.info("未启用截面标准化，使用原始特征值")
 
         # 修复：不再使用全局归一化，保存原始特征
         # 归一化将在训练时对每个窗口单独计算，避免数据泄露
@@ -412,7 +1026,7 @@ class QlibFeaturePipeline:
 
     def get_slice(self, start: str, end: str) -> Tuple[pd.DataFrame, pd.Series]:
         """按时间切片返回特征。"""
-        if self.features_df is None or self.label_series is None:
+        if self.features_df is None:
             raise RuntimeError("尚未构建特征，请先调用 build()")
         idx = self.features_df.index
         datetime_level = idx.get_level_values("datetime")
@@ -430,7 +1044,10 @@ class QlibFeaturePipeline:
         
         mask = (datetime_level >= start) & (datetime_level <= end)
         feat = self.features_df.loc[mask]
-        lbl = self.label_series.loc[mask]
+        if self.label_series is None or len(self.label_series) == 0:
+            lbl = pd.Series(dtype=float)
+        else:
+            lbl = self.label_series.loc[mask]
         
         if len(feat) == 0:
             logger.error(f"在日期范围 [{start}, {end}] 内没有找到数据")
@@ -443,9 +1060,9 @@ class QlibFeaturePipeline:
         return feat, lbl
 
     def get_all(self) -> Tuple[pd.DataFrame, pd.Series]:
-        if self.features_df is None or self.label_series is None:
+        if self.features_df is None:
             raise RuntimeError("尚未构建特征，请先调用 build()")
-        return self.features_df, self.label_series
+        return self.features_df, self.label_series if self.label_series is not None else pd.Series(dtype=float)
 
     def stats(self) -> Dict[str, pd.Series]:
         """返回标准化统计量，供落地保存/加载。"""
@@ -453,6 +1070,27 @@ class QlibFeaturePipeline:
             "mean": self._feature_mean,
             "std": self._feature_std,
         }
+
+    @staticmethod
+    def _parse_instrument_pools(inst_conf: Union[str, Dict[str, Any], Tuple[str, ...], list[str]]) -> List[str]:
+        """
+        解析股票池配置，支持多个股票池（用逗号分隔）。
+        
+        返回股票池名称列表，如 ["csi101", "csi300"]
+        """
+        if isinstance(inst_conf, str):
+            # 支持逗号分隔的多个股票池，如 "csi101, csi300"
+            pools = [p.strip() for p in inst_conf.split(",") if p.strip()]
+            return pools
+        elif isinstance(inst_conf, (list, tuple)):
+            # 列表形式，直接返回
+            return [str(p).strip() for p in inst_conf if str(p).strip()]
+        elif isinstance(inst_conf, dict):
+            # 字典配置，提取市场名称
+            market_name = inst_conf.get("market", "unknown")
+            return [str(market_name)]
+        else:
+            raise ValueError(f"不支持的股票池配置类型: {type(inst_conf)}")
 
     @staticmethod
     def _parse_instruments(inst_conf: Union[str, Dict[str, Any], Tuple[str, ...], list[str]]) -> list[str]:
@@ -468,26 +1106,28 @@ class QlibFeaturePipeline:
         """
         if isinstance(inst_conf, str):
             # 如果是市场别名（如 "csi300"），先获取配置字典，再转换为股票列表
+            # 注意：如果包含逗号，只取第一个股票池（用于单个股票池的数据提取）
+            pool_name = inst_conf.split(",")[0].strip()
             try:
-                market_config = D.instruments(inst_conf)
+                market_config = D.instruments(pool_name)
+            except Exception as e:
+                # 兼容精简版 qlib_data：仅提供 all.txt，没有 csi300/csi101 等细分池
+                logger.warning("股票池 '%s' 不存在，尝试回退到 'all': %s", pool_name, e)
+                pool_name = "all"
+                market_config = D.instruments(pool_name)
+            try:
                 # 使用 D.list_instruments() 获取股票代码列表
                 stock_list = D.list_instruments(instruments=market_config, as_list=True)
                 if isinstance(stock_list, list) and len(stock_list) > 0:
-                    logger.info("从市场 '%s' 获取到 %d 只股票", inst_conf, len(stock_list))
-                    # 确保返回的是纯数字股票代码（去掉 .SH 或 .SZ 后缀，如果存在）
-                    cleaned_list = []
-                    for code in stock_list:
-                        # 如果代码包含点号，提取前面的数字部分
-                        if '.' in str(code):
-                            code = str(code).split('.')[0]
-                        cleaned_list.append(str(code))
-                    return cleaned_list
+                    logger.info("从市场 '%s' 获取到 %d 只股票", pool_name, len(stock_list))
+                    # 保留 qlib 原生证券格式（如 000001.SZ / 000001.sz），避免因为去后缀导致取数为空
+                    return [str(code) for code in stock_list]
                 else:
-                    raise ValueError(f"无法从市场 '{inst_conf}' 获取股票列表，返回结果为空")
+                    raise ValueError(f"无法从市场 '{pool_name}' 获取股票列表，返回结果为空")
             except Exception as e:
-                logger.error("无法从市场 '%s' 获取股票列表: %s", inst_conf, e)
+                logger.error("无法从市场 '%s' 获取股票列表: %s", pool_name, e)
                 logger.error("请检查：1) qlib 数据源是否包含该市场定义；2) 市场名称是否正确")
-                raise ValueError(f"无法解析股票池配置 '{inst_conf}': {e}")
+                raise ValueError(f"无法解析股票池配置 '{pool_name}': {e}")
         
         if isinstance(inst_conf, dict):
             # 如果是字典配置，也转换为股票列表
@@ -496,13 +1136,8 @@ class QlibFeaturePipeline:
                 if isinstance(stock_list, list) and len(stock_list) > 0:
                     market_name = inst_conf.get("market", "未知市场")
                     logger.info("从市场配置 '%s' 获取到 %d 只股票", market_name, len(stock_list))
-                    # 确保返回的是纯数字股票代码
-                    cleaned_list = []
-                    for code in stock_list:
-                        if '.' in str(code):
-                            code = str(code).split('.')[0]
-                        cleaned_list.append(str(code))
-                    return cleaned_list
+                    # 保留 qlib 原生证券格式（如 000001.SZ / 000001.sz）
+                    return [str(code) for code in stock_list]
                 else:
                     raise ValueError(f"无法从市场配置获取股票列表，返回结果为空")
             except Exception as e:
@@ -510,17 +1145,158 @@ class QlibFeaturePipeline:
                 raise ValueError(f"无法从市场配置获取股票列表: {e}")
         
         if isinstance(inst_conf, (list, tuple)):
-            # 如果是列表，确保格式正确（纯数字代码）
-            result = []
-            for code in inst_conf:
-                code_str = str(code)
-                # 如果包含点号，提取前面的数字部分
-                if '.' in code_str:
-                    code_str = code_str.split('.')[0]
-                result.append(code_str)
-            return result
+            # 列表形式直接保留原始代码格式
+            return [str(code) for code in inst_conf]
         
         raise ValueError(f"不支持的股票池配置类型: {type(inst_conf)}")
+
+    def _parse_industry_index_path(self, industry_path: str) -> list[str]:
+        """
+        解析行业指数路径配置。
+        
+        支持两种格式：
+        1. 文件路径：从文件中读取行业指数代码（每行一个代码）
+        2. 逗号分隔的字符串：直接解析为列表
+        
+        参数:
+            industry_path: 行业指数路径配置
+        
+        返回:
+            行业指数代码列表
+        """
+        if not industry_path:
+            raise ValueError("industry_index_path 不能为空")
+        
+        # 检查是否为文件路径（包含路径分隔符或文件扩展名）
+        if os.path.sep in industry_path or "/" in industry_path or "\\" in industry_path or industry_path.endswith(".txt"):
+            # 从文件读取
+            if not os.path.exists(industry_path):
+                # 兼容精简版 qlib_data：默认行业文件缺失时，回退到 instruments/all.txt
+                fallback_path = os.path.join(self.config.get("qlib", {}).get("provider_uri", ""), "instruments", "all.txt")
+                if os.path.exists(fallback_path):
+                    logger.warning("行业指数文件不存在，回退到: %s", fallback_path)
+                    industry_path = fallback_path
+                else:
+                    raise FileNotFoundError(f"行业指数文件不存在: {industry_path}")
+            
+            logger.info("从文件读取行业指数列表: %s", industry_path)
+            industry_list = []
+            with open(industry_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):  # 跳过空行和注释
+                        # 处理制表符分隔的格式（代码\t开始日期\t结束日期）
+                        if "\t" in line:
+                            # 制表符分隔：取第一列作为代码
+                            parts = line.split("\t")
+                            code = parts[0].strip()
+                            if code:
+                                industry_list.append(code)
+                        elif "," in line:
+                            # 逗号分隔
+                            codes = [c.strip() for c in line.split(",") if c.strip()]
+                            industry_list.extend(codes)
+                        else:
+                            # 单行单个代码
+                            if line:
+                                industry_list.append(line)
+            
+            if not industry_list:
+                raise ValueError(f"行业指数文件为空或格式不正确: {industry_path}")
+            
+            logger.info("从文件读取到 %d 个行业指数", len(industry_list))
+            return industry_list
+        else:
+            # 逗号分隔的字符串
+            industry_list = [code.strip() for code in industry_path.split(",") if code.strip()]
+            if not industry_list:
+                raise ValueError(f"无法解析行业指数路径: {industry_path}")
+            
+            logger.info("从配置字符串解析到 %d 个行业指数", len(industry_list))
+            return industry_list
+
+    def _apply_cross_sectional_normalization(
+        self,
+        features: pd.DataFrame,
+        method: str = "zscore",
+        groupby: str = "datetime",
+        clip: bool = False,
+        clip_quantile: float = 0.05,
+    ) -> pd.DataFrame:
+        """
+        对特征进行截面标准化（按日期分组）。
+        
+        这是非常重要的步骤，可以：
+        1. 消除不同时期市场环境的影响
+        2. 使特征在同一日期内具有可比性
+        3. 避免未来数据泄露（只使用当日截面数据）
+        
+        参数:
+            features: 特征 DataFrame，索引应为 MultiIndex (datetime, instrument)
+            method: 标准化方法
+                - "zscore": Z-score 标准化（均值0，标准差1）
+                - "rank": 排名标准化（转换为排名）
+            groupby: 分组列名（默认 "datetime"）
+            clip: 是否进行极值裁剪（winsorize）
+            clip_quantile: 裁剪分位数（0.05 表示裁剪上下各5%的极值）
+        
+        返回:
+            标准化后的特征 DataFrame
+        """
+        if not isinstance(features.index, pd.MultiIndex):
+            logger.warning("特征索引不是 MultiIndex，无法进行截面标准化，返回原特征")
+            return features
+        
+        if groupby not in features.index.names:
+            logger.warning("分组列 '%s' 不在索引中，无法进行截面标准化，返回原特征", groupby)
+            return features
+        
+        result = features.copy()
+        
+        # 按日期分组进行截面标准化
+        grouped = result.groupby(level=groupby)
+        
+        if method == "zscore":
+            # Z-score 标准化：每个日期内的特征标准化为均值0、标准差1
+            def zscore_transform(group):
+                mean = group.mean()
+                std = group.std().replace(0, 1)  # 避免除零
+                return (group - mean) / std
+            
+            result = grouped.apply(zscore_transform)
+            # 移除分组索引层级（如果添加了）
+            if isinstance(result.index, pd.MultiIndex) and result.index.nlevels > features.index.nlevels:
+                result = result.droplevel(0)
+            result = result.reindex(features.index)  # 确保索引顺序一致
+            
+        elif method == "rank":
+            # 排名标准化：每个日期内的特征转换为排名（0-1之间）
+            def rank_transform(group):
+                return group.rank(pct=True, method="average")
+            
+            result = grouped.apply(rank_transform)
+            # 移除分组索引层级（如果添加了）
+            if isinstance(result.index, pd.MultiIndex) and result.index.nlevels > features.index.nlevels:
+                result = result.droplevel(0)
+            result = result.reindex(features.index)  # 确保索引顺序一致
+            
+        else:
+            logger.warning("不支持的截面标准化方法: %s，返回原特征", method)
+            return features
+        
+        # 极值裁剪（winsorize）
+        if clip:
+            # 对每个特征列进行极值裁剪
+            for col in result.columns:
+                # 计算上下分位数
+                lower = result[col].quantile(clip_quantile)
+                upper = result[col].quantile(1 - clip_quantile)
+                # 裁剪极值
+                result[col] = result[col].clip(lower=lower, upper=upper)
+            
+            logger.info("已应用极值裁剪（分位数: %.2f）", clip_quantile)
+        
+        return result
 
     @staticmethod
     def _normalize_index(data: Union[pd.DataFrame, pd.Series]):

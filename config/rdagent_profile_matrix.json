@@ -1,0 +1,85 @@
+{
+  "profiles": [
+    {
+      "name": "A_short_cycle_baseline",
+      "description": "Short-cycle OHLCV+technical factors; fast smoke baseline with extended feature set.",
+      "feature_sets": [
+        "short_momentum_reversal",
+        "short_volatility_range",
+        "short_volume_price",
+        "gru_short_cycle",
+        "lgb_short_cycle"
+      ],
+      "env": {
+        "QLIB_QUANT_EVOLVING_N": "1",
+        "QLIB_QUANT_ACTION_SELECTION": "bandit",
+        "FACTOR_CoSTEER_MAX_LOOP": "2",
+        "MODEL_CoSTEER_MAX_LOOP": "2",
+        "FACTOR_CoSTEER_FAIL_TASK_TRIAL_LIMIT": "3",
+        "MODEL_CoSTEER_FAIL_TASK_TRIAL_LIMIT": "2"
+      }
+    },
+    {
+      "name": "B_with_fundamental_bias",
+      "description": "Extended iterations; bias toward fundamental + short-cycle blend; explore value factors.",
+      "feature_sets": [
+        "short_momentum_reversal",
+        "short_volatility_range",
+        "short_volume_price",
+        "gru_short_cycle",
+        "lgb_short_cycle",
+        "lgb_fundamental"
+      ],
+      "env": {
+        "QLIB_QUANT_EVOLVING_N": "2",
+        "QLIB_QUANT_ACTION_SELECTION": "bandit",
+        "FACTOR_CoSTEER_MAX_LOOP": "3",
+        "MODEL_CoSTEER_MAX_LOOP": "2",
+        "FACTOR_CoSTEER_FAIL_TASK_TRIAL_LIMIT": "3",
+        "MODEL_CoSTEER_FAIL_TASK_TRIAL_LIMIT": "2"
+      }
+    },
+    {
+      "name": "C_deep_factor_explore",
+      "description": "Deep exploration of multi-source factors: fundamental, technical, margin; LLM-guided.",
+      "feature_sets": [
+        "short_momentum_reversal",
+        "short_volatility_range",
+        "short_volume_price",
+        "lgb_fundamental",
+        "gru_short_cycle",
+        "lgb_short_cycle",
+        "rdagent_imported"
+      ],
+      "env": {
+        "QLIB_QUANT_EVOLVING_N": "3",
+        "QLIB_QUANT_ACTION_SELECTION": "llm",
+        "FACTOR_CoSTEER_MAX_LOOP": "4",
+        "MODEL_CoSTEER_MAX_LOOP": "3",
+        "FACTOR_CoSTEER_FAIL_TASK_TRIAL_LIMIT": "4",
+        "MODEL_CoSTEER_FAIL_TASK_TRIAL_LIMIT": "3"
+      }
+    },
+    {
+      "name": "D_combined_factors_training",
+      "description": "Use pre-exported combined_factors_df.parquet from best RDAgent runs; focus on model optimization.",
+      "feature_sets": [
+        "short_momentum_reversal",
+        "short_volatility_range",
+        "short_volume_price",
+        "lgb_fundamental",
+        "gru_short_cycle",
+        "lgb_short_cycle"
+      ],
+      "env": {
+        "QLIB_QUANT_EVOLVING_N": "1",
+        "QLIB_QUANT_ACTION_SELECTION": "bandit",
+        "FACTOR_CoSTEER_MAX_LOOP": "3",
+        "MODEL_CoSTEER_MAX_LOOP": "4",
+        "FACTOR_CoSTEER_FAIL_TASK_TRIAL_LIMIT": "3",
+        "MODEL_CoSTEER_FAIL_TASK_TRIAL_LIMIT": "3",
+        "QLIB_FACTOR_TEMPLATE": "conf_combined_factors"
+      }
+    }
+  ]
+}

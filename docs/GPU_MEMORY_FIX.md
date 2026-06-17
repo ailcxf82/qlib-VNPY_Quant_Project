@@ -92,4 +92,3 @@ python run_predict.py --start 2023-10-01 --end 2025-10-01
 - `config/model_mlp.yaml`：MLP 配置文件（已添加 `predict_batch_size`）
 - `models/stack_model.py`：Stacking 模型（调用 MLP 的 `predict_with_leaf_index`）
 
-

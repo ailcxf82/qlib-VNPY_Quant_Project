@@ -1,0 +1,85 @@
+# 已知失败模式库（负向 RAG）
+# 来源：P0 实验日志 + v19 池历史审计 + manifest retired_reason
+# 用途：避免 LLM 重复提出已知导致高 turnover / 低 IC / 与池高相关的因子
+#
+# WARNING_LEVEL:
+#   hard  — 已明确失败，不要再提
+#   soft  — 有条件可用，需充分理由
+
+schema_version: "1.0"
+
+# ── 使用方式 ─────────────────────────────────────────────────────────────────
+# rag_retriever._load_pool() 加载本文件的 "warnings" 列表
+# 作为负向提示注入到 ALPHA158_AVOIDANCE_HINT 末尾（TODO: 待集成）。
+# 目前可通过 rag_constitution.yaml -> discouraged_families 覆盖相同语义。
+
+warnings:
+
+  # ── 短周期量价反转族 ────────────────────────────────────────────────────────
+
+  - id: fail_001
+    family: volume_price_reversal
+    warning_level: hard
+    window: [5, 10]
+    description: >
+      短周期（5/10日）量价反转类因子：RangeRatio_10D、VolRatio_20D、
+      VolumePriceTrend_10D、VolumeTrend_10D、VolRet_5D。
+      v19 实测：turnover 从 4.7x 上升至 8.75x，Sharpe 从 3.59 下降至 1.69。
+      IC 表面提升（0.148→0.226）但实盈能力大幅下降。
+    avoid_columns_combo: [$vol, $close_qfq]
+    avoid_windows: [5, 10]
+    avoid_pattern: "pct_change(W) * volume / mean(volume, W) * sign(..."
+
+  - id: fail_002
+    family: volume_price_reversal
+    warning_level: hard
+    window: [5]
+    description: >
+      5日量价相关反转：VolRet_5D。rank_ic=0.012, ic_ir=0.31 — 低于认证门槛。
+      已退役（retire_reason 见 manifest）。
+    avoid_pattern: "volume * (close - prev_close) rolling 5d mean"
+
+  # ── Alpha158 复制族 ─────────────────────────────────────────────────────────
+
+  - id: fail_003
+    family: alpha158_duplicate
+    warning_level: hard
+    description: >
+      直接复现 Alpha158 信号的因子：RESI5/RESI10（价格残差）、WVMA5/WVMA60
+      （量价加权均线）、CORR5/CORR10/CORR20/CORR60（价量相关）、
+      CORD5/CORD10/CORD60（收益量变相关）、ROC60（60日收益）。
+      这些信号 LGB 已通过 Alpha158 直接摄入，新因子与其相关 > 0.7 时 IC 增量 ≈ 0。
+    avoid_pattern: "corr(close, volume, W) where W in [5, 10, 20, 60]"
+    avoid_pattern_2: "price residual from linear regression on time"
+
+  - id: fail_004
+    family: alpha158_duplicate
+    warning_level: soft
+    description: >
+      与 Alpha158 STD5/KLEN/KLOW/VSTD5 高度相关的波动率因子（短期振幅/日内范围/量方差）。
+      惩罚：penalty=-1（软约束）；若要提出需给出与 Alpha158 正交的理由。
+    avoid_pattern: "rolling std of close_pct_change over 5d"
+    avoid_pattern_2: "(high - low) / open for W=5"
+
+  # ── 极高换手率族 ────────────────────────────────────────────────────────────
+
+  - id: fail_005
+    family: high_frequency_reversal
+    warning_level: hard
+    description: >
+      任何导致日换手率 > 50% 的因子（annualized turnover > 125x）。
+      历史实测：此类因子 composite_score < -1.0，进入池后拖累整体 Sharpe。
+      通常特征：window ≤ 5，使用 pct_change 后立即 rank，无平滑。
+    avoid_windows: [1, 2, 3]
+    avoid_pattern: "rank(pct_change(1)) without smoothing"
+
+  # ── turnover_accel 重复族 ───────────────────────────────────────────────────
+
+  - id: fail_006
+    family: liquidity
+    warning_level: soft
+    description: >
+      换手率加速度变体（turnover_acceleration_5d、turnover_accel_5d）已有 2 个认证因子。
+      第 3 个相似变体 IC 增量极低（实测 < 0.002）。
+      若要提出换手率信号，应转向换手率稳定性、换手率与价格的交叉项等更正交方向。
+    avoid_pattern: "turnover_rate.diff(W) or turnover_rate.pct_change(W) for W in [3,5,7,10]"

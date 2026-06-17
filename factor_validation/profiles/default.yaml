@@ -1,0 +1,78 @@
+# ==============================================================================
+# ValidationProfile: default
+# ==============================================================================
+# 用途：L2 **标准**验证 profile —— 新因子提交的默认门槛。
+#
+# 阶段 D 变更：
+#   * 新增 ``backtest``（轻量 long-short，无撮合无费用；秒级）
+#   * 新增 ``marginal``（baseline-rank 中性化 IC；秒级）
+#   * weight 从 ic/turnover 里挪出来分配给新 check
+#
+# 不启用：
+#   * ``backtest_rqalpha`` —— 真实回测 5-15 分钟，留给 strict
+#   * ``marginal_training`` —— 双 LGB A/B 10-30 秒，留给 strict
+#
+# 阈值来源：宪法 §5.1 + 阶段 D 新标准
+#   * coverage / ic / orthogonality / turnover：沿用阶段 C 宽度
+#   * backtest：Sharpe>=1.0，DD<=40%
+#   * marginal：残差 rank IC>=0.008，IR>=0.15（略低于自身 IC，允许部分冗余）
+#
+# 数据源依赖：
+#   * label_parquet：``scripts/validate/prepare_oos_labels.py --universe all`` 离线生成
+#   * reference_factors_parquet：``factor_registry/parquet/factors_v<N>.parquet``
+#   * baseline_prediction_parquet：``scripts/validate/prepare_baseline_prediction.py``
+#     （由当前 production ensemble 对 OOS 窗导出的预测）
+# ==============================================================================
+
+profile_name: default
+description: "L2 标准验证 profile；新因子提交默认走此 profile"
+
+universe: csi300
+oos_window: ["2025-01-01", "2026-04-07"]
+benchmark: SH000300
+
+aggregation:
+  method: weighted_sum
+  pass_threshold: 0.60
+  fail_threshold: 0.30
+
+data_sources:
+  label_parquet: "factor_validation/data/oos_labels_all.parquet"
+  reference_factors_parquet: "factor_registry/parquet/factors_v1.parquet"
+  baseline_prediction_parquet: "factor_validation/data/baseline_predictions_ensemble_v1.parquet"
+
+checks:
+  coverage:
+    enabled: true
+    weight: 0.10
+    min_non_null_ratio: 0.85
+  ic:
+    enabled: true
+    weight: 0.30
+    min_rank_ic: 0.012
+    min_ic_ir: 0.25
+    allow_negative: true
+  orthogonality:
+    enabled: true
+    weight: 0.15
+    max_abs_corr: 0.60
+  turnover:
+    enabled: true
+    weight: 0.15
+    max_daily_rank_turnover: 0.35
+    min_rank_autocorr: 0.50
+  backtest:
+    enabled: true
+    weight: 0.15
+    quantile: 0.2
+    min_long_short_sharpe: 1.0
+    max_drawdown: 0.40
+    min_annual_return: 0.0
+    min_win_ratio: 0.50
+    allow_negative: true
+  marginal:
+    enabled: true
+    weight: 0.15
+    min_residual_rank_ic: 0.008
+    min_residual_ic_ir: 0.15
+    allow_negative: true

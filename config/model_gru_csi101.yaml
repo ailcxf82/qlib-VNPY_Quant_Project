@@ -1,0 +1,17 @@
+model:
+  seq_len: 5
+  hidden_size: 24
+  num_layers: 1
+  dropout: 0.1
+  lr: 0.003
+  weight_decay: 0.0015
+  batch_size: 128
+  max_epochs: 20
+  seed: 42
+  deterministic: true
+  amp: true
+  grad_clip_norm: 0.5
+  early_stopping_metric: "loss"
+  patience: 5
+  loss: "mse"
+  loss_params: {}

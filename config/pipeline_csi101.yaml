@@ -1,0 +1,78 @@
+data_config: "config/data_csi101.yaml"
+lightgbm_config: "config/model_lgb_csi101.yaml"
+mlp_config: "config/model_mlp.yaml"
+gru_config: "config/model_gru_csi101.yaml"
+stack_config: "config/model_stack.yaml"
+
+base_models: ["lgb", "gru"]
+
+model_features:
+  gru: "gru_ohlcv"
+  lgb: "lgb_fundamental"
+
+model_gru: null
+
+ensemble:
+  aggregator: "weighted_average"
+  aggregator_params:
+    model_type: "ridge"
+    alpha: 1.0
+  models: []
+
+rolling:
+  window_mode: "aligned"
+  feature_normalization: "per_model"
+  
+  train_days: 120
+  
+  model_train_days:
+    lgb: 360
+    gru: 180
+  
+  valid_days: 20
+  
+  test_days: 30
+  
+  step_days: 5
+  
+  min_samples: 800
+
+ic_logging:
+  window: 60
+  half_life: 20
+
+paths:
+  model_dir: "data/models/csi101_models"
+  log_dir: "data/logs/csi101_logs"
+  prediction_dir: "data/predictions"
+
+oof_stacking:
+  enabled: false
+  n_splits: 5
+  meta_model: "ridge"
+
+stack:
+  enabled: false
+  use_leaf_features: false
+  meta_model_type: "mlp"
+  meta_model_params:
+    hidden_sizes: [64, 32]
+    dropout: 0.3
+    learning_rate: 0.001
+    batch_size: 256
+    epochs: 50
+    early_stopping_rounds: 10
+    l2_reg: 0.01
+
+training:
+  random_seed: 42
+  n_jobs: -1
+  verbose: 1
+  
+  lgb:
+    early_stopping_rounds: 30
+    verbose_eval: 50
+  
+  gru:
+    early_stopping_rounds: 15
+    temperature: 1.0

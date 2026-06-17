@@ -1,0 +1,33 @@
+# ==============================================================================
+# ValidationProfile: manual_grandfathered
+# ==============================================================================
+# 用途：给**已经在生产使用**的历史因子（如阶段 B 迁移时的 5 个 RD-Agent 导出因子）
+# 补一份证书，以便顺利进入 L3 registry。
+#
+# 特性：
+#   * 仅启用 coverage 一个检查（门槛 0.90），不做 IC/相关性/换手率硬约束。
+#   * 通过阈值放宽：pass_threshold=0.6，fail_threshold=0.3。
+#   * 对 decision=PASS 的约束仍然成立：coverage 必须通过且综合分 >= 0.6。
+#
+# 注意：
+#   * 这是**一次性迁移**专用；新因子走 default / strict，不应该再用此 profile。
+#   * 若后续需要把旧因子续证，需要重新走 default/strict profile 评估是否仍该留在 L3。
+# ==============================================================================
+
+profile_name: manual_grandfathered
+description: "已在生产中使用的既存因子（legacy）豁免 profile：仅覆盖率基础校验，便于一次性迁移到 L3 registry"
+
+universe: csi300
+oos_window: ["2020-01-02", "2026-04-07"]   # 与现有 combined_factors_df.parquet 窗口对齐
+benchmark: SH000300
+
+aggregation:
+  method: weighted_sum
+  pass_threshold: 0.6
+  fail_threshold: 0.3
+
+checks:
+  coverage:
+    enabled: true
+    weight: 1.0
+    min_non_null_ratio: 0.90          # 既存 parquet 非空率已经 > 0.98，此阈值仅保底

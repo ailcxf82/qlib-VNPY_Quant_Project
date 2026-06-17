@@ -48,6 +48,12 @@ def _load_ic_histories(log_path: str) -> Dict[str, pd.Series]:
         "stack": pd.Series(df["ic_stack"].values, index=df["valid_end"]),
         "qlib_ensemble": pd.Series(df["ic_qlib_ensemble"].values, index=df["valid_end"]),
     }
+    # Phase 1 P1-1：必须显式包含 gru，否则下游 RankICDynamicWeighter
+    # 会以 weights.get("gru", 0.0) 把 GRU 预测乘 0。
+    if "ic_gru" in df.columns:
+        histories["gru"] = pd.Series(df["ic_gru"].values, index=df["valid_end"])
+    else:
+        histories["gru"] = histories["lgb"]
     return histories
 ```
 

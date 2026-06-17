@@ -1,0 +1,144 @@
+# v19 认证因子库（正向强化 RAG）
+# 来源：factor_registry/data/manifest.json — parquet_version=19，status=active
+# 用途：告诉 LLM 哪些类型的因子已被认证，应当提出正交/互补的新方向
+#
+# 字段说明：
+#   certified: true  — 已通过 L2 验证并写入生产 parquet
+#   family     — 因子族标签（供检索器族权重计算）
+#   notes      — 为何认证、与现有池的关系
+#
+# 更新方式：每次 manifest 版本 bump 后重跑
+#   python scripts/lab/_gen_fallback_text.py  (不需要)
+#   手动更新或运行 scripts/lab/_extract_v19_for_rag.py
+
+schema_version: "1.0"
+
+factors:
+
+  # ── 价值类 ────────────────────────────────────────────────────────────────────
+
+  - id: v19_val_001
+    family: value
+    name: ValueMR_20D
+    certified: true
+    columns_used: [$pe_ttm, $total_mv]
+    expected_ic: 0.018
+    notes: >
+      价值均值回归因子. 已认证 coverage=86.7%.
+      20日滚动PE-zscore.  AVOID: proposing nearly identical PE zscore variants.
+
+  - id: v19_val_002
+    family: value
+    name: earnings_yield_momentum_5d_interaction
+    certified: true
+    columns_used: [$pe_ttm, $close_qfq]
+    expected_ic: 0.014
+    notes: >
+      盈利收益率×动量交叉项. 已认证 coverage=97.6%.
+      PE倒数 × 5日动量. 需要同时用两个不同族信号的交叉.
+
+  # ── 流动性类（过代表，已有多个认证因子）────────────────────────────────────────
+
+  - id: v19_liq_001
+    family: liquidity
+    name: amihud_illiquidity_20d
+    certified: true
+    columns_used: [$close_qfq, $volume]
+    expected_ic: 0.013
+    notes: >
+      Amihud 非流动性水平 20日均值. 已认证 coverage=98.1%.
+      CAUTION: liquidity family OVER-REPRESENTED in v19 pool.
+      New liquidity factors must show strong differentiation from this.
+
+  - id: v19_liq_002
+    family: liquidity
+    name: winsorized_zscore_volume_ratio
+    certified: true
+    columns_used: [$volume_ratio]
+    expected_ic: 0.011
+    notes: >
+      成交量比率 winsorized zscore. 已认证 coverage=100%.
+      CAUTION: over-represented family. Very similar to sma_volume_ratio_10d below.
+
+  - id: v19_liq_003
+    family: liquidity
+    name: sma_volume_ratio_10d
+    certified: true
+    columns_used: [$vol, $volume_ratio]
+    expected_ic: 0.010
+    notes: >
+      10日简单移动平均成交量比率. 已认证 coverage=99.0%.
+      CAUTION: 3rd certified liquidity factor — avoid proposing more pure volume-ratio variants.
+
+  - id: v19_liq_004
+    family: liquidity
+    name: volume_ratio_ma_15d
+    certified: true
+    columns_used: [$volume_ratio]
+    expected_ic: 0.010
+    notes: >
+      15日成交量比率均值. 已认证.
+      CAUTION: 4th certified liquidity factor — very high family concentration.
+
+  # ── 换手率类 ──────────────────────────────────────────────────────────────────
+
+  - id: v19_turn_001
+    family: liquidity
+    name: turnover_surprise_20
+    certified: true
+    columns_used: [$turnover_rate]
+    expected_ic: 0.012
+    notes: >
+      20日换手率异动. 换手率相对历史均值的偏差. 已认证 coverage=98.1%.
+
+  - id: v19_turn_002
+    family: liquidity
+    name: turnover_acceleration_5d
+    certified: true
+    columns_used: [$turnover_rate]
+    expected_ic: 0.010
+    notes: >
+      5日换手率加速度. 一阶差分动量. 已认证 coverage=99.5%.
+
+  - id: v19_turn_003
+    family: liquidity
+    name: turnover_accel_5d
+    certified: true
+    columns_used: [$turnover_rate]
+    expected_ic: 0.010
+    notes: >
+      5日换手加速度（变体）. 已认证 coverage=99.0%.
+      CAUTION: Very similar to turnover_acceleration_5d — avoid proposing yet another variant.
+
+  # ── 价格技术类 ────────────────────────────────────────────────────────────────
+
+  - id: v19_tech_001
+    family: liquidity
+    name: close_location_ma_5
+    certified: true
+    columns_used: [$close_qfq, $high_qfq, $low_qfq]
+    expected_ic: 0.009
+    notes: >
+      收盘价在5日高低区间的位置（CL%). 已认证 coverage=99.5%.
+
+  - id: v19_tech_002
+    family: liquidity
+    name: intraday_range
+    certified: true
+    columns_used: [$high_qfq, $low_qfq, $close_qfq]
+    expected_ic: 0.009
+    notes: >
+      日内振幅 (high-low)/close. 已认证 coverage=99.9%.
+
+  # ── 动量类 ────────────────────────────────────────────────────────────────────
+
+  - id: v19_mom_001
+    family: momentum
+    name: overnight_return_5d_avg
+    certified: true
+    columns_used: [$open_qfq, $close_qfq]
+    expected_ic: 0.015
+    notes: >
+      5日隔夜收益均值. 已认证 coverage=99.4%.
+      Overnight gap signal — one of few NON-liquidity certified factors.
+      OPPORTUNITY: longer windows (20D, 60D) or risk-adjusted variants not yet certified.

@@ -1,0 +1,93 @@
+# ==============================================================================
+# ValidationProfile: strict
+# ==============================================================================
+# 用途：**Production 准入**标准。所有启用的 check 必须通过 + 聚合分 >= 0.70。
+#
+# 阶段 D 变更：引入真实回测 + 双视角边际贡献
+#   * ``backtest_rqalpha``：RQAlpha 真实撮合、费率、涨跌停（5-15 min/候选）
+#   * ``marginal``：baseline-rank 中性化 IC（秒级，快速充分性过滤）
+#   * ``marginal_training``：baseline ± candidate 双 LGB A/B（10-30 秒）
+#
+# 关闭轻量 ``backtest``：strict 用真实回测做结论，避免无交易成本的假阳性。
+#
+# 阈值（宪法 §5.1 + 阶段 D 新标准）：
+#   * coverage >= 0.90；ic 双阈；orthogonality |ρ|<=0.50；turnover<=0.30
+#   * backtest_rqalpha：Sharpe>=1.2, DD<=30%, Annual>=5%
+#   * marginal：残差 rank IC>=0.012, IR>=0.25
+#   * marginal_training：IC uplift >= 0.003（baseline 之上 +0.3pp rank IC）
+#
+# 数据源依赖（同 default）：
+#   * label_parquet / reference_factors_parquet / baseline_prediction_parquet
+#   * rqalpha_config_path：``config/rqalpha_config.yaml``
+# ==============================================================================
+
+profile_name: strict
+description: "Production 准入标准；阶段 D 版本：4 个离线 check + 真实回测 + 2 个边际贡献"
+
+universe: csi300
+oos_window: ["2025-01-01", "2026-04-07"]
+benchmark: SH000300
+
+aggregation:
+  method: weighted_sum
+  pass_threshold: 0.70
+  fail_threshold: 0.40
+
+data_sources:
+  label_parquet: "factor_validation/data/oos_labels_all.parquet"
+  reference_factors_parquet: "factor_registry/parquet/factors_v1.parquet"
+  baseline_prediction_parquet: "factor_validation/data/baseline_predictions_ensemble_v1.parquet"
+
+checks:
+  coverage:
+    enabled: true
+    weight: 0.10
+    min_non_null_ratio: 0.90
+  ic:
+    enabled: true
+    weight: 0.20
+    min_rank_ic: 0.015
+    min_ic_ir: 0.30
+    allow_negative: false
+  orthogonality:
+    enabled: true
+    weight: 0.15
+    max_abs_corr: 0.50
+  turnover:
+    enabled: true
+    weight: 0.10
+    max_daily_rank_turnover: 0.30
+    min_rank_autocorr: 0.60
+  backtest_rqalpha:
+    enabled: true
+    weight: 0.20
+    min_sharpe: 1.2
+    max_drawdown: 0.30
+    min_annual_return: 0.05
+    min_total_return: 0.0
+    allow_negative: false
+    full_invested: false
+    score_col: "final"
+    rqalpha_config_path: "config/rqalpha_config.yaml"
+    output_root: "factor_validation/reports/rqalpha"
+  marginal:
+    enabled: true
+    weight: 0.10
+    min_residual_rank_ic: 0.012
+    min_residual_ic_ir: 0.25
+    allow_negative: false
+  marginal_training:
+    enabled: true
+    weight: 0.15
+    min_ic_uplift: 0.003
+    train_ratio: 0.6
+    num_boost_round: 200
+    learning_rate: 0.05
+    num_leaves: 31
+    min_data_in_leaf: 50
+    feature_fraction: 0.9
+    bagging_fraction: 0.9
+    bagging_freq: 5
+    random_seed: 42
+    min_test_days: 30
+    allow_negative: false

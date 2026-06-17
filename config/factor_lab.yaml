@@ -1,0 +1,96 @@
+# ==============================================================================
+# Factor Lab —— L1 / L2 / L3 三层架构全局配置
+# ==============================================================================
+# 本文件是因子试验场的总开关。具体的：
+#   * L2 验证标准请见 factor_validation/profiles/<name>.yaml
+#   * L3 注册表 manifest 请见 factor_registry/data/manifest.json
+#
+# 完整架构定义：docs/ARCHITECTURE_FACTOR_LAB.md
+# ==============================================================================
+
+schema_version: 1
+
+# ---------------------------------------------------------------- L1 试验场
+lab:
+  # 候选因子工作区（gitignore；factor_lab/workspace/candidates/<factor_id>/）
+  workspace_dir: "factor_lab/workspace"
+
+  # RD-Agent loop 默认参数
+  rdagent:
+    enabled: true
+    loop_n: 2                      # 每次跑多少轮
+    universe: csi500               # 候选因子的目标股票池
+    time_window:                   # 因子值计算/训练用的时间窗
+      start: "2022-01-01"
+      end: "2026-05-22"
+    benchmark: 000905.SZ   # qlib provider id; logical CSI500 = SH000905
+
+  # LLM 反馈用的 composite_score 公式（仅 L1 内部 reward；不作为准入依据）
+  reward:
+    formula: "1.0 * IR + 2.0 * IC_IR - 0.5 * log(1 + annualized_turnover)"
+
+  # 手工提交候选因子的入口配置（阶段 E 实现）
+  manual:
+    enabled: true
+    template_dir: "factor_lab/runners/manual_template"
+
+# ---------------------------------------------------------------- L2 验证
+validation:
+  # 默认 profile（命令行 --profile 可覆盖）
+  default_profile: default
+
+  # profile 搜索目录
+  profile_dir: "factor_validation/profiles"
+
+  # 验证报告输出目录（gitignore）
+  report_dir: "factor_validation/reports"
+
+  # 是否在 PASS 时自动 promote 到 L3（false → 必须手工 promote_certified.py）
+  auto_promote_on_pass: false
+
+# ---------------------------------------------------------------- L3 注册表
+registry:
+  # manifest + 证书副本目录（入版本控制）
+  data_dir: "factor_registry/data"
+
+  # production parquet 目录（gitignore，按版本号管理）
+  parquet_dir: "factor_registry/parquet"
+
+  # 当前 production 因子集版本（写入 parquet/factors_v<N>.parquet）
+  current_parquet_version: 21
+
+  # ---------------------------------------------------------------------------
+  # 统一入口：refresh_rdagent_parquet.py 输出 ↔ register_rdagent_factors 输入
+  # ---------------------------------------------------------------------------
+  # ``scripts/refresh_rdagent_parquet.py`` 写入下列 parquet（全池重算 + 筛选因子）。
+  # ``python scripts/register_rdagent_factors.py --from-refresh`` 默认读此文件注册 L3，
+  # 避免误用某个 RD-Agent workspace 内仍是旧日期窗口的 combined_factors_df.parquet。
+  refresh_combined_parquet: "git_ignore_folder/combined_factors_df.parquet"
+  refresh_summary_json: "git_ignore_folder/combined_factors_df.json"
+  # 刷新脚本的默认时间窗（命令行 --start/--end 可覆盖）；end 建议与 lab.rdagent.time_window.end 对齐
+  refresh_time_window:
+    start: "2020-01-01"
+    end: "2026-05-22"
+
+  # 生产因子加载质量阈值
+  quality_gate:
+    min_align_coverage_pct: 80.0           # 与当前样本索引对齐后低于该覆盖率的列会被跳过
+    stale_warn_days: 120                   # 因子最大日期早于样本最大日期超过 N 天则告警
+
+  # 退役策略
+  retire:
+    auto_retire_enabled: false              # 启用自动退役评估
+    rolling_window_days: 90                 # 评估近 N 天
+    min_marginal_ic: 0.005                  # 边际 IC 下限
+    min_marginal_sharpe_uplift: 0.02        # 边际 Sharpe 增益下限
+
+# ---------------------------------------------------------------- 全局开关
+flags:
+  # 是否启用三层架构（false → 走旧 combined_factors_df.parquet 路径，仅过渡期使用）
+  enabled: true
+
+  # 严格模式：跨层调用时强制走契约 schema 校验
+  strict_contract: true
+
+  # 调试模式：保留中间产物 / 详细日志
+  debug: false

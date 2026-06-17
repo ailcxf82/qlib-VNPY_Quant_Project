@@ -1,0 +1,96 @@
+﻿qlib:
+  provider_uri: "D:/qlib_data/qlib_data"
+  region: "cn"
+
+data:
+  instruments: "all"
+  start_time: "2026-02-20"
+  end_time: "2026-03-28"
+  freq: "day"
+  
+  missing_value_strategy: "auto"
+  
+  use_alpha158: false
+  
+  features:
+    - "Ref($close_qfq, 1)"
+    - "Ref($open_qfq, 1)"
+    - "Ref($high_qfq, 1)"
+    - "Ref($low_qfq, 1)"
+    - "Ref($vol, 1)"
+    - "Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1"
+    - "Ref($vol, 2)/Ref($vol, 1) - 1"
+    - "Mean(Ref($close_qfq, 1), 5)/Ref($close_qfq, 1) - 1"
+    - "Mean(Ref($close_qfq, 1), 10)/Ref($close_qfq, 1) - 1"
+    - "Std(Ref($close_qfq, 1), 10)"
+    - "(Ref($close_qfq, 1) - Max(Ref($high_qfq, 1), 60)) / Ref($close_qfq, 1)"
+    - "Ref($turnover_rate, 1)"
+    - "Mean(Ref($turnover_rate, 1), 5)"
+    - "Ref($turnover_rate, 1)/Mean(Ref($turnover_rate, 1), 20) - 1"
+    - "Ref($vol, 1) / Mean(Ref($vol, 1), 20) - 1"
+    - "(Ref($close_qfq, 1) - Ref($close_qfq, 2)) * Ref($vol, 1)"
+
+  feature_sets:
+    gru_ohlcv:
+      - "Ref($close_qfq, 1)"
+      - "Ref($open_qfq, 1)"
+      - "Ref($high_qfq, 1)"
+      - "Ref($low_qfq, 1)"
+      - "Ref($vol, 1)"
+      - "Ref($close_qfq, 2)/Ref($close_qfq, 1) - 1"
+      - "Ref($vol, 2)/Ref($vol, 1) - 1"
+      - "Mean(Ref($close_qfq, 1), 5)/Ref($close_qfq, 1) - 1"
+      - "Mean(Ref($close_qfq, 1), 10)/Ref($close_qfq, 1) - 1"
+      - "Std(Ref($close_qfq, 1), 5)"
+      - "Std(Ref($close_qfq, 1), 10)"
+      - "Ref($turnover_rate, 1)"
+      - "Ref($vol, 1) / Mean(Ref($vol, 1), 5) - 1"
+      - "Ref($turnover_rate, 1)/Mean(Ref($turnover_rate, 1), 20) - 1"
+      - "Std(Ref($close_qfq, 1), 20)"
+      - "Std(Ref($vol, 1), 20)"
+      - "Ref($vol, 1) / Mean(Ref($vol, 1), 20) - 1"
+      - "(Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)"
+      - "Abs(Ref($close_qfq, 1) - Ref($open_qfq, 1)) / Ref($close_qfq, 1)"
+    
+    lgb_fundamental:
+      - "Ref($pe, 1)"
+      - "Ref($pb, 1)"
+      - "Ref($ps, 1)"
+      - "1/Ref($pe, 1)"
+      - "Ref($total_mv, 1)"
+      - "Ref($roe, 1)"
+      - "Ref($q_profit_yoy, 1)"
+      - "Ref($q_eps, 1)"
+      - "Ref($assets_turn, 1)"
+      - "Ref($pe, 1)/Mean(Ref($pe, 1), 20) - 1"
+      - "Ref($pb, 1)/Mean(Ref($pb, 1), 20) - 1"
+      - "Ref($roe, 1)/Mean(Ref($roe, 1), 4) - 1"
+      - "Ref($net_amount, 1)"
+      - "Ref($buy_elg_amount, 1)"
+      - "Ref($buy_lg_amount, 1)"
+      - "Ref($buy_md_amount, 1)"
+      - "Ref($buy_sm_amount, 1)"
+      - "Ref($rzye, 1)"
+      - "Ref($rqye, 1)"
+      - "Ref($rzye, 2)/Ref($rzye, 1) - 1"
+      - "(Ref($close_qfq, 1) - Ref($open_qfq, 1)) / Ref($open_qfq, 1)"
+      - "(Ref($high_qfq, 1) - Ref($low_qfq, 1)) / Ref($close_qfq, 1)"
+      - "(Ref($close_qfq, 1) - Mean(Ref($close_qfq, 1), 20)) / Std(Ref($close_qfq, 1), 20)"
+      - "Ref($total_mv, 1) / Mean(Ref($total_mv, 1), 20) - 1"
+      - "Ref($vol, 1) / Ref($total_mv, 1)"
+      - "Ref($turnover_rate, 1) / Mean(Ref($turnover_rate, 1), 20) - 1"
+      - "Std(Ref($close_qfq, 1), 20) / Ref($close_qfq, 1)"
+      - "Std(Ref($vol, 1), 20) / Mean(Ref($vol, 1), 20)"
+
+  active_feature_sets: ["gru_ohlcv", "lgb_fundamental"]
+  
+  label: "Ref($close_qfq, -5)/Ref($close_qfq, 1) - 1"
+  label_transform:
+    enabled: true
+    method: "percentile"
+    groupby: "datetime"
+  filter:
+    limit_up: true
+    limit_down: true
+  normalization: "zscore"
+

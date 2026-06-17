@@ -15,7 +15,7 @@ graph TB
     
     subgraph DataPrep["数据准备 (QlibFeaturePipeline)"]
         D1[初始化 Qlib] --> D2[提取特征 D.features]
-        D2 --> D3[提取标签 Ref($close,-5)/$close-1]
+        D2 --> D3["提取标签 Ref($close_qfq,-3)/Ref($close_qfq,1)-1"]
         D3 --> D4[特征标签对齐]
         D4 --> D5[标准化处理]
         D5 --> D6[输出 DataFrame/Series]
